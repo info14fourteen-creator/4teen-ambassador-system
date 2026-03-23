@@ -1,0 +1,563 @@
+# AI BUNDLE — CORE
+
+Generated: 2026-03-23T17:05:08.837Z
+
+===== FILE: .github/workflows/build-ai-bundles.yml =====
+name: Build and Publish AI Bundles
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths-ignore:
+      - 'ai/latest/**'
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-publish:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Build project
+        run: npm run build
+
+      - name: Build AI bundles
+        run: npm run build:ai
+
+      - name: Commit and push generated AI files
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add ai/latest
+
+          if git diff --cached --quiet; then
+            echo "No AI bundle changes to commit."
+          else
+            git commit -m "chore: update AI bundles [skip ci]"
+            git push
+          fi
+
+      - name: Print links
+        run: |
+          echo "AI map:"
+          echo "https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/${GITHUB_REF_NAME}/ai/latest/ai-project-map.txt"
+          echo
+          echo "AI core bundle:"
+          echo "https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/${GITHUB_REF_NAME}/ai/latest/ai-bundle-core.txt"
+          echo
+          echo "AI cabinet bundle:"
+          echo "https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/${GITHUB_REF_NAME}/ai/latest/ai-bundle-cabinet.txt"
+          echo
+          echo "AI site bundle:"
+          echo "https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/${GITHUB_REF_NAME}/ai/latest/ai-bundle-site.txt"
+          echo
+          echo "AI worker bundle:"
+          echo "https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/${GITHUB_REF_NAME}/ai/latest/ai-bundle-worker.txt"
+          echo
+          echo "AI telegram bundle:"
+          echo "https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/${GITHUB_REF_NAME}/ai/latest/ai-bundle-telegram.txt"
+          echo
+          echo "Working rules:"
+          echo "https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/${GITHUB_REF_NAME}/ai/WORKING_RULES.md"
+
+      - name: Add workflow summary
+        run: |
+          {
+            echo "## AI bundle links"
+            echo
+            echo "- AI map: https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/${GITHUB_REF_NAME}/ai/latest/ai-project-map.txt"
+            echo "- AI core bundle: https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/${GITHUB_REF_NAME}/ai/latest/ai-bundle-core.txt"
+            echo "- AI cabinet bundle: https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/${GITHUB_REF_NAME}/ai/latest/ai-bundle-cabinet.txt"
+            echo "- AI site bundle: https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/${GITHUB_REF_NAME}/ai/latest/ai-bundle-site.txt"
+            echo "- AI worker bundle: https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/${GITHUB_REF_NAME}/ai/latest/ai-bundle-worker.txt"
+            echo "- AI telegram bundle: https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/${GITHUB_REF_NAME}/ai/latest/ai-bundle-telegram.txt"
+            echo "- Working rules: https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/${GITHUB_REF_NAME}/ai/WORKING_RULES.md"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+===== END FILE: .github/workflows/build-ai-bundles.yml =====
+
+===== FILE: README.md =====
+# 4teen-ambassador-system
+Full-stack ambassador and referral system for the 4TEEN token:  first-touch attribution, on-chain reward distribution, dashboard, and real-time Telegram notifications.
+
+===== END FILE: README.md =====
+
+===== FILE: ai/WORKING_RULES.md =====
+# 4TEEN AMBASSADOR SYSTEM — WORKING RULES (GOLD STANDARD)
+
+## Purpose
+
+Define strict rules for how we work during the build of the 4TEEN ambassador, referral, dashboard, worker, and notification system.
+
+This document is the operating contract for all further steps.
+
+---
+
+## CORE PRINCIPLES
+
+### 1. FULL FILE REWRITE ONLY
+
+- No partial patches
+- No diff-style edits
+- No “change this line” instructions
+
+Every time:
+
+- you send a file path or current file content
+- I return a FULL rewritten version
+- ready for copy-paste
+
+### 2. ENGLISH ONLY
+
+- All code comments MUST be in English
+- No Russian comments
+- No mixed language inside code or technical files
+
+### 3. SOURCE OF TRUTH = REPO SNAPSHOT + YOUR FILE
+
+- The project snapshot is the shared context
+- The current repo file is always the final source of truth
+- I must not assume missing code
+- I must not reuse outdated versions when a newer file exists
+
+### 4. NO GUESSING
+
+If something is unclear:
+
+- I ask OR design the safest production-ready version
+- never invent hidden behavior
+- never invent missing contract logic
+- never invent API payloads without a clear basis
+
+### 5. CLEAN ARCHITECTURE FIRST
+
+We are not stacking hacks.
+We are building a stable system.
+
+If a file is bad:
+
+- we rewrite
+
+If a file is useless:
+
+- we delete
+
+If a module boundary is wrong:
+
+- we refactor cleanly
+
+---
+
+## FILE DECISION RULE
+
+Every file falls into ONE category:
+
+1. KEEP
+2. REWRITE
+3. DELETE
+4. CREATE
+
+I should always explicitly state which one it is when relevant.
+
+---
+
+## REWRITE STANDARD
+
+Every rewritten file must be:
+
+- self-contained
+- clean
+- readable
+- no dead code
+- no legacy hacks
+- no hidden fallbacks
+- no silent attribution changes
+- strict single responsibility
+- production-oriented
+
+---
+
+## PROJECT-SPECIFIC RULES
+
+### Referral rules
+
+- Attribution model = first-touch before first successful purchase
+- Referral source may be stored before purchase
+- Buyer is bound on-chain only after the first successful verified purchase
+- Disabled ambassadors must not receive new buyer bindings
+- Existing bound buyers must still continue to attribute to the same ambassador unless owner explicitly rebinds
+
+### Controller rules
+
+- The controller must never mix:
+  - ownerAvailableBalance
+  - totalReservedRewards
+  - unallocatedPurchaseFunds
+- Owner must never be able to withdraw reserved ambassador rewards
+- Direct random TRX transfers must not silently corrupt accounting
+- Contract reads for dashboard should be convenient but safe for compilation
+
+### Cabinet rules
+
+- Cabinet must not contain hidden business logic
+- Cabinet reads from blockchain and backend
+- Cabinet must expose:
+  - ambassador profile
+  - referral link
+  - stats
+  - rewards
+  - Telegram connection status
+  - withdraw action
+
+### Worker rules
+
+- Worker verifies purchases before allocation
+- One purchase must never be processed twice
+- Allocation must be traceable
+- Failed allocations must be replayable
+- Worker logic must be deterministic and logged
+
+### Telegram rules
+
+- Telegram must be linked only through cabinet
+- No manual wallet claiming through bot chat
+- Bot is a notification and status layer, not a source of truth
+- Link tokens must be one-time or short-lived
+
+---
+
+## SNAPSHOT RULES
+
+The repository snapshot exists to keep long-term context stable.
+
+### Snapshot goals
+
+- preserve current repo structure
+- preserve current file contents
+- preserve architectural rules
+- allow me to stay aligned with the latest repo state
+
+### Snapshot format
+
+The AI snapshot must be split into multiple files, not one giant file.
+
+Required outputs:
+
+- `ai/latest/ai-project-map.txt`
+- `ai/latest/ai-bundle-core.txt`
+- `ai/latest/ai-bundle-cabinet.txt`
+- `ai/latest/ai-bundle-site.txt`
+- `ai/latest/ai-bundle-worker.txt`
+- `ai/latest/ai-bundle-telegram.txt`
+
+### Snapshot priority
+
+When both snapshot and current user-provided file exist:
+
+- the newest current file wins
+
+---
+
+## WORKFLOW
+
+You send file or task →  
+I respond with:
+
+1. Decision (keep / rewrite / delete / create)
+2. Full file content (if rewrite/create)
+3. Short explanation when needed
+
+Then next file.
+
+---
+
+## STRICT RULE
+
+No skipping steps.  
+No jumping ahead.  
+No “let’s fix later”.
+
+Everything must work step-by-step.
+
+---
+
+## FINAL GOAL
+
+- Stable referral system
+- Stable ambassador cabinet
+- Stable allocation worker
+- Stable Telegram notification flow
+- Full control over attribution and rewards
+- No accounting corruption
+- Ready for production operations
+
+---
+
+## END
+
+===== END FILE: ai/WORKING_RULES.md =====
+
+===== FILE: package.json =====
+{
+  "scripts": {
+    "build": "echo \"Build step placeholder\"",
+    "build:ai": "node scripts/build-ai-bundles.mjs"
+  }
+}
+
+===== END FILE: package.json =====
+
+===== FILE: scripts/build-ai-bundles.mjs =====
+import fs from "fs";
+import path from "path";
+
+const ROOT = process.cwd();
+const AI_DIR = path.join(ROOT, "ai");
+const LATEST_DIR = path.join(AI_DIR, "latest");
+
+const IGNORE_DIRS = new Set([
+  ".git",
+  "node_modules",
+  ".next",
+  ".turbo",
+  "dist",
+  "build",
+  "coverage",
+  ".vercel",
+  ".idea",
+  ".vscode",
+  "ai/latest",
+]);
+
+const IGNORE_FILES = [
+  ".env",
+  ".env.local",
+  ".env.production",
+  ".env.development",
+  "package-lock.json",
+  "pnpm-lock.yaml",
+  "yarn.lock",
+];
+
+const ALLOWED_ROOTS = [
+  ".github",
+  "apps",
+  "services",
+  "shared",
+  "scripts",
+  "docs",
+  "ai",
+  "package.json",
+  "tsconfig.base.json",
+  "turbo.json",
+  "README.md",
+];
+
+const GROUPS = {
+  core: [
+    ".github/",
+    "shared/",
+    "scripts/",
+    "docs/",
+    "package.json",
+    "tsconfig.base.json",
+    "turbo.json",
+    "README.md",
+    "ai/WORKING_RULES.md",
+  ],
+  cabinet: ["apps/cabinet/"],
+  site: ["apps/site-integration/"],
+  worker: ["services/allocation-worker/"],
+  telegram: ["services/telegram-bot/"],
+};
+
+function ensureDir(dir) {
+  fs.mkdirSync(dir, { recursive: true });
+}
+
+function toPosix(p) {
+  return p.split(path.sep).join("/");
+}
+
+function shouldIgnore(relPath) {
+  const posix = toPosix(relPath);
+
+  if (IGNORE_FILES.some((f) => posix === f || posix.endsWith(`/${f}`))) return true;
+  if (posix.includes("/node_modules/")) return true;
+  if (posix.includes("/.next/")) return true;
+  if (posix.includes("/dist/")) return true;
+  if (posix.includes("/build/")) return true;
+  if (posix.includes("/coverage/")) return true;
+  if (posix.includes("/.turbo/")) return true;
+  if (posix.startsWith("ai/latest/")) return true;
+
+  return false;
+}
+
+function isAllowedRootEntry(name) {
+  return ALLOWED_ROOTS.includes(name);
+}
+
+function walk(dir, out = []) {
+  const entries = fs.readdirSync(dir, { withFileTypes: true });
+
+  for (const entry of entries) {
+    const abs = path.join(dir, entry.name);
+    const rel = path.relative(ROOT, abs);
+    const posix = toPosix(rel);
+
+    if (entry.isDirectory()) {
+      if (IGNORE_DIRS.has(entry.name)) continue;
+      if (shouldIgnore(rel)) continue;
+      walk(abs, out);
+      continue;
+    }
+
+    if (shouldIgnore(rel)) continue;
+    out.push(posix);
+  }
+
+  return out;
+}
+
+function readTextFile(relPath) {
+  const abs = path.join(ROOT, relPath);
+  try {
+    return fs.readFileSync(abs, "utf8");
+  } catch {
+    return "";
+  }
+}
+
+function classify(file) {
+  for (const [group, prefixes] of Object.entries(GROUPS)) {
+    for (const prefix of prefixes) {
+      if (file === prefix || file.startsWith(prefix)) return group;
+    }
+  }
+  return "core";
+}
+
+function buildMap(files) {
+  const lines = [];
+  lines.push("# AI PROJECT MAP");
+  lines.push("");
+  lines.push(`Generated: ${new Date().toISOString()}`);
+  lines.push("");
+
+  const grouped = {
+    core: [],
+    cabinet: [],
+    site: [],
+    worker: [],
+    telegram: [],
+  };
+
+  for (const file of files) {
+    const group = classify(file);
+    grouped[group].push(file);
+  }
+
+  for (const key of Object.keys(grouped)) {
+    lines.push(`## ${key.toUpperCase()}`);
+    lines.push("");
+    for (const file of grouped[key].sort()) {
+      lines.push(`- ${file}`);
+    }
+    lines.push("");
+  }
+
+  return lines.join("\n");
+}
+
+function buildBundle(title, files) {
+  const lines = [];
+  lines.push(`# ${title}`);
+  lines.push("");
+  lines.push(`Generated: ${new Date().toISOString()}`);
+  lines.push("");
+
+  for (const file of files.sort()) {
+    const content = readTextFile(file);
+    lines.push(`===== FILE: ${file} =====`);
+    lines.push(content || "[EMPTY OR UNREADABLE]");
+    lines.push(`===== END FILE: ${file} =====`);
+    lines.push("");
+  }
+
+  return lines.join("\n");
+}
+
+function main() {
+  ensureDir(LATEST_DIR);
+
+  const rootEntries = fs.readdirSync(ROOT, { withFileTypes: true });
+  const allowedTopLevel = rootEntries
+    .map((e) => e.name)
+    .filter((name) => isAllowedRootEntry(name));
+
+  const files = [];
+  for (const name of allowedTopLevel) {
+    const abs = path.join(ROOT, name);
+    const stat = fs.statSync(abs);
+
+    if (stat.isDirectory()) {
+      walk(abs, files);
+    } else {
+      if (!shouldIgnore(name)) files.push(toPosix(name));
+    }
+  }
+
+  files.sort();
+
+  const coreFiles = files.filter((f) => classify(f) === "core");
+  const cabinetFiles = files.filter((f) => classify(f) === "cabinet");
+  const siteFiles = files.filter((f) => classify(f) === "site");
+  const workerFiles = files.filter((f) => classify(f) === "worker");
+  const telegramFiles = files.filter((f) => classify(f) === "telegram");
+
+  fs.writeFileSync(path.join(LATEST_DIR, "ai-project-map.txt"), buildMap(files), "utf8");
+  fs.writeFileSync(path.join(LATEST_DIR, "ai-bundle-core.txt"), buildBundle("AI BUNDLE — CORE", coreFiles), "utf8");
+  fs.writeFileSync(path.join(LATEST_DIR, "ai-bundle-cabinet.txt"), buildBundle("AI BUNDLE — CABINET", cabinetFiles), "utf8");
+  fs.writeFileSync(path.join(LATEST_DIR, "ai-bundle-site.txt"), buildBundle("AI BUNDLE — SITE INTEGRATION", siteFiles), "utf8");
+  fs.writeFileSync(path.join(LATEST_DIR, "ai-bundle-worker.txt"), buildBundle("AI BUNDLE — WORKER", workerFiles), "utf8");
+  fs.writeFileSync(path.join(LATEST_DIR, "ai-bundle-telegram.txt"), buildBundle("AI BUNDLE — TELEGRAM", telegramFiles), "utf8");
+
+  console.log("AI bundles generated in ai/latest/");
+}
+
+main();
+
+===== END FILE: scripts/build-ai-bundles.mjs =====
+
+===== FILE: shared/config/contracts.ts =====
+
+
+===== END FILE: shared/config/contracts.ts =====
+
+===== FILE: shared/config/referral.ts =====
+
+
+===== END FILE: shared/config/referral.ts =====
+
+===== FILE: shared/utils/slug.ts =====
+
+
+===== END FILE: shared/utils/slug.ts =====

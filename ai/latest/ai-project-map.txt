@@ -1,0 +1,36 @@
+# AI PROJECT MAP
+
+Generated: 2026-03-23T17:05:08.836Z
+
+## CORE
+
+- .github/workflows/build-ai-bundles.yml
+- README.md
+- ai/WORKING_RULES.md
+- package.json
+- scripts/build-ai-bundles.mjs
+- shared/config/contracts.ts
+- shared/config/referral.ts
+- shared/utils/slug.ts
+
+## CABINET
+
+- apps/cabinet/src/app/ambassador/page.tsx
+- apps/cabinet/src/hooks/useAmbassadorDashboard.ts
+- apps/cabinet/src/lib/blockchain/controller.ts
+- apps/cabinet/src/lib/referral/storage.ts
+- apps/cabinet/src/lib/telegram/link.ts
+
+## SITE
+
+- apps/site-integration/src/purchase/afterBuy.ts
+- apps/site-integration/src/purchase/submitAttribution.ts
+- apps/site-integration/src/referral/capture.ts
+- apps/site-integration/src/referral/firstTouch.ts
+- apps/site-integration/src/referral/storage.ts
+
+## WORKER
+
+
+## TELEGRAM
+

@@ -1,0 +1,28 @@
+# AI BUNDLE — CABINET
+
+Generated: 2026-03-23T17:05:08.837Z
+
+===== FILE: apps/cabinet/src/app/ambassador/page.tsx =====
+
+
+===== END FILE: apps/cabinet/src/app/ambassador/page.tsx =====
+
+===== FILE: apps/cabinet/src/hooks/useAmbassadorDashboard.ts =====
+
+
+===== END FILE: apps/cabinet/src/hooks/useAmbassadorDashboard.ts =====
+
+===== FILE: apps/cabinet/src/lib/blockchain/controller.ts =====
+
+
+===== END FILE: apps/cabinet/src/lib/blockchain/controller.ts =====
+
+===== FILE: apps/cabinet/src/lib/referral/storage.ts =====
+
+
+===== END FILE: apps/cabinet/src/lib/referral/storage.ts =====
+
+===== FILE: apps/cabinet/src/lib/telegram/link.ts =====
+
+
+===== END FILE: apps/cabinet/src/lib/telegram/link.ts =====

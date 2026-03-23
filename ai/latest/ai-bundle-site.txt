@@ -1,0 +1,28 @@
+# AI BUNDLE — SITE INTEGRATION
+
+Generated: 2026-03-23T17:05:08.838Z
+
+===== FILE: apps/site-integration/src/purchase/afterBuy.ts =====
+
+
+===== END FILE: apps/site-integration/src/purchase/afterBuy.ts =====
+
+===== FILE: apps/site-integration/src/purchase/submitAttribution.ts =====
+
+
+===== END FILE: apps/site-integration/src/purchase/submitAttribution.ts =====
+
+===== FILE: apps/site-integration/src/referral/capture.ts =====
+
+
+===== END FILE: apps/site-integration/src/referral/capture.ts =====
+
+===== FILE: apps/site-integration/src/referral/firstTouch.ts =====
+
+
+===== END FILE: apps/site-integration/src/referral/firstTouch.ts =====
+
+===== FILE: apps/site-integration/src/referral/storage.ts =====
+
+
+===== END FILE: apps/site-integration/src/referral/storage.ts =====
