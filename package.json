@@ -1,0 +1,6 @@
+{
+  "scripts": {
+    "build": "echo \"Build step placeholder\"",
+    "build:ai": "node scripts/build-ai-bundles.mjs"
+  }
+}
