@@ -1,6 +1,6 @@
 # AI BUNDLE — SITE INTEGRATION
 
-Generated: 2026-03-24T03:12:55.572Z
+Generated: 2026-03-24T03:14:10.637Z
 
 ===== FILE: apps/site-integration/src/purchase/afterBuy.ts =====
 
@@ -18,7 +18,50 @@ Generated: 2026-03-24T03:12:55.572Z
 ===== END FILE: apps/site-integration/src/referral/capture.ts =====
 
 ===== FILE: apps/site-integration/src/referral/firstTouch.ts =====
+import {
+  DEFAULT_REFERRAL_TTL_MS,
+  StoredReferralRecord,
+  getStoredReferral,
+  saveReferral
+} from "./storage";
+import { assertValidSlug } from "../../../../shared/utils/slug";
 
+export interface ApplyFirstTouchInput {
+  slug: string;
+  ttlMs?: number;
+  now?: number;
+}
+
+export interface ApplyFirstTouchResult {
+  status: "stored" | "kept-existing";
+  record: StoredReferralRecord;
+}
+
+export function applyFirstTouch(input: ApplyFirstTouchInput): ApplyFirstTouchResult {
+  const now = input.now ?? Date.now();
+  const ttlMs = input.ttlMs ?? DEFAULT_REFERRAL_TTL_MS;
+  const incomingSlug = assertValidSlug(input.slug);
+
+  const existing = getStoredReferral(now);
+
+  if (existing) {
+    return {
+      status: "kept-existing",
+      record: existing
+    };
+  }
+
+  const record = saveReferral({
+    slug: incomingSlug,
+    now,
+    ttlMs
+  });
+
+  return {
+    status: "stored",
+    record
+  };
+}
 
 ===== END FILE: apps/site-integration/src/referral/firstTouch.ts =====
 
