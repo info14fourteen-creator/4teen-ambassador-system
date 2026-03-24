@@ -25,6 +25,7 @@ export interface RecordVerifiedPurchaseResult {
 
 export interface ControllerClient {
   getAmbassadorBySlugHash(slugHash: string): Promise<ResolveAmbassadorBySlugHashResult>;
+  getBuyerAmbassador(buyerWallet: string): Promise<string | null>;
   isPurchaseProcessed(purchaseId: string): Promise<boolean>;
   canBindBuyerToAmbassador(buyerWallet: string, ambassadorWallet: string): Promise<boolean>;
   recordVerifiedPurchase(input: RecordVerifiedPurchaseInput): Promise<RecordVerifiedPurchaseResult>;
@@ -164,6 +165,14 @@ export class TronControllerClient implements ControllerClient {
       slugHash: normalizedSlugHash,
       ambassadorWallet
     };
+  }
+
+  async getBuyerAmbassador(buyerWallet: string): Promise<string | null> {
+    const normalizedBuyerWallet = normalizeAddress(buyerWallet, "buyerWallet");
+    const contract = await this.contract();
+
+    const result = await contract.getBuyerAmbassador(normalizedBuyerWallet).call();
+    return normalizeReturnedAddress(this.tronWeb, result);
   }
 
   async isPurchaseProcessed(purchaseId: string): Promise<boolean> {
