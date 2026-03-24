@@ -1,6 +1,6 @@
 # AI BUNDLE — SITE INTEGRATION
 
-Generated: 2026-03-24T03:17:20.725Z
+Generated: 2026-03-24T03:17:33.962Z
 
 ===== FILE: apps/site-integration/src/purchase/afterBuy.ts =====
 import { getStoredReferral } from "../referral/storage";
@@ -230,8 +230,8 @@ export function captureReferralFromUrl(options: CaptureReferralOptions = {}): Ca
 ===== END FILE: apps/site-integration/src/referral/capture.ts =====
 
 ===== FILE: apps/site-integration/src/referral/firstTouch.ts =====
+import { REFERRAL_TTL_MS } from "../../../../shared/config/referral";
 import {
-  DEFAULT_REFERRAL_TTL_MS,
   StoredReferralRecord,
   getStoredReferral,
   saveReferral
@@ -251,7 +251,7 @@ export interface ApplyFirstTouchResult {
 
 export function applyFirstTouch(input: ApplyFirstTouchInput): ApplyFirstTouchResult {
   const now = input.now ?? Date.now();
-  const ttlMs = input.ttlMs ?? DEFAULT_REFERRAL_TTL_MS;
+  const ttlMs = input.ttlMs ?? REFERRAL_TTL_MS;
   const incomingSlug = assertValidSlug(input.slug);
 
   const existing = getStoredReferral(now);
