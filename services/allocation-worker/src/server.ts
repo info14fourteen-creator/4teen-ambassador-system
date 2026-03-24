@@ -23,7 +23,11 @@ function assertNonEmpty(value: string | undefined, fieldName: string): string {
   return normalized;
 }
 
-function parsePositiveInteger(value: string | undefined, fallback: number, fieldName: string): number {
+function parsePositiveInteger(
+  value: string | undefined,
+  fallback: number,
+  fieldName: string
+): number {
   if (value == null || String(value).trim() === "") {
     return fallback;
   }
@@ -38,14 +42,25 @@ function parsePositiveInteger(value: string | undefined, fallback: number, field
 }
 
 function loadEnv(): EnvConfig {
-  return {
+  const config: EnvConfig = {
     port: parsePositiveInteger(process.env.PORT, 3000, "PORT"),
     tronFullHost: assertNonEmpty(process.env.TRON_FULL_HOST, "TRON_FULL_HOST"),
     tronPrivateKey: assertNonEmpty(process.env.TRON_PRIVATE_KEY, "TRON_PRIVATE_KEY"),
-    controllerContractAddress: process.env.FOURTEEN_CONTROLLER_CONTRACT?.trim() || undefined,
-    tokenContractAddress: process.env.FOURTEEN_TOKEN_CONTRACT?.trim() || undefined,
     scanPageSize: parsePositiveInteger(process.env.SCAN_PAGE_SIZE, 50, "SCAN_PAGE_SIZE")
   };
+
+  const controllerContractAddress = process.env.FOURTEEN_CONTROLLER_CONTRACT?.trim();
+  const tokenContractAddress = process.env.FOURTEEN_TOKEN_CONTRACT?.trim();
+
+  if (controllerContractAddress) {
+    config.controllerContractAddress = controllerContractAddress;
+  }
+
+  if (tokenContractAddress) {
+    config.tokenContractAddress = tokenContractAddress;
+  }
+
+  return config;
 }
 
 function sendJson(
@@ -150,11 +165,13 @@ async function bootstrap() {
       if (method === "POST" && pathname === "/scan") {
         const body = await readJsonBody(req);
 
+        const fingerprint =
+          typeof body.fingerprint === "string" && body.fingerprint.trim()
+            ? body.fingerprint.trim()
+            : undefined;
+
         const result = await scanner.fetchEvents({
-          fingerprint:
-            typeof body.fingerprint === "string" && body.fingerprint.trim()
-              ? body.fingerprint.trim()
-              : undefined
+          fingerprint
         });
 
         sendJson(res, 200, {
@@ -167,6 +184,7 @@ async function bootstrap() {
       if (method === "POST" && pathname === "/replay-failed") {
         const body = await readJsonBody(req);
         const purchaseId = assertNonEmpty(body.purchaseId, "purchaseId");
+
         const feeLimitSun =
           body.feeLimitSun !== undefined
             ? parsePositiveInteger(String(body.feeLimitSun), 0, "feeLimitSun")
