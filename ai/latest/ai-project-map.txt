@@ -1,6 +1,6 @@
 # AI PROJECT MAP
 
-Generated: 2026-03-24T20:17:32.230Z
+Generated: 2026-03-24T20:22:56.848Z
 
 ## CORE
 
@@ -25,6 +25,7 @@ Generated: 2026-03-24T20:17:32.230Z
 ## SITE
 
 - apps/site-integration/src/ambassador/hash.ts
+- apps/site-integration/src/ambassador/register.ts
 - apps/site-integration/src/purchase/afterBuy.ts
 - apps/site-integration/src/purchase/submitAttribution.ts
 - apps/site-integration/src/referral/capture.ts

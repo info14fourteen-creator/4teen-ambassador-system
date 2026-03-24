@@ -1,6 +1,6 @@
 # AI BUNDLE — WORKER
 
-Generated: 2026-03-24T20:17:32.232Z
+Generated: 2026-03-24T20:22:56.849Z
 
 ===== FILE: services/allocation-worker/.gitignore =====
 node_modules
