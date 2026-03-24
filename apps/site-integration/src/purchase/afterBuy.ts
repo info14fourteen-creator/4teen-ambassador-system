@@ -1,5 +1,9 @@
 import { getStoredReferral } from "../referral/storage";
-import { submitAttribution, SubmitAttributionOptions, SubmitAttributionResponse } from "./submitAttribution";
+import {
+  submitAttribution,
+  SubmitAttributionOptions,
+  SubmitAttributionResponse
+} from "./submitAttribution";
 
 export interface AfterBuyInput {
   txHash: string;
