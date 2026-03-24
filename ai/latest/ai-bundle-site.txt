@@ -1,6 +1,6 @@
 # AI BUNDLE — SITE INTEGRATION
 
-Generated: 2026-03-24T22:16:18.030Z
+Generated: 2026-03-24T22:17:05.213Z
 
 ===== FILE: apps/site-integration/src/ambassador/autoMount.ts =====
 import { mountAmbassadorWidget } from "./widget";
@@ -88,7 +88,13 @@ export function autoMountAmbassadorWidgetsOnReady(
 ===== FILE: apps/site-integration/src/ambassador/hash.ts =====
 import { keccak_256 } from "@noble/hashes/sha3";
 import { utf8ToBytes } from "@noble/hashes/utils";
-import { assertValidSlug, normalizeSlug } from "../../../../shared/utils/slug";
+
+export const ZERO_BYTES32 =
+  "0x0000000000000000000000000000000000000000000000000000000000000000";
+
+export interface BuildAmbassadorRegistrationHashesInput {
+  slug: string;
+}
 
 export interface AmbassadorRegistrationHashes {
   slug: string;
@@ -96,46 +102,45 @@ export interface AmbassadorRegistrationHashes {
   metaHash: string;
 }
 
-export interface BuildAmbassadorRegistrationHashesInput {
-  slug: string;
-  meta?: string | null;
+function assertNonEmpty(value: string, fieldName: string): string {
+  const normalized = String(value || "").trim();
+
+  if (!normalized) {
+    throw new Error(`${fieldName} is required`);
+  }
+
+  return normalized;
 }
 
-const ZERO_BYTES32 = `0x${"0".repeat(64)}`;
+export function normalizeSlug(value: string): string {
+  return assertNonEmpty(value, "slug")
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]/g, "");
+}
 
 function bytesToHex(bytes: Uint8Array): string {
   return Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
-function keccakUtf8ToBytes32Hex(value: string): string {
-  const hash = keccak_256(utf8ToBytes(value));
-  return `0x${bytesToHex(hash)}`;
-}
-
-function normalizeMeta(value: string | null | undefined): string | null {
-  if (value == null) {
-    return null;
-  }
-
-  const normalized = String(value).trim();
-  return normalized || null;
+export function keccakUtf8ToHex(value: string): string {
+  const bytes = utf8ToBytes(String(value || ""));
+  return `0x${bytesToHex(keccak_256(bytes))}`;
 }
 
 export function buildAmbassadorRegistrationHashes(
   input: BuildAmbassadorRegistrationHashesInput
 ): AmbassadorRegistrationHashes {
-  const slug = assertValidSlug(normalizeSlug(input.slug));
-  const meta = normalizeMeta(input.meta);
+  const slug = normalizeSlug(input.slug);
+
+  if (!slug) {
+    throw new Error("slug is required");
+  }
 
   return {
     slug,
-    slugHash: keccakUtf8ToBytes32Hex(slug),
-    metaHash: meta ? keccakUtf8ToBytes32Hex(meta) : ZERO_BYTES32
+    slugHash: keccakUtf8ToHex(slug),
+    metaHash: ZERO_BYTES32
   };
-}
-
-export function getZeroBytes32(): string {
-  return ZERO_BYTES32;
 }
 
 ===== END FILE: apps/site-integration/src/ambassador/hash.ts =====
