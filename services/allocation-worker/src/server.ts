@@ -1,6 +1,6 @@
 import http from "node:http";
 import { URL } from "node:url";
-import TronWeb from "tronweb";
+import TronWebModule from "tronweb";
 import { createAllocationWorker } from "./index";
 import { BuyTokensScanner } from "./run-scan";
 
@@ -11,6 +11,24 @@ interface EnvConfig {
   controllerContractAddress?: string;
   tokenContractAddress?: string;
   scanPageSize: number;
+}
+
+type TronWebConstructor = new (config: {
+  fullHost: string;
+  privateKey: string;
+}) => any;
+
+function getTronWebConstructor(): TronWebConstructor {
+  const candidate =
+    (TronWebModule as any)?.TronWeb ??
+    (TronWebModule as any)?.default ??
+    TronWebModule;
+
+  if (typeof candidate !== "function") {
+    throw new Error("Unable to resolve TronWeb constructor");
+  }
+
+  return candidate as TronWebConstructor;
 }
 
 function assertNonEmpty(value: string | undefined, fieldName: string): string {
@@ -127,6 +145,7 @@ function toErrorMessage(error: unknown): string {
 
 async function bootstrap() {
   const env = loadEnv();
+  const TronWeb = getTronWebConstructor();
 
   const tronWeb = new TronWeb({
     fullHost: env.tronFullHost,
