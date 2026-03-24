@@ -1,6 +1,6 @@
 # AI BUNDLE — WORKER
 
-Generated: 2026-03-24T04:52:18.864Z
+Generated: 2026-03-24T04:52:38.946Z
 
 ===== FILE: services/allocation-worker/Procfile =====
 web: npm run start
@@ -2187,3 +2187,29 @@ export class TronHashing implements AttributionHashing {
 }
 
 ===== END FILE: services/allocation-worker/src/tron/hashing.ts =====
+
+===== FILE: services/allocation-worker/tsconfig.json =====
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2022"],
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "outDir": "dist",
+    "rootDir": "src",
+    "strict": true,
+    "noImplicitAny": true,
+    "noUncheckedIndexedAccess": true,
+    "exactOptionalPropertyTypes": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "resolveJsonModule": true,
+    "declaration": false,
+    "sourceMap": true,
+    "types": ["node"]
+  },
+  "include": ["src/**/*.ts"],
+  "exclude": ["dist", "node_modules"]
+}
+
+===== END FILE: services/allocation-worker/tsconfig.json =====
