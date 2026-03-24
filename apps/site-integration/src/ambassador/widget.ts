@@ -4,7 +4,6 @@ export interface MountAmbassadorWidgetOptions {
   target: HTMLElement;
   backendBaseUrl: string;
   defaultSlug?: string;
-  defaultMeta?: string;
   title?: string;
   description?: string;
 }
@@ -121,19 +120,6 @@ export function mountAmbassadorWidget(
   slugInput.autocomplete = "off";
   slugInput.value = options.defaultSlug || "";
 
-  const metaLabel = createEl("label", "fourteen-ambassador-widget__label mt-4 block text-sm");
-  metaLabel.textContent = "Meta (optional)";
-
-  const metaInput = createEl(
-    "input",
-    "fourteen-ambassador-widget__input mt-2 w-full rounded-xl border border-white/10 bg-transparent px-3 py-3 outline-none"
-  ) as HTMLInputElement;
-  metaInput.type = "text";
-  metaInput.name = "meta";
-  metaInput.placeholder = "about me";
-  metaInput.autocomplete = "off";
-  metaInput.value = options.defaultMeta || "";
-
   const submitButton = createEl(
     "button",
     "fourteen-ambassador-widget__submit mt-4 rounded-2xl px-4 py-3 font-semibold"
@@ -204,7 +190,6 @@ export function mountAmbassadorWidget(
     try {
       const result = await registerAmbassador({
         slug: slugInput.value,
-        meta: metaInput.value || null,
         backendBaseUrl: options.backendBaseUrl
       });
 
@@ -227,10 +212,8 @@ export function mountAmbassadorWidget(
   });
 
   slugLabel.appendChild(slugInput);
-  metaLabel.appendChild(metaInput);
 
   form.appendChild(slugLabel);
-  form.appendChild(metaLabel);
   form.appendChild(submitButton);
 
   root.appendChild(header);
