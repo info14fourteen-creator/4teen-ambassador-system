@@ -1,6 +1,6 @@
 # AI BUNDLE — SITE INTEGRATION
 
-Generated: 2026-03-24T03:17:58.132Z
+Generated: 2026-03-24T03:18:15.169Z
 
 ===== FILE: apps/site-integration/src/purchase/afterBuy.ts =====
 import { getStoredReferral } from "../referral/storage";
@@ -137,7 +137,6 @@ export async function submitAttribution<T = unknown>(
   });
 
   let data: T | null = null;
-
   const responseText = await response.text();
 
   if (responseText) {
