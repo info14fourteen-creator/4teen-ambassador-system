@@ -93,6 +93,46 @@ function rowToPrivateIdentity(row: any): AmbassadorPrivateIdentity {
   };
 }
 
+function isUniqueViolation(error: unknown): boolean {
+  return (
+    !!error &&
+    typeof error === "object" &&
+    "code" in error &&
+    (error as { code?: unknown }).code === "23505"
+  );
+}
+
+function getConstraintName(error: unknown): string {
+  if (
+    error &&
+    typeof error === "object" &&
+    "constraint" in error &&
+    typeof (error as { constraint?: unknown }).constraint === "string"
+  ) {
+    return String((error as { constraint: string }).constraint);
+  }
+
+  return "";
+}
+
+function mapRegistryWriteError(error: unknown): Error {
+  if (!isUniqueViolation(error)) {
+    return error instanceof Error ? error : new Error("Registry write failed");
+  }
+
+  const constraint = getConstraintName(error);
+
+  if (constraint.includes("slug")) {
+    return new Error("Slug is already taken");
+  }
+
+  if (constraint.includes("wallet")) {
+    return new Error("Wallet is already registered");
+  }
+
+  return new Error("Ambassador registration conflict");
+}
+
 export async function initAmbassadorRegistryTables(): Promise<void> {
   await query(`
     CREATE TABLE IF NOT EXISTS ambassador_public_profiles (
@@ -307,7 +347,7 @@ export async function createAmbassadorRegistryRecord(
     };
   } catch (error) {
     await client.query("ROLLBACK");
-    throw error;
+    throw mapRegistryWriteError(error);
   } finally {
     client.release();
   }
@@ -316,16 +356,6 @@ export async function createAmbassadorRegistryRecord(
 export async function completeAmbassadorRegistration(
   input: CompleteAmbassadorRegistrationInput
 ): Promise<AmbassadorRegistryRecord> {
-  const existingBySlug = await getAmbassadorPublicProfileBySlug(input.slug);
-  if (existingBySlug) {
-    throw new Error("Slug is already taken");
-  }
-
-  const existingByWallet = await getAmbassadorRegistryRecordByWallet(input.wallet);
-  if (existingByWallet) {
-    throw new Error("Wallet is already registered");
-  }
-
   return createAmbassadorRegistryRecord({
     slug: input.slug,
     slugHash: input.slugHash,
