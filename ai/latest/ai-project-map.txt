@@ -1,6 +1,6 @@
 # AI PROJECT MAP
 
-Generated: 2026-03-24T04:52:02.984Z
+Generated: 2026-03-24T04:52:18.863Z
 
 ## CORE
 
@@ -32,6 +32,7 @@ Generated: 2026-03-24T04:52:02.984Z
 
 ## WORKER
 
+- services/allocation-worker/Procfile
 - services/allocation-worker/package.json
 - services/allocation-worker/src/app/processAttribution.ts
 - services/allocation-worker/src/db/purchases.ts

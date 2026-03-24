@@ -1,6 +1,11 @@
 # AI BUNDLE — WORKER
 
-Generated: 2026-03-24T04:52:02.987Z
+Generated: 2026-03-24T04:52:18.864Z
+
+===== FILE: services/allocation-worker/Procfile =====
+web: npm run start
+
+===== END FILE: services/allocation-worker/Procfile =====
 
 ===== FILE: services/allocation-worker/package.json =====
 {
