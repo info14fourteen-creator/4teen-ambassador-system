@@ -1,5 +1,5 @@
+import { REFERRAL_TTL_MS } from "../../../../shared/config/referral";
 import {
-  DEFAULT_REFERRAL_TTL_MS,
   StoredReferralRecord,
   getStoredReferral,
   saveReferral
@@ -19,7 +19,7 @@ export interface ApplyFirstTouchResult {
 
 export function applyFirstTouch(input: ApplyFirstTouchInput): ApplyFirstTouchResult {
   const now = input.now ?? Date.now();
-  const ttlMs = input.ttlMs ?? DEFAULT_REFERRAL_TTL_MS;
+  const ttlMs = input.ttlMs ?? REFERRAL_TTL_MS;
   const incomingSlug = assertValidSlug(input.slug);
 
   const existing = getStoredReferral(now);
