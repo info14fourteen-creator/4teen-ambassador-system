@@ -18,6 +18,7 @@ interface EnvConfig {
   controllerContractAddress?: string;
   tokenContractAddress?: string;
   scanPageSize: number;
+  allowedOrigins: string[];
 }
 
 type TronWebConstructor = new (config: {
@@ -75,12 +76,33 @@ function parsePositiveInteger(
   return parsed;
 }
 
+function parseAllowedOrigins(value: string | undefined): string[] {
+  const defaults = [
+    "https://4teen.me",
+    "https://www.4teen.me",
+    "http://localhost:3000",
+    "http://127.0.0.1:3000"
+  ];
+
+  if (!value || !value.trim()) {
+    return defaults;
+  }
+
+  const parsed = value
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean);
+
+  return parsed.length ? parsed : defaults;
+}
+
 function loadEnv(): EnvConfig {
   const config: EnvConfig = {
     port: parsePositiveInteger(process.env.PORT, 3000, "PORT"),
     tronFullHost: assertNonEmpty(process.env.TRON_FULL_HOST, "TRON_FULL_HOST"),
     tronPrivateKey: assertNonEmpty(process.env.TRON_PRIVATE_KEY, "TRON_PRIVATE_KEY"),
-    scanPageSize: parsePositiveInteger(process.env.SCAN_PAGE_SIZE, 50, "SCAN_PAGE_SIZE")
+    scanPageSize: parsePositiveInteger(process.env.SCAN_PAGE_SIZE, 50, "SCAN_PAGE_SIZE"),
+    allowedOrigins: parseAllowedOrigins(process.env.ALLOWED_ORIGINS)
   };
 
   const controllerContractAddress = process.env.FOURTEEN_CONTROLLER_CONTRACT?.trim();
@@ -97,12 +119,37 @@ function loadEnv(): EnvConfig {
   return config;
 }
 
-function sendJson(
+function getCorsOrigin(req: http.IncomingMessage, env: EnvConfig): string {
+  const origin = typeof req.headers.origin === "string" ? req.headers.origin.trim() : "";
+
+  if (origin && env.allowedOrigins.includes(origin)) {
+    return origin;
+  }
+
+  return env.allowedOrigins[0] || "https://4teen.me";
+}
+
+function setCorsHeaders(
+  req: http.IncomingMessage,
   res: http.ServerResponse,
+  env: EnvConfig
+): void {
+  res.setHeader("Access-Control-Allow-Origin", getCorsOrigin(req, env));
+  res.setHeader("Vary", "Origin");
+  res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+}
+
+function sendJson(
+  req: http.IncomingMessage,
+  res: http.ServerResponse,
+  env: EnvConfig,
   statusCode: number,
   payload: unknown
 ): void {
   const body = JSON.stringify(payload, null, 2);
+
+  setCorsHeaders(req, res, env);
 
   res.writeHead(statusCode, {
     "content-type": "application/json; charset=utf-8",
@@ -209,8 +256,15 @@ async function bootstrap() {
       const requestUrl = new URL(req.url || "/", `http://${host}`);
       const pathname = requestUrl.pathname;
 
+      if (method === "OPTIONS") {
+        setCorsHeaders(req, res, env);
+        res.writeHead(204);
+        res.end();
+        return;
+      }
+
       if (method === "GET" && pathname === "/health") {
-        sendJson(res, 200, {
+        sendJson(req, res, env, 200, {
           ok: true,
           service: "allocation-worker",
           timestamp: Date.now()
@@ -222,7 +276,7 @@ async function bootstrap() {
         const slug = normalizeIncomingSlug(requestUrl.searchParams.get("slug"));
         const taken = await isSlugTaken(slug);
 
-        sendJson(res, 200, {
+        sendJson(req, res, env, 200, {
           ok: true,
           slug,
           available: !taken
@@ -244,7 +298,7 @@ async function bootstrap() {
           now: Date.now()
         });
 
-        sendJson(res, 200, {
+        sendJson(req, res, env, 200, {
           ok: true,
           result: {
             slug: created.publicProfile.slug,
@@ -261,14 +315,14 @@ async function bootstrap() {
         const profile = await getAmbassadorPublicProfileBySlug(slug);
 
         if (!profile) {
-          sendJson(res, 404, {
+          sendJson(req, res, env, 404, {
             ok: false,
             error: "Ambassador profile not found"
           });
           return;
         }
 
-        sendJson(res, 200, {
+        sendJson(req, res, env, 200, {
           ok: true,
           result: {
             slug: profile.slug,
@@ -297,7 +351,7 @@ async function bootstrap() {
           now: Date.now()
         });
 
-        sendJson(res, 200, {
+        sendJson(req, res, env, 200, {
           ok: true,
           result
         });
@@ -316,7 +370,7 @@ async function bootstrap() {
           fingerprint
         });
 
-        sendJson(res, 200, {
+        sendJson(req, res, env, 200, {
           ok: true,
           result
         });
@@ -341,7 +395,7 @@ async function bootstrap() {
           Date.now()
         );
 
-        sendJson(res, 200, {
+        sendJson(req, res, env, 200, {
           ok: true,
           result
         });
@@ -351,7 +405,7 @@ async function bootstrap() {
       if (method === "GET" && pathname === "/failures") {
         const failures = await worker.store.listReplayableFailures();
 
-        sendJson(res, 200, {
+        sendJson(req, res, env, 200, {
           ok: true,
           count: failures.length,
           failures
@@ -359,12 +413,12 @@ async function bootstrap() {
         return;
       }
 
-      sendJson(res, 404, {
+      sendJson(req, res, env, 404, {
         ok: false,
         error: "Not found"
       });
     } catch (error) {
-      sendJson(res, 500, {
+      sendJson(req, res, env, 500, {
         ok: false,
         error: toErrorMessage(error)
       });
@@ -376,7 +430,8 @@ async function bootstrap() {
       JSON.stringify({
         ok: true,
         message: "allocation-worker started",
-        port: env.port
+        port: env.port,
+        allowedOrigins: env.allowedOrigins
       })
     );
   });
