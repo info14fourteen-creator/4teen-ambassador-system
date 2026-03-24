@@ -67,7 +67,6 @@ export async function submitAttribution<T = unknown>(
   });
 
   let data: T | null = null;
-
   const responseText = await response.text();
 
   if (responseText) {
