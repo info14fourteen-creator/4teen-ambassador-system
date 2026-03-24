@@ -1,7 +1,8 @@
+import {
+  REFERRAL_STORAGE_KEY,
+  REFERRAL_TTL_MS
+} from "../../../../shared/config/referral";
 import { assertValidSlug, normalizeSlug } from "../../../../shared/utils/slug";
-
-export const REFERRAL_STORAGE_KEY = "fourteen_referral_first_touch_v1";
-export const DEFAULT_REFERRAL_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 
 export interface StoredReferralRecord {
   slug: string;
@@ -76,7 +77,7 @@ export function saveReferral(input: SaveReferralInput): StoredReferralRecord {
   }
 
   const now = input.now ?? Date.now();
-  const ttlMs = input.ttlMs ?? DEFAULT_REFERRAL_TTL_MS;
+  const ttlMs = input.ttlMs ?? REFERRAL_TTL_MS;
   const slug = assertValidSlug(input.slug);
 
   if (ttlMs <= 0) {
