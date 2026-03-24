@@ -11,6 +11,7 @@
   },
   "dependencies": {
     "@noble/hashes": "^1.8.0",
+    "pg": "^8.13.1",
     "tronweb": "^6.0.4"
   },
   "devDependencies": {
