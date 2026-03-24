@@ -1,7 +1,8 @@
-export const SLUG_MIN_LENGTH = 3;
-export const SLUG_MAX_LENGTH = 64;
-
-const SLUG_PATTERN = /^[a-z0-9](?:[a-z0-9-]{1,62}[a-z0-9])?$/;
+import {
+  REFERRAL_SLUG_MAX_LENGTH,
+  REFERRAL_SLUG_MIN_LENGTH,
+  REFERRAL_SLUG_PATTERN
+} from "../config/referral";
 
 export function normalizeSlug(input: string): string {
   return String(input || "").trim().toLowerCase();
@@ -10,10 +11,10 @@ export function normalizeSlug(input: string): string {
 export function isValidSlug(slug: string): boolean {
   const normalized = normalizeSlug(slug);
 
-  if (normalized.length < SLUG_MIN_LENGTH) return false;
-  if (normalized.length > SLUG_MAX_LENGTH) return false;
+  if (normalized.length < REFERRAL_SLUG_MIN_LENGTH) return false;
+  if (normalized.length > REFERRAL_SLUG_MAX_LENGTH) return false;
 
-  return SLUG_PATTERN.test(normalized);
+  return REFERRAL_SLUG_PATTERN.test(normalized);
 }
 
 export function assertValidSlug(slug: string): string {
