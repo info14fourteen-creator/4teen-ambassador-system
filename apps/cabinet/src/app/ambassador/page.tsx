@@ -3,8 +3,8 @@
 import { useMemo } from "react";
 import { buildTronscanTransactionUrl } from "../../../../../shared/config/contracts";
 import { useAmbassadorDashboard } from "../../hooks/useAmbassadorDashboard";
-import { buildWalletExplorerUrl } from "../../lib/telegram/link";
 import { levelToLabel } from "../../lib/blockchain/controller";
+import { buildWalletExplorerUrl } from "../../lib/telegram/link";
 
 function ValueCard({
   label,
@@ -18,7 +18,7 @@ function ValueCard({
   return (
     <div className="rounded-2xl border border-white/10 bg-white/5 p-4">
       <div className="text-xs uppercase tracking-[0.18em] text-white/45">{label}</div>
-      <div className="mt-2 text-2xl font-semibold text-white break-words">{value}</div>
+      <div className="mt-2 break-words text-2xl font-semibold text-white">{value}</div>
       {hint ? <div className="mt-1 text-sm text-white/45">{hint}</div> : null}
     </div>
   );
@@ -45,6 +45,16 @@ function ActionButton({
       {children}
     </button>
   );
+}
+
+function formatDate(timestamp: number): string {
+  if (!timestamp) return "—";
+
+  try {
+    return new Date(timestamp * 1000).toLocaleString();
+  } catch {
+    return "—";
+  }
 }
 
 export default function AmbassadorPage() {
@@ -75,7 +85,7 @@ export default function AmbassadorPage() {
   if (isLoading) {
     return (
       <main className="min-h-screen bg-[#111] px-6 py-10 text-white">
-        <div className="mx-auto max-w-5xl">
+        <div className="mx-auto max-w-6xl">
           <div className="rounded-3xl border border-white/10 bg-white/5 p-6">
             Loading ambassador dashboard...
           </div>
@@ -91,21 +101,21 @@ export default function AmbassadorPage() {
 
   return (
     <main className="min-h-screen bg-[#111] px-6 py-10 text-white">
-      <div className="mx-auto max-w-5xl space-y-6">
+      <div className="mx-auto max-w-6xl space-y-6">
         <section className="rounded-3xl border border-white/10 bg-white/5 p-6">
-          <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
+          <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
             <div>
               <div className="text-xs uppercase tracking-[0.18em] text-white/45">
                 4TEEN Ambassador Cabinet
               </div>
               <h1 className="mt-2 text-3xl font-semibold">Your ambassador dashboard</h1>
-              <p className="mt-2 max-w-2xl text-sm text-white/60">
-                Live on-chain cabinet for ambassador status, reward level, buyer count,
-                volume, accrued rewards, claimable rewards, and withdrawals.
+              <p className="mt-2 max-w-3xl text-sm text-white/60">
+                Live on-chain cabinet for ambassador status, level, buyers, tracked
+                volume, accrued rewards, claimable rewards and withdrawals.
               </p>
             </div>
 
-            <div className="flex gap-3">
+            <div className="flex flex-wrap gap-3">
               <ActionButton onClick={refresh} disabled={isRefreshing || isWithdrawing}>
                 {isRefreshing ? "Refreshing..." : "Refresh"}
               </ActionButton>
@@ -183,7 +193,7 @@ export default function AmbassadorPage() {
           />
         </section>
 
-        <section className="grid gap-4 md:grid-cols-3">
+        <section className="grid gap-4 md:grid-cols-4">
           <ValueCard
             label="Current level"
             value={levelToLabel(progress?.currentLevel ?? 0)}
@@ -198,6 +208,10 @@ export default function AmbassadorPage() {
             label="Remaining"
             value={String(progress?.remainingToNextLevel ?? 0)}
             hint="Buyers left to next level"
+          />
+          <ValueCard
+            label="Created at"
+            value={formatDate(identity?.createdAt ?? 0)}
           />
         </section>
 
