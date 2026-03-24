@@ -18,7 +18,6 @@ export interface AmbassadorRegistrationResult {
 
 export interface RegisterAmbassadorInput {
   slug: string;
-  meta?: string | null;
   backendBaseUrl: string;
 }
 
@@ -89,13 +88,16 @@ async function completeRegistration(
     wallet: string;
   }
 ): Promise<{ referralLink: string }> {
-  const response = await fetch(`${normalizeBaseUrl(backendBaseUrl)}/ambassador/register-complete`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json"
-    },
-    body: JSON.stringify(input)
-  });
+  const response = await fetch(
+    `${normalizeBaseUrl(backendBaseUrl)}/ambassador/register-complete`,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify(input)
+    }
+  );
 
   const payload = await response.json();
 
@@ -115,8 +117,7 @@ export async function registerAmbassador(
   const wallet = await getConnectedWallet();
 
   const hashes = buildAmbassadorRegistrationHashes({
-    slug: input.slug,
-    meta: input.meta ?? null
+    slug: input.slug
   });
 
   await ensureSlugAvailable(backendBaseUrl, hashes.slug);
