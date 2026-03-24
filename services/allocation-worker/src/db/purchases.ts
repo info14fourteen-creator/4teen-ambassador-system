@@ -1,3 +1,242 @@
+export type PurchaseProcessingStatus =
+  | "received"
+  | "verified"
+  | "allocated"
+  | "failed"
+  | "ignored";
+
+export interface PurchaseRecord {
+  purchaseId: string;
+  txHash: string;
+  buyerWallet: string;
+  ambassadorSlug: string | null;
+  ambassadorWallet: string | null;
+  purchaseAmountSun: string;
+  ownerShareSun: string;
+  status: PurchaseProcessingStatus;
+  failureReason: string | null;
+  source: "frontend-attribution" | "event-scan" | "manual-replay";
+  createdAt: number;
+  updatedAt: number;
+  allocatedAt: number | null;
+}
+
+export interface CreatePurchaseRecordInput {
+  purchaseId: string;
+  txHash: string;
+  buyerWallet: string;
+  ambassadorSlug?: string | null;
+  ambassadorWallet?: string | null;
+  purchaseAmountSun?: string;
+  ownerShareSun?: string;
+  source?: PurchaseRecord["source"];
+  status?: PurchaseProcessingStatus;
+  failureReason?: string | null;
+  now?: number;
+}
+
+export interface UpdatePurchaseRecordInput {
+  purchaseAmountSun?: string;
+  ownerShareSun?: string;
+  ambassadorSlug?: string | null;
+  ambassadorWallet?: string | null;
+  status?: PurchaseProcessingStatus;
+  failureReason?: string | null;
+  allocatedAt?: number | null;
+  now?: number;
+}
+
+export interface PurchaseStore {
+  getByPurchaseId(purchaseId: string): Promise<PurchaseRecord | null>;
+  getByTxHash(txHash: string): Promise<PurchaseRecord | null>;
+  create(input: CreatePurchaseRecordInput): Promise<PurchaseRecord>;
+  update(purchaseId: string, input: UpdatePurchaseRecordInput): Promise<PurchaseRecord>;
+  markVerified(
+    purchaseId: string,
+    input: {
+      purchaseAmountSun: string;
+      ownerShareSun: string;
+      ambassadorSlug?: string | null;
+      ambassadorWallet?: string | null;
+      now?: number;
+    }
+  ): Promise<PurchaseRecord>;
+  markAllocated(
+    purchaseId: string,
+    input?: {
+      ambassadorWallet?: string | null;
+      now?: number;
+    }
+  ): Promise<PurchaseRecord>;
+  markFailed(
+    purchaseId: string,
+    reason: string,
+    now?: number
+  ): Promise<PurchaseRecord>;
+  markIgnored(
+    purchaseId: string,
+    reason: string,
+    now?: number
+  ): Promise<PurchaseRecord>;
+  listReplayableFailures(): Promise<PurchaseRecord[]>;
+  hasProcessedPurchase(purchaseId: string): Promise<boolean>;
+}
+
+function assertNonEmpty(value: string, fieldName: string): string {
+  const normalized = String(value || "").trim();
+
+  if (!normalized) {
+    throw new Error(`${fieldName} is required`);
+  }
+
+  return normalized;
+}
+
+function normalizeWallet(value: string | null | undefined): string | null {
+  if (value == null) return null;
+
+  const normalized = String(value).trim();
+  return normalized ? normalized : null;
+}
+
+function normalizeOptionalString(value: string | null | undefined): string | null {
+  if (value == null) return null;
+
+  const normalized = String(value).trim();
+  return normalized ? normalized : null;
+}
+
+function normalizeSunAmount(value: string | number | bigint | undefined): string {
+  if (value == null) return "0";
+
+  const normalized = String(value).trim();
+
+  if (!/^\d+$/.test(normalized)) {
+    throw new Error("SUN amount must be a non-negative integer string");
+  }
+
+  return normalized;
+}
+
+function normalizeStatus(status?: PurchaseProcessingStatus): PurchaseProcessingStatus {
+  return status ?? "received";
+}
+
+function createRecord(input: CreatePurchaseRecordInput): PurchaseRecord {
+  const now = input.now ?? Date.now();
+  const status = normalizeStatus(input.status);
+
+  return {
+    purchaseId: assertNonEmpty(input.purchaseId, "purchaseId"),
+    txHash: assertNonEmpty(input.txHash, "txHash"),
+    buyerWallet: assertNonEmpty(input.buyerWallet, "buyerWallet"),
+    ambassadorSlug: normalizeOptionalString(input.ambassadorSlug ?? null),
+    ambassadorWallet: normalizeWallet(input.ambassadorWallet ?? null),
+    purchaseAmountSun: normalizeSunAmount(input.purchaseAmountSun),
+    ownerShareSun: normalizeSunAmount(input.ownerShareSun),
+    status,
+    failureReason: normalizeOptionalString(input.failureReason ?? null),
+    source: input.source ?? "frontend-attribution",
+    createdAt: now,
+    updatedAt: now,
+    allocatedAt: status === "allocated" ? now : null
+  };
+}
+
+function mergeRecord(
+  current: PurchaseRecord,
+  input: UpdatePurchaseRecordInput
+): PurchaseRecord {
+  const nextStatus = input.status ?? current.status;
+  const nextAllocatedAt =
+    input.allocatedAt !== undefined
+      ? input.allocatedAt
+      : nextStatus === "allocated"
+        ? current.allocatedAt ?? (input.now ?? Date.now())
+        : current.allocatedAt;
+
+  return {
+    ...current,
+    purchaseAmountSun:
+      input.purchaseAmountSun !== undefined
+        ? normalizeSunAmount(input.purchaseAmountSun)
+        : current.purchaseAmountSun,
+    ownerShareSun:
+      input.ownerShareSun !== undefined
+        ? normalizeSunAmount(input.ownerShareSun)
+        : current.ownerShareSun,
+    ambassadorSlug:
+      input.ambassadorSlug !== undefined
+        ? normalizeOptionalString(input.ambassadorSlug)
+        : current.ambassadorSlug,
+    ambassadorWallet:
+      input.ambassadorWallet !== undefined
+        ? normalizeWallet(input.ambassadorWallet)
+        : current.ambassadorWallet,
+    status: nextStatus,
+    failureReason:
+      input.failureReason !== undefined
+        ? normalizeOptionalString(input.failureReason)
+        : current.failureReason,
+    allocatedAt: nextAllocatedAt,
+    updatedAt: input.now ?? Date.now()
+  };
+}
+
+export class InMemoryPurchaseStore implements PurchaseStore {
+  private readonly byPurchaseId = new Map<string, PurchaseRecord>();
+  private readonly purchaseIdByTxHash = new Map<string, string>();
+
+  async getByPurchaseId(purchaseId: string): Promise<PurchaseRecord | null> {
+    const normalizedPurchaseId = assertNonEmpty(purchaseId, "purchaseId");
+    return this.byPurchaseId.get(normalizedPurchaseId) ?? null;
+  }
+
+  async getByTxHash(txHash: string): Promise<PurchaseRecord | null> {
+    const normalizedTxHash = assertNonEmpty(txHash, "txHash");
+    const purchaseId = this.purchaseIdByTxHash.get(normalizedTxHash);
+
+    if (!purchaseId) {
+      return null;
+    }
+
+    return this.byPurchaseId.get(purchaseId) ?? null;
+  }
+
+  async create(input: CreatePurchaseRecordInput): Promise<PurchaseRecord> {
+    const record = createRecord(input);
+
+    if (this.byPurchaseId.has(record.purchaseId)) {
+      throw new Error(`Purchase already exists for purchaseId: ${record.purchaseId}`);
+    }
+
+    if (this.purchaseIdByTxHash.has(record.txHash)) {
+      throw new Error(`Purchase already exists for txHash: ${record.txHash}`);
+    }
+
+    this.byPurchaseId.set(record.purchaseId, record);
+    this.purchaseIdByTxHash.set(record.txHash, record.purchaseId);
+
+    return record;
+  }
+
+  async update(
+    purchaseId: string,
+    input: UpdatePurchaseRecordInput
+  ): Promise<PurchaseRecord> {
+    const normalizedPurchaseId = assertNonEmpty(purchaseId, "purchaseId");
+    const current = this.byPurchaseId.get(normalizedPurchaseId);
+
+    if (!current) {
+      throw new Error(`Purchase not found: ${normalizedPurchaseId}`);
+    }
+
+    const updated = mergeRecord(current, input);
+    this.byPurchaseId.set(normalizedPurchaseId, updated);
+
+    return updated;
+  }
+
   async markVerified(
     purchaseId: string,
     input: {
@@ -87,3 +326,20 @@
 
     return this.update(purchaseId, updateInput);
   }
+
+  async listReplayableFailures(): Promise<PurchaseRecord[]> {
+    return Array.from(this.byPurchaseId.values()).filter(
+      (record) => record.status === "failed"
+    );
+  }
+
+  async hasProcessedPurchase(purchaseId: string): Promise<boolean> {
+    const record = await this.getByPurchaseId(purchaseId);
+
+    if (!record) {
+      return false;
+    }
+
+    return record.status === "allocated" || record.status === "ignored";
+  }
+}
