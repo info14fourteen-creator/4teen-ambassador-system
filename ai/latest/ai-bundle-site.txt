@@ -1,6 +1,89 @@
 # AI BUNDLE — SITE INTEGRATION
 
-Generated: 2026-03-24T20:25:57.284Z
+Generated: 2026-03-24T20:28:33.657Z
+
+===== FILE: apps/site-integration/src/ambassador/autoMount.ts =====
+import { mountAmbassadorWidget } from "./widget";
+
+export interface AutoMountAmbassadorWidgetsOptions {
+  backendBaseUrl: string;
+  selector?: string;
+}
+
+const DEFAULT_SELECTOR = '[data-fourteen-ambassador-widget="register"]';
+
+function assertNonEmpty(value: string, fieldName: string): string {
+  const normalized = String(value || "").trim();
+
+  if (!normalized) {
+    throw new Error(`${fieldName} is required`);
+  }
+
+  return normalized;
+}
+
+function isHTMLElement(value: Element | null): value is HTMLElement {
+  return value instanceof HTMLElement;
+}
+
+function readOptionalAttr(
+  element: HTMLElement,
+  name: string
+): string | undefined {
+  const value = element.getAttribute(name);
+
+  if (value == null) {
+    return undefined;
+  }
+
+  const normalized = value.trim();
+  return normalized || undefined;
+}
+
+export function autoMountAmbassadorWidgets(
+  options: AutoMountAmbassadorWidgetsOptions
+): void {
+  const backendBaseUrl = assertNonEmpty(options.backendBaseUrl, "backendBaseUrl");
+  const selector = options.selector || DEFAULT_SELECTOR;
+
+  const elements = Array.from(document.querySelectorAll(selector));
+
+  for (const element of elements) {
+    if (!isHTMLElement(element)) {
+      continue;
+    }
+
+    if (element.dataset.fourteenAmbassadorMounted === "true") {
+      continue;
+    }
+
+    mountAmbassadorWidget({
+      target: element,
+      backendBaseUrl,
+      defaultSlug: readOptionalAttr(element, "data-default-slug"),
+      defaultMeta: readOptionalAttr(element, "data-default-meta"),
+      title: readOptionalAttr(element, "data-title"),
+      description: readOptionalAttr(element, "data-description")
+    });
+
+    element.dataset.fourteenAmbassadorMounted = "true";
+  }
+}
+
+export function autoMountAmbassadorWidgetsOnReady(
+  options: AutoMountAmbassadorWidgetsOptions
+): void {
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", () => {
+      autoMountAmbassadorWidgets(options);
+    });
+    return;
+  }
+
+  autoMountAmbassadorWidgets(options);
+}
+
+===== END FILE: apps/site-integration/src/ambassador/autoMount.ts =====
 
 ===== FILE: apps/site-integration/src/ambassador/hash.ts =====
 import { keccak_256 } from "@noble/hashes/sha3";
