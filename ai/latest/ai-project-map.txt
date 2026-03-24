@@ -1,6 +1,6 @@
 # AI PROJECT MAP
 
-Generated: 2026-03-24T04:50:02.104Z
+Generated: 2026-03-24T04:51:09.050Z
 
 ## CORE
 
@@ -39,6 +39,7 @@ Generated: 2026-03-24T04:50:02.104Z
 - services/allocation-worker/src/index.ts
 - services/allocation-worker/src/jobs/allocatePurchase.ts
 - services/allocation-worker/src/run-scan.ts
+- services/allocation-worker/src/server.ts
 - services/allocation-worker/src/tron/controller.ts
 - services/allocation-worker/src/tron/hashing.ts
 

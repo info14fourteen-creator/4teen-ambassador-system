@@ -1,6 +1,6 @@
 # AI BUNDLE — WORKER
 
-Generated: 2026-03-24T04:50:02.107Z
+Generated: 2026-03-24T04:51:09.052Z
 
 ===== FILE: services/allocation-worker/src/app/processAttribution.ts =====
 import {
@@ -1619,6 +1619,232 @@ export class BuyTokensScanner {
 }
 
 ===== END FILE: services/allocation-worker/src/run-scan.ts =====
+
+===== FILE: services/allocation-worker/src/server.ts =====
+import http from "node:http";
+import { URL } from "node:url";
+import TronWeb from "tronweb";
+import { createAllocationWorker } from "./index";
+import { BuyTokensScanner } from "./run-scan";
+
+interface EnvConfig {
+  port: number;
+  tronFullHost: string;
+  tronPrivateKey: string;
+  controllerContractAddress?: string;
+  tokenContractAddress?: string;
+  scanPageSize: number;
+}
+
+function assertNonEmpty(value: string | undefined, fieldName: string): string {
+  const normalized = String(value || "").trim();
+
+  if (!normalized) {
+    throw new Error(`${fieldName} is required`);
+  }
+
+  return normalized;
+}
+
+function parsePositiveInteger(value: string | undefined, fallback: number, fieldName: string): number {
+  if (value == null || String(value).trim() === "") {
+    return fallback;
+  }
+
+  const parsed = Number(value);
+
+  if (!Number.isInteger(parsed) || parsed <= 0) {
+    throw new Error(`${fieldName} must be a positive integer`);
+  }
+
+  return parsed;
+}
+
+function loadEnv(): EnvConfig {
+  return {
+    port: parsePositiveInteger(process.env.PORT, 3000, "PORT"),
+    tronFullHost: assertNonEmpty(process.env.TRON_FULL_HOST, "TRON_FULL_HOST"),
+    tronPrivateKey: assertNonEmpty(process.env.TRON_PRIVATE_KEY, "TRON_PRIVATE_KEY"),
+    controllerContractAddress: process.env.FOURTEEN_CONTROLLER_CONTRACT?.trim() || undefined,
+    tokenContractAddress: process.env.FOURTEEN_TOKEN_CONTRACT?.trim() || undefined,
+    scanPageSize: parsePositiveInteger(process.env.SCAN_PAGE_SIZE, 50, "SCAN_PAGE_SIZE")
+  };
+}
+
+function sendJson(
+  res: http.ServerResponse,
+  statusCode: number,
+  payload: unknown
+): void {
+  const body = JSON.stringify(payload, null, 2);
+
+  res.writeHead(statusCode, {
+    "content-type": "application/json; charset=utf-8",
+    "content-length": Buffer.byteLength(body).toString()
+  });
+
+  res.end(body);
+}
+
+function readJsonBody(req: http.IncomingMessage): Promise<any> {
+  return new Promise((resolve, reject) => {
+    const chunks: Buffer[] = [];
+
+    req.on("data", (chunk) => {
+      chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+    });
+
+    req.on("end", () => {
+      const raw = Buffer.concat(chunks).toString("utf-8").trim();
+
+      if (!raw) {
+        resolve({});
+        return;
+      }
+
+      try {
+        resolve(JSON.parse(raw));
+      } catch {
+        reject(new Error("Invalid JSON body"));
+      }
+    });
+
+    req.on("error", reject);
+  });
+}
+
+function toErrorMessage(error: unknown): string {
+  if (typeof error === "string" && error.trim()) {
+    return error.trim();
+  }
+
+  if (
+    error &&
+    typeof error === "object" &&
+    "message" in error &&
+    typeof (error as { message?: unknown }).message === "string"
+  ) {
+    const message = (error as { message: string }).message.trim();
+    if (message) {
+      return message;
+    }
+  }
+
+  return "Unknown error";
+}
+
+async function bootstrap() {
+  const env = loadEnv();
+
+  const tronWeb = new TronWeb({
+    fullHost: env.tronFullHost,
+    privateKey: env.tronPrivateKey
+  });
+
+  const worker = createAllocationWorker({
+    tronWeb,
+    controllerContractAddress: env.controllerContractAddress
+  });
+
+  const scanner = new BuyTokensScanner({
+    tronWeb,
+    processor: worker.processor,
+    store: worker.store,
+    tokenContractAddress: env.tokenContractAddress,
+    pageSize: env.scanPageSize
+  });
+
+  const server = http.createServer(async (req, res) => {
+    try {
+      const method = req.method || "GET";
+      const host = req.headers.host || "localhost";
+      const requestUrl = new URL(req.url || "/", `http://${host}`);
+      const pathname = requestUrl.pathname;
+
+      if (method === "GET" && pathname === "/health") {
+        sendJson(res, 200, {
+          ok: true,
+          service: "allocation-worker",
+          timestamp: Date.now()
+        });
+        return;
+      }
+
+      if (method === "POST" && pathname === "/scan") {
+        const body = await readJsonBody(req);
+
+        const result = await scanner.fetchEvents({
+          fingerprint:
+            typeof body.fingerprint === "string" && body.fingerprint.trim()
+              ? body.fingerprint.trim()
+              : undefined
+        });
+
+        sendJson(res, 200, {
+          ok: true,
+          result
+        });
+        return;
+      }
+
+      if (method === "POST" && pathname === "/replay-failed") {
+        const body = await readJsonBody(req);
+        const purchaseId = assertNonEmpty(body.purchaseId, "purchaseId");
+        const feeLimitSun =
+          body.feeLimitSun !== undefined
+            ? parsePositiveInteger(String(body.feeLimitSun), 0, "feeLimitSun")
+            : undefined;
+
+        const result = await worker.processor.replayFailedAllocation(
+          purchaseId,
+          feeLimitSun,
+          Date.now()
+        );
+
+        sendJson(res, 200, {
+          ok: true,
+          result
+        });
+        return;
+      }
+
+      if (method === "GET" && pathname === "/failures") {
+        const failures = await worker.store.listReplayableFailures();
+
+        sendJson(res, 200, {
+          ok: true,
+          count: failures.length,
+          failures
+        });
+        return;
+      }
+
+      sendJson(res, 404, {
+        ok: false,
+        error: "Not found"
+      });
+    } catch (error) {
+      sendJson(res, 500, {
+        ok: false,
+        error: toErrorMessage(error)
+      });
+    }
+  });
+
+  server.listen(env.port, () => {
+    console.log(
+      JSON.stringify({
+        ok: true,
+        message: "allocation-worker started",
+        port: env.port
+      })
+    );
+  });
+}
+
+void bootstrap();
+
+===== END FILE: services/allocation-worker/src/server.ts =====
 
 ===== FILE: services/allocation-worker/src/tron/controller.ts =====
 import { FOURTEEN_CONTROLLER_CONTRACT } from "../../../../shared/config/contracts";
