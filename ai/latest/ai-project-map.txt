@@ -1,6 +1,6 @@
 # AI PROJECT MAP
 
-Generated: 2026-03-24T04:21:47.962Z
+Generated: 2026-03-24T04:23:40.904Z
 
 ## CORE
 
@@ -33,6 +33,7 @@ Generated: 2026-03-24T04:21:47.962Z
 ## WORKER
 
 - services/allocation-worker/src/db/purchases.ts
+- services/allocation-worker/src/tron/controller.ts
 
 ## TELEGRAM
 
