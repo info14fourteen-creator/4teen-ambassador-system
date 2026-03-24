@@ -1,6 +1,6 @@
 # AI BUNDLE — SITE INTEGRATION
 
-Generated: 2026-03-24T04:33:40.225Z
+Generated: 2026-03-24T04:33:59.380Z
 
 ===== FILE: apps/site-integration/src/purchase/afterBuy.ts =====
 import { getStoredReferral } from "../referral/storage";
