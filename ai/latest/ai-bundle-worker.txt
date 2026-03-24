@@ -1,6 +1,13 @@
 # AI BUNDLE — WORKER
 
-Generated: 2026-03-24T04:52:38.946Z
+Generated: 2026-03-24T04:53:03.041Z
+
+===== FILE: services/allocation-worker/.gitignore =====
+node_modules
+dist
+.env
+
+===== END FILE: services/allocation-worker/.gitignore =====
 
 ===== FILE: services/allocation-worker/Procfile =====
 web: npm run start
