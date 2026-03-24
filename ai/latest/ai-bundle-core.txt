@@ -1,6 +1,6 @@
 # AI BUNDLE — CORE
 
-Generated: 2026-03-24T06:33:58.077Z
+Generated: 2026-03-24T06:45:58.042Z
 
 ===== FILE: .github/workflows/build-ai-bundles.yml =====
 name: Build and Publish AI Bundles
@@ -702,7 +702,7 @@ Everything must work step-by-step.
   "private": true,
   "scripts": {
     "build": "npm run build:worker",
-    "build:worker": "npm --prefix services/allocation-worker install && npm --prefix services/allocation-worker run build",
+    "build:worker": "npm --prefix services/allocation-worker install --include=dev && npm --prefix services/allocation-worker run build",
     "start": "npm run start:worker",
     "start:worker": "npm --prefix services/allocation-worker run start",
     "build:ai": "node scripts/build-ai-bundles.mjs",
