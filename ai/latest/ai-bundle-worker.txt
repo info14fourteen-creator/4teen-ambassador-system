@@ -1,6 +1,6 @@
 # AI BUNDLE — WORKER
 
-Generated: 2026-03-24T04:43:17.437Z
+Generated: 2026-03-24T04:44:27.077Z
 
 ===== FILE: services/allocation-worker/src/app/processAttribution.ts =====
 import {
@@ -242,7 +242,7 @@ export interface PurchaseStore {
     reason: string,
     now?: number
   ): Promise<PurchaseRecord>;
-  listReplayableFailures(): Promise<PurchaseRecord>;
+  listReplayableFailures(): Promise<PurchaseRecord[]>;
   hasProcessedPurchase(purchaseId: string): Promise<boolean>;
 }
 
