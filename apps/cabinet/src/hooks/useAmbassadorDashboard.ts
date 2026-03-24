@@ -2,9 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
-  AmbassadorIdentity,
-  AmbassadorStats,
-  RewardSummary,
+  AmbassadorDashboard,
   WithdrawResult,
   getConnectedWalletAddress,
   readAmbassadorDashboard,
@@ -13,9 +11,7 @@ import {
 
 export interface AmbassadorDashboardState {
   wallet: string;
-  identity: AmbassadorIdentity | null;
-  stats: AmbassadorStats | null;
-  rewards: RewardSummary | null;
+  dashboard: AmbassadorDashboard | null;
   isConnected: boolean;
   isRegistered: boolean;
   isLoading: boolean;
@@ -33,9 +29,7 @@ export interface UseAmbassadorDashboardResult extends AmbassadorDashboardState {
 
 const INITIAL_STATE: AmbassadorDashboardState = {
   wallet: "",
-  identity: null,
-  stats: null,
-  rewards: null,
+  dashboard: null,
   isConnected: false,
   isRegistered: false,
   isLoading: true,
@@ -79,9 +73,7 @@ export function useAmbassadorDashboard(): UseAmbassadorDashboardResult {
       setState((current) => ({
         ...current,
         wallet,
-        identity: dashboard.identity,
-        stats: dashboard.stats,
-        rewards: dashboard.rewards,
+        dashboard,
         isConnected: true,
         isRegistered: dashboard.identity.exists,
         isLoading: false,
@@ -94,9 +86,7 @@ export function useAmbassadorDashboard(): UseAmbassadorDashboardResult {
       setState((current) => ({
         ...current,
         wallet: "",
-        identity: null,
-        stats: null,
-        rewards: null,
+        dashboard: null,
         isConnected: false,
         isRegistered: false,
         isLoading: false,
@@ -117,16 +107,16 @@ export function useAmbassadorDashboard(): UseAmbassadorDashboardResult {
       void load("refresh");
     };
 
-    const handleTronLinkMessage = () => {
+    const handleMessage = () => {
       void load("refresh");
     };
 
     window.addEventListener("focus", handleFocus);
-    window.addEventListener("message", handleTronLinkMessage);
+    window.addEventListener("message", handleMessage);
 
     return () => {
       window.removeEventListener("focus", handleFocus);
-      window.removeEventListener("message", handleTronLinkMessage);
+      window.removeEventListener("message", handleMessage);
     };
   }, [load]);
 
