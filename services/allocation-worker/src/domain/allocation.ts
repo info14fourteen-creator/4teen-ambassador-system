@@ -42,6 +42,26 @@ function isAllocatableStatus(status: PurchaseRecord["status"]): boolean {
   return status === "verified" || status === "received";
 }
 
+function toErrorMessage(error: unknown): string {
+  if (typeof error === "string" && error.trim()) {
+    return error.trim();
+  }
+
+  if (
+    error &&
+    typeof error === "object" &&
+    "message" in error &&
+    typeof (error as { message?: unknown }).message === "string"
+  ) {
+    const message = (error as { message: string }).message.trim();
+    if (message) {
+      return message;
+    }
+  }
+
+  return "Allocation failed";
+}
+
 export class AllocationService {
   private readonly store: PurchaseStore;
   private readonly controllerClient: ControllerClient;
@@ -107,8 +127,7 @@ export class AllocationService {
       purchase.buyerWallet
     );
 
-    const ambassadorWallet =
-      alreadyBoundAmbassador || purchase.ambassadorWallet || null;
+    const ambassadorWallet = alreadyBoundAmbassador || purchase.ambassadorWallet || null;
 
     if (!ambassadorWallet) {
       const failedPurchase = await this.store.markFailed(
@@ -149,12 +168,7 @@ export class AllocationService {
         reason: null
       };
     } catch (error) {
-      const message =
-        error && typeof error === "object" && "message" in error
-          ? String((error as { message?: unknown }).message || "").trim() || "Allocation failed"
-          : typeof error === "string" && error.trim()
-            ? error.trim()
-            : "Allocation failed";
+      const message = toErrorMessage(error);
 
       const failedPurchase = await this.store.markFailed(
         purchase.purchaseId,
@@ -177,7 +191,8 @@ export class AllocationService {
     feeLimitSun?: number,
     now?: number
   ): Promise<AllocationDecision> {
-    const purchase = await this.store.getByPurchaseId(assertNonEmpty(purchaseId, "purchaseId"));
+    const normalizedPurchaseId = assertNonEmpty(purchaseId, "purchaseId");
+    const purchase = await this.store.getByPurchaseId(normalizedPurchaseId);
 
     if (!purchase) {
       return {
@@ -199,16 +214,26 @@ export class AllocationService {
       };
     }
 
+    const updateNow = now ?? Date.now();
+
     await this.store.update(purchase.purchaseId, {
       status: "verified",
       failureReason: null,
-      now
+      now: updateNow
     });
 
-    return this.executeAllocation({
-      purchaseId: purchase.purchaseId,
-      feeLimitSun,
-      now
-    });
+    const executeInput: ExecuteAllocationInput = {
+      purchaseId: purchase.purchaseId
+    };
+
+    if (feeLimitSun !== undefined) {
+      executeInput.feeLimitSun = feeLimitSun;
+    }
+
+    if (now !== undefined) {
+      executeInput.now = now;
+    }
+
+    return this.executeAllocation(executeInput);
   }
 }
