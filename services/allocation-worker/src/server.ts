@@ -1,8 +1,15 @@
 import http from "node:http";
 import { URL } from "node:url";
 import TronWebModule from "tronweb";
+import { assertValidSlug, normalizeSlug } from "../../../shared/utils/slug";
 import { createAllocationWorker } from "./index";
 import { BuyTokensScanner } from "./run-scan";
+import {
+  completeAmbassadorRegistration,
+  getAmbassadorPublicProfileBySlug,
+  initAmbassadorRegistryTables,
+  isSlugTaken
+} from "./db/ambassadors";
 
 interface EnvConfig {
   port: number;
@@ -152,9 +159,30 @@ function toErrorMessage(error: unknown): string {
   return "Unknown error";
 }
 
+function normalizeIncomingSlug(value: unknown): string {
+  const raw = assertNonEmpty(normalizeOptionalString(value), "slug");
+  return assertValidSlug(normalizeSlug(raw));
+}
+
+function normalizeSlugHash(value: unknown): string {
+  const raw = assertNonEmpty(normalizeOptionalString(value), "slugHash").toLowerCase();
+
+  if (!/^0x[0-9a-f]{64}$/.test(raw)) {
+    throw new Error("slugHash must be a bytes32 hex string");
+  }
+
+  return raw;
+}
+
+function buildReferralLink(slug: string): string {
+  return `?r=${encodeURIComponent(slug)}`;
+}
+
 async function bootstrap() {
   const env = loadEnv();
   const TronWeb = getTronWebConstructor();
+
+  await initAmbassadorRegistryTables();
 
   const tronWeb = new TronWeb({
     fullHost: env.tronFullHost,
@@ -190,6 +218,68 @@ async function bootstrap() {
         return;
       }
 
+      if (method === "GET" && pathname === "/slug/check") {
+        const slug = normalizeIncomingSlug(requestUrl.searchParams.get("slug"));
+        const taken = await isSlugTaken(slug);
+
+        sendJson(res, 200, {
+          ok: true,
+          slug,
+          available: !taken
+        });
+        return;
+      }
+
+      if (method === "POST" && pathname === "/ambassador/register-complete") {
+        const body = await readJsonBody(req);
+
+        const slug = normalizeIncomingSlug(body.slug);
+        const slugHash = normalizeSlugHash(body.slugHash);
+        const wallet = assertNonEmpty(normalizeOptionalString(body.wallet), "wallet");
+
+        const created = await completeAmbassadorRegistration({
+          slug,
+          slugHash,
+          wallet,
+          now: Date.now()
+        });
+
+        sendJson(res, 200, {
+          ok: true,
+          result: {
+            slug: created.publicProfile.slug,
+            slugHash: created.publicProfile.slugHash,
+            status: created.publicProfile.status,
+            referralLink: buildReferralLink(created.publicProfile.slug)
+          }
+        });
+        return;
+      }
+
+      if (method === "GET" && pathname === "/ambassador/profile") {
+        const slug = normalizeIncomingSlug(requestUrl.searchParams.get("slug"));
+        const profile = await getAmbassadorPublicProfileBySlug(slug);
+
+        if (!profile) {
+          sendJson(res, 404, {
+            ok: false,
+            error: "Ambassador profile not found"
+          });
+          return;
+        }
+
+        sendJson(res, 200, {
+          ok: true,
+          result: {
+            slug: profile.slug,
+            slugHash: profile.slugHash,
+            status: profile.status,
+            referralLink: buildReferralLink(profile.slug)
+          }
+        });
+        return;
+      }
+
       if (method === "POST" && pathname === "/attribution") {
         const body = await readJsonBody(req);
 
@@ -198,7 +288,7 @@ async function bootstrap() {
           normalizeOptionalString(body.buyerWallet),
           "buyerWallet"
         );
-        const slug = assertNonEmpty(normalizeOptionalString(body.slug), "slug");
+        const slug = normalizeIncomingSlug(body.slug);
 
         const result = await worker.processor.processFrontendAttribution({
           txHash,
