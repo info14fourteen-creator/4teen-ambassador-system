@@ -41,6 +41,15 @@ function assertNonEmpty(value: string | undefined, fieldName: string): string {
   return normalized;
 }
 
+function normalizeOptionalString(value: unknown): string | undefined {
+  if (typeof value !== "string") {
+    return undefined;
+  }
+
+  const normalized = value.trim();
+  return normalized || undefined;
+}
+
 function parsePositiveInteger(
   value: string | undefined,
   fallback: number,
@@ -181,6 +190,30 @@ async function bootstrap() {
         return;
       }
 
+      if (method === "POST" && pathname === "/attribution") {
+        const body = await readJsonBody(req);
+
+        const txHash = assertNonEmpty(normalizeOptionalString(body.txHash), "txHash");
+        const buyerWallet = assertNonEmpty(
+          normalizeOptionalString(body.buyerWallet),
+          "buyerWallet"
+        );
+        const slug = assertNonEmpty(normalizeOptionalString(body.slug), "slug");
+
+        const result = await worker.processor.processFrontendAttribution({
+          txHash,
+          buyerWallet,
+          slug,
+          now: Date.now()
+        });
+
+        sendJson(res, 200, {
+          ok: true,
+          result
+        });
+        return;
+      }
+
       if (method === "POST" && pathname === "/scan") {
         const body = await readJsonBody(req);
 
@@ -202,7 +235,10 @@ async function bootstrap() {
 
       if (method === "POST" && pathname === "/replay-failed") {
         const body = await readJsonBody(req);
-        const purchaseId = assertNonEmpty(body.purchaseId, "purchaseId");
+        const purchaseId = assertNonEmpty(
+          normalizeOptionalString(body.purchaseId),
+          "purchaseId"
+        );
 
         const feeLimitSun =
           body.feeLimitSun !== undefined
