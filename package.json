@@ -1,22 +1,12 @@
 {
-  "name": "allocation-worker",
-  "version": "1.0.0",
+  "name": "fourteen-heroku-worker-root",
   "private": true,
-  "main": "dist/services/allocation-worker/src/server.js",
   "scripts": {
-    "build": "tsc -p tsconfig.json",
-    "start": "node dist/services/allocation-worker/src/server.js",
-    "dev": "tsx src/server.ts",
-    "check": "tsc -p tsconfig.json --noEmit"
-  },
-  "dependencies": {
-    "@noble/hashes": "^1.8.0",
-    "pg": "^8.13.1",
-    "tronweb": "^6.0.4"
-  },
-  "devDependencies": {
-    "@types/node": "^24.3.0",
-    "tsx": "^4.20.5",
-    "typescript": "^5.9.2"
+    "build": "npm run build:worker",
+    "build:worker": "npm --prefix services/allocation-worker install --include=dev && npm --prefix services/allocation-worker run build",
+    "start": "npm run start:worker",
+    "start:worker": "npm --prefix services/allocation-worker run start",
+    "build:ai": "node scripts/build-ai-bundles.mjs",
+    "heroku-postbuild": "npm run build:worker"
   }
 }
