@@ -1,11 +1,12 @@
 # AI PROJECT MAP
 
-Generated: 2026-03-23T17:05:08.836Z
+Generated: 2026-03-24T03:07:08.497Z
 
 ## CORE
 
 - .github/workflows/build-ai-bundles.yml
 - README.md
+- ai/MASTER_PLAN.md
 - ai/WORKING_RULES.md
 - package.json
 - scripts/build-ai-bundles.mjs
