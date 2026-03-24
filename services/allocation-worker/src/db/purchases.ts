@@ -78,7 +78,7 @@ export interface PurchaseStore {
     reason: string,
     now?: number
   ): Promise<PurchaseRecord>;
-  listReplayableFailures(): Promise<PurchaseRecord>;
+  listReplayableFailures(): Promise<PurchaseRecord[]>;
   hasProcessedPurchase(purchaseId: string): Promise<boolean>;
 }
 
