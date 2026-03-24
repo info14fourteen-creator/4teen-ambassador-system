@@ -7,31 +7,32 @@ declare global {
   }
 }
 
-export interface ControllerContractMethods {
-  getAmbassadorByWallet(wallet: string): Promise<any>;
-  getAmbassadorBySlug(slug: string): Promise<any>;
-  getAmbassadorStats(wallet: string): Promise<any>;
-  getRewardSummary(wallet: string): Promise<any>;
-  withdrawRewards(): Promise<any>;
-}
-
 export interface AmbassadorIdentity {
   wallet: string;
-  slug: string;
   exists: boolean;
-  telegramBound: boolean;
-  telegramUsername: string;
+  active: boolean;
+  selfRegistered: boolean;
+  manualAssigned: boolean;
+  overrideEnabled: boolean;
+  effectiveLevel: number;
+  currentLevel: number;
+  overrideLevel: number;
+  rewardPercent: number;
+  createdAt: number;
+  slugHash: string;
+  metaHash: string;
 }
 
 export interface AmbassadorStats {
-  totalReferrals: number;
-  totalQualifiedPurchases: number;
-  totalRewardSun: string;
-  totalRewardTrx: string;
-  totalWithdrawnSun: string;
-  totalWithdrawnTrx: string;
-  availableSun: string;
-  availableTrx: string;
+  totalBuyers: number;
+  totalVolumeSun: string;
+  totalVolumeTrx: string;
+  totalRewardsAccruedSun: string;
+  totalRewardsAccruedTrx: string;
+  totalRewardsClaimedSun: string;
+  totalRewardsClaimedTrx: string;
+  claimableRewardsSun: string;
+  claimableRewardsTrx: string;
 }
 
 export interface RewardSummary {
@@ -41,6 +42,20 @@ export interface RewardSummary {
   withdrawnTrx: string;
   lifetimeSun: string;
   lifetimeTrx: string;
+}
+
+export interface AmbassadorLevelProgress {
+  currentLevel: number;
+  buyersCount: number;
+  nextThreshold: number;
+  remainingToNextLevel: number;
+}
+
+export interface AmbassadorDashboard {
+  identity: AmbassadorIdentity;
+  stats: AmbassadorStats;
+  rewards: RewardSummary;
+  progress: AmbassadorLevelProgress;
 }
 
 export interface WithdrawResult {
@@ -63,20 +78,45 @@ function assertNonEmpty(value: string, fieldName: string): string {
   return normalized;
 }
 
+function safeString(value: any): string {
+  if (value == null) return "0";
+  return String(value);
+}
+
 function safeNumber(value: any): number {
-  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value;
+  }
 
   if (typeof value === "string" && value.trim()) {
     const parsed = Number(value);
-    if (Number.isFinite(parsed)) return parsed;
+    if (Number.isFinite(parsed)) {
+      return parsed;
+    }
   }
 
   return 0;
 }
 
-function safeString(value: any): string {
-  if (value == null) return "0";
-  return String(value);
+function safeBoolean(value: any): boolean {
+  return Boolean(value);
+}
+
+function pickTupleValue(source: any, index: number, key?: string): any {
+  if (Array.isArray(source)) {
+    return source[index];
+  }
+
+  if (source && typeof source === "object") {
+    if (key && key in source) {
+      return source[key];
+    }
+
+    const values = Object.values(source);
+    return values[index];
+  }
+
+  return undefined;
 }
 
 function sunToTrxString(value: any): string {
@@ -86,12 +126,11 @@ function sunToTrxString(value: any): string {
 
   const negative = raw.startsWith("-");
   const digits = negative ? raw.slice(1) : raw;
-
   const padded = digits.padStart(7, "0");
   const whole = padded.slice(0, -6) || "0";
   const fraction = padded.slice(-6).replace(/0+$/, "");
-
   const result = fraction ? `${whole}.${fraction}` : whole;
+
   return negative ? `-${result}` : result;
 }
 
@@ -117,101 +156,80 @@ async function getControllerContractInstance(): Promise<any> {
   return tronWeb.contract().at(FOURTEEN_CONTROLLER_CONTRACT);
 }
 
-function pickTupleValue(source: any, index: number, fallbackKey?: string): any {
-  if (Array.isArray(source)) {
-    return source[index];
-  }
-
-  if (source && typeof source === "object") {
-    if (fallbackKey && fallbackKey in source) {
-      return source[fallbackKey];
-    }
-
-    const values = Object.values(source);
-    return values[index];
-  }
-
-  return undefined;
+export function levelToLabel(level: number): string {
+  if (level === 0) return "Bronze";
+  if (level === 1) return "Silver";
+  if (level === 2) return "Gold";
+  if (level === 3) return "Platinum";
+  return `Unknown (${level})`;
 }
 
-function mapAmbassadorIdentity(raw: any, wallet: string): AmbassadorIdentity {
-  const slug = String(
-    pickTupleValue(raw, 0, "slug") ??
-    pickTupleValue(raw, 1, "referralSlug") ??
-    ""
-  ).trim();
+function mapIdentity(
+  wallet: string,
+  coreRaw: any,
+  profileRaw: any
+): AmbassadorIdentity {
+  const exists = safeBoolean(pickTupleValue(coreRaw, 0, "exists"));
+  const active = safeBoolean(pickTupleValue(coreRaw, 1, "active"));
+  const effectiveLevel = safeNumber(pickTupleValue(coreRaw, 2, "effectiveLevel"));
+  const rewardPercent = safeNumber(pickTupleValue(coreRaw, 3, "rewardPercent"));
+  const createdAt = safeNumber(pickTupleValue(coreRaw, 4, "createdAt"));
 
-  const telegramUsername = String(
-    pickTupleValue(raw, 2, "telegramUsername") ??
-    pickTupleValue(raw, 3, "telegram") ??
-    ""
-  ).trim();
-
-  const telegramBound = Boolean(
-    pickTupleValue(raw, 4, "telegramBound") ??
-    (telegramUsername ? true : false)
-  );
+  const selfRegistered = safeBoolean(pickTupleValue(profileRaw, 0, "selfRegistered"));
+  const manualAssigned = safeBoolean(pickTupleValue(profileRaw, 1, "manualAssigned"));
+  const overrideEnabled = safeBoolean(pickTupleValue(profileRaw, 2, "overrideEnabled"));
+  const currentLevel = safeNumber(pickTupleValue(profileRaw, 3, "currentLevel"));
+  const overrideLevel = safeNumber(pickTupleValue(profileRaw, 4, "overrideLevel"));
+  const slugHash = safeString(pickTupleValue(profileRaw, 5, "slugHash"));
+  const metaHash = safeString(pickTupleValue(profileRaw, 6, "metaHash"));
 
   return {
     wallet,
-    slug,
-    exists: Boolean(slug),
-    telegramBound,
-    telegramUsername
+    exists,
+    active,
+    selfRegistered,
+    manualAssigned,
+    overrideEnabled,
+    effectiveLevel,
+    currentLevel,
+    overrideLevel,
+    rewardPercent,
+    createdAt,
+    slugHash,
+    metaHash
   };
 }
 
-function mapStats(raw: any): AmbassadorStats {
-  const totalReferrals = safeNumber(
-    pickTupleValue(raw, 0, "totalReferrals")
+function mapStats(statsRaw: any): AmbassadorStats {
+  const totalBuyers = safeNumber(pickTupleValue(statsRaw, 0, "totalBuyers"));
+  const totalVolumeSun = safeString(pickTupleValue(statsRaw, 1, "totalVolumeSun"));
+  const totalRewardsAccruedSun = safeString(
+    pickTupleValue(statsRaw, 2, "totalRewardsAccruedSun")
   );
-
-  const totalQualifiedPurchases = safeNumber(
-    pickTupleValue(raw, 1, "totalQualifiedPurchases")
+  const totalRewardsClaimedSun = safeString(
+    pickTupleValue(statsRaw, 3, "totalRewardsClaimedSun")
   );
-
-  const totalRewardSun = safeString(
-    pickTupleValue(raw, 2, "totalRewardSun") ??
-    pickTupleValue(raw, 2, "totalRewards")
-  );
-
-  const totalWithdrawnSun = safeString(
-    pickTupleValue(raw, 3, "totalWithdrawnSun") ??
-    pickTupleValue(raw, 3, "withdrawnRewards")
-  );
-
-  const availableSun = safeString(
-    pickTupleValue(raw, 4, "availableSun") ??
-    pickTupleValue(raw, 4, "claimableRewards")
+  const claimableRewardsSun = safeString(
+    pickTupleValue(statsRaw, 4, "claimableRewardsSun")
   );
 
   return {
-    totalReferrals,
-    totalQualifiedPurchases,
-    totalRewardSun,
-    totalRewardTrx: sunToTrxString(totalRewardSun),
-    totalWithdrawnSun,
-    totalWithdrawnTrx: sunToTrxString(totalWithdrawnSun),
-    availableSun,
-    availableTrx: sunToTrxString(availableSun)
+    totalBuyers,
+    totalVolumeSun,
+    totalVolumeTrx: sunToTrxString(totalVolumeSun),
+    totalRewardsAccruedSun,
+    totalRewardsAccruedTrx: sunToTrxString(totalRewardsAccruedSun),
+    totalRewardsClaimedSun,
+    totalRewardsClaimedTrx: sunToTrxString(totalRewardsClaimedSun),
+    claimableRewardsSun,
+    claimableRewardsTrx: sunToTrxString(claimableRewardsSun)
   };
 }
 
-function mapRewardSummary(raw: any): RewardSummary {
-  const availableSun = safeString(
-    pickTupleValue(raw, 0, "availableSun") ??
-    pickTupleValue(raw, 0, "availableRewards")
-  );
-
-  const withdrawnSun = safeString(
-    pickTupleValue(raw, 1, "withdrawnSun") ??
-    pickTupleValue(raw, 1, "withdrawnRewards")
-  );
-
-  const lifetimeSun = safeString(
-    pickTupleValue(raw, 2, "lifetimeSun") ??
-    pickTupleValue(raw, 2, "totalRewards")
-  );
+function mapRewards(payoutRaw: any): RewardSummary {
+  const availableSun = safeString(pickTupleValue(payoutRaw, 0, "claimableRewardsSun"));
+  const lifetimeSun = safeString(pickTupleValue(payoutRaw, 1, "totalRewardsAccruedSun"));
+  const withdrawnSun = safeString(pickTupleValue(payoutRaw, 2, "totalRewardsClaimedSun"));
 
   return {
     availableSun,
@@ -223,6 +241,15 @@ function mapRewardSummary(raw: any): RewardSummary {
   };
 }
 
+function mapProgress(progressRaw: any): AmbassadorLevelProgress {
+  return {
+    currentLevel: safeNumber(pickTupleValue(progressRaw, 0)),
+    buyersCount: safeNumber(pickTupleValue(progressRaw, 1)),
+    nextThreshold: safeNumber(pickTupleValue(progressRaw, 2)),
+    remainingToNextLevel: safeNumber(pickTupleValue(progressRaw, 3))
+  };
+}
+
 export async function readAmbassadorIdentity(
   wallet?: string
 ): Promise<AmbassadorIdentity> {
@@ -231,14 +258,13 @@ export async function readAmbassadorIdentity(
     : await getConnectedWalletAddress();
 
   const contract = await getControllerContractInstance();
-  const raw = await contract.getAmbassadorByWallet(resolvedWallet).call();
 
-  return mapAmbassadorIdentity(raw, resolvedWallet);
-}
+  const [coreRaw, profileRaw] = await Promise.all([
+    contract.getDashboardCore(resolvedWallet).call(),
+    contract.getDashboardProfile(resolvedWallet).call()
+  ]);
 
-export async function readAmbassadorBySlug(slug: string): Promise<any> {
-  const contract = await getControllerContractInstance();
-  return contract.getAmbassadorBySlug(assertNonEmpty(slug, "slug")).call();
+  return mapIdentity(resolvedWallet, coreRaw, profileRaw);
 }
 
 export async function readAmbassadorStats(
@@ -249,7 +275,7 @@ export async function readAmbassadorStats(
     : await getConnectedWalletAddress();
 
   const contract = await getControllerContractInstance();
-  const raw = await contract.getAmbassadorStats(resolvedWallet).call();
+  const raw = await contract.getDashboardStats(resolvedWallet).call();
 
   return mapStats(raw);
 }
@@ -262,9 +288,22 @@ export async function readRewardSummary(
     : await getConnectedWalletAddress();
 
   const contract = await getControllerContractInstance();
-  const raw = await contract.getRewardSummary(resolvedWallet).call();
+  const raw = await contract.getAmbassadorPayoutData(resolvedWallet).call();
 
-  return mapRewardSummary(raw);
+  return mapRewards(raw);
+}
+
+export async function readAmbassadorLevelProgress(
+  wallet?: string
+): Promise<AmbassadorLevelProgress> {
+  const resolvedWallet = wallet
+    ? assertNonEmpty(wallet, "wallet")
+    : await getConnectedWalletAddress();
+
+  const contract = await getControllerContractInstance();
+  const raw = await contract.getAmbassadorLevelProgress(resolvedWallet).call();
+
+  return mapProgress(raw);
 }
 
 export async function withdrawRewards(): Promise<WithdrawResult> {
@@ -276,24 +315,24 @@ export async function withdrawRewards(): Promise<WithdrawResult> {
   };
 }
 
-export async function readAmbassadorDashboard(wallet?: string): Promise<{
-  identity: AmbassadorIdentity;
-  stats: AmbassadorStats;
-  rewards: RewardSummary;
-}> {
+export async function readAmbassadorDashboard(
+  wallet?: string
+): Promise<AmbassadorDashboard> {
   const resolvedWallet = wallet
     ? assertNonEmpty(wallet, "wallet")
     : await getConnectedWalletAddress();
 
-  const [identity, stats, rewards] = await Promise.all([
+  const [identity, stats, rewards, progress] = await Promise.all([
     readAmbassadorIdentity(resolvedWallet),
     readAmbassadorStats(resolvedWallet),
-    readRewardSummary(resolvedWallet)
+    readRewardSummary(resolvedWallet),
+    readAmbassadorLevelProgress(resolvedWallet)
   ]);
 
   return {
     identity,
     stats,
-    rewards
+    rewards,
+    progress
   };
 }
