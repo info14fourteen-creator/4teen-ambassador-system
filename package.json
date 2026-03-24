@@ -1,6 +1,12 @@
 {
+  "name": "fourteen-heroku-worker-root",
+  "private": true,
   "scripts": {
-    "build": "echo \"Build step placeholder\"",
-    "build:ai": "node scripts/build-ai-bundles.mjs"
+    "build": "npm run build:worker",
+    "build:worker": "npm --prefix services/allocation-worker install && npm --prefix services/allocation-worker run build",
+    "start": "npm run start:worker",
+    "start:worker": "npm --prefix services/allocation-worker run start",
+    "build:ai": "node scripts/build-ai-bundles.mjs",
+    "heroku-postbuild": "npm run build:worker"
   }
 }
