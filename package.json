@@ -3,7 +3,7 @@
   "private": true,
   "scripts": {
     "build": "npm run build:worker",
-    "build:worker": "npm --prefix services/allocation-worker install && npm --prefix services/allocation-worker run build",
+    "build:worker": "npm --prefix services/allocation-worker install --include=dev && npm --prefix services/allocation-worker run build",
     "start": "npm run start:worker",
     "start:worker": "npm --prefix services/allocation-worker run start",
     "build:ai": "node scripts/build-ai-bundles.mjs",
