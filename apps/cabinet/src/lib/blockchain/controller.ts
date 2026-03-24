@@ -95,6 +95,10 @@ function safeNumber(value: any): number {
     }
   }
 
+  if (typeof value === "bigint") {
+    return Number(value);
+  }
+
   return 0;
 }
 
@@ -164,11 +168,7 @@ export function levelToLabel(level: number): string {
   return `Unknown (${level})`;
 }
 
-function mapIdentity(
-  wallet: string,
-  coreRaw: any,
-  profileRaw: any
-): AmbassadorIdentity {
+function mapIdentity(wallet: string, coreRaw: any, profileRaw: any): AmbassadorIdentity {
   const exists = safeBoolean(pickTupleValue(coreRaw, 0, "exists"));
   const active = safeBoolean(pickTupleValue(coreRaw, 1, "active"));
   const effectiveLevel = safeNumber(pickTupleValue(coreRaw, 2, "effectiveLevel"));
@@ -250,9 +250,7 @@ function mapProgress(progressRaw: any): AmbassadorLevelProgress {
   };
 }
 
-export async function readAmbassadorIdentity(
-  wallet?: string
-): Promise<AmbassadorIdentity> {
+export async function readAmbassadorIdentity(wallet?: string): Promise<AmbassadorIdentity> {
   const resolvedWallet = wallet
     ? assertNonEmpty(wallet, "wallet")
     : await getConnectedWalletAddress();
@@ -267,9 +265,7 @@ export async function readAmbassadorIdentity(
   return mapIdentity(resolvedWallet, coreRaw, profileRaw);
 }
 
-export async function readAmbassadorStats(
-  wallet?: string
-): Promise<AmbassadorStats> {
+export async function readAmbassadorStats(wallet?: string): Promise<AmbassadorStats> {
   const resolvedWallet = wallet
     ? assertNonEmpty(wallet, "wallet")
     : await getConnectedWalletAddress();
@@ -280,9 +276,7 @@ export async function readAmbassadorStats(
   return mapStats(raw);
 }
 
-export async function readRewardSummary(
-  wallet?: string
-): Promise<RewardSummary> {
+export async function readRewardSummary(wallet?: string): Promise<RewardSummary> {
   const resolvedWallet = wallet
     ? assertNonEmpty(wallet, "wallet")
     : await getConnectedWalletAddress();
@@ -315,9 +309,7 @@ export async function withdrawRewards(): Promise<WithdrawResult> {
   };
 }
 
-export async function readAmbassadorDashboard(
-  wallet?: string
-): Promise<AmbassadorDashboard> {
+export async function readAmbassadorDashboard(wallet?: string): Promise<AmbassadorDashboard> {
   const resolvedWallet = wallet
     ? assertNonEmpty(wallet, "wallet")
     : await getConnectedWalletAddress();
