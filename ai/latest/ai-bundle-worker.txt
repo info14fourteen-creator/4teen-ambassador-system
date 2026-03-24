@@ -1,6 +1,6 @@
 # AI BUNDLE — WORKER
 
-Generated: 2026-03-24T19:48:57.662Z
+Generated: 2026-03-24T19:59:55.108Z
 
 ===== FILE: services/allocation-worker/.gitignore =====
 node_modules
@@ -33,6 +33,7 @@ web: npm run start
   },
   "devDependencies": {
     "@types/node": "^24.3.0",
+    "@types/pg": "^8.11.10",
     "tsx": "^4.20.5",
     "typescript": "^5.9.2"
   }
