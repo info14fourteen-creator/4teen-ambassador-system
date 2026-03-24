@@ -1,6 +1,6 @@
 # AI BUNDLE — WORKER
 
-Generated: 2026-03-24T04:59:37.187Z
+Generated: 2026-03-24T05:44:21.025Z
 
 ===== FILE: services/allocation-worker/.gitignore =====
 node_modules
@@ -19,11 +19,10 @@ web: npm run start
   "name": "allocation-worker",
   "version": "1.0.0",
   "private": true,
-  "type": "module",
-  "main": "dist/server.js",
+  "main": "dist/services/allocation-worker/src/server.js",
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "start": "node dist/server.js",
+    "start": "node dist/services/allocation-worker/src/server.js",
     "dev": "tsx src/server.ts",
     "check": "tsc -p tsconfig.json --noEmit"
   },
@@ -449,15 +448,26 @@ export class InMemoryPurchaseStore implements PurchaseStore {
       now?: number;
     }
   ): Promise<PurchaseRecord> {
-    return this.update(purchaseId, {
+    const updateInput: UpdatePurchaseRecordInput = {
       purchaseAmountSun: input.purchaseAmountSun,
       ownerShareSun: input.ownerShareSun,
-      ambassadorSlug: input.ambassadorSlug ?? undefined,
-      ambassadorWallet: input.ambassadorWallet ?? undefined,
       status: "verified",
-      failureReason: null,
-      now: input.now
-    });
+      failureReason: null
+    };
+
+    if (input.ambassadorSlug !== undefined) {
+      updateInput.ambassadorSlug = input.ambassadorSlug;
+    }
+
+    if (input.ambassadorWallet !== undefined) {
+      updateInput.ambassadorWallet = input.ambassadorWallet;
+    }
+
+    if (input.now !== undefined) {
+      updateInput.now = input.now;
+    }
+
+    return this.update(purchaseId, updateInput);
   }
 
   async markAllocated(
@@ -467,13 +477,21 @@ export class InMemoryPurchaseStore implements PurchaseStore {
       now?: number;
     }
   ): Promise<PurchaseRecord> {
-    return this.update(purchaseId, {
-      ambassadorWallet: input?.ambassadorWallet ?? undefined,
+    const updateInput: UpdatePurchaseRecordInput = {
       status: "allocated",
       failureReason: null,
-      allocatedAt: input?.now ?? Date.now(),
-      now: input?.now
-    });
+      allocatedAt: input?.now ?? Date.now()
+    };
+
+    if (input?.ambassadorWallet !== undefined) {
+      updateInput.ambassadorWallet = input.ambassadorWallet;
+    }
+
+    if (input?.now !== undefined) {
+      updateInput.now = input.now;
+    }
+
+    return this.update(purchaseId, updateInput);
   }
 
   async markFailed(
@@ -481,11 +499,16 @@ export class InMemoryPurchaseStore implements PurchaseStore {
     reason: string,
     now?: number
   ): Promise<PurchaseRecord> {
-    return this.update(purchaseId, {
+    const updateInput: UpdatePurchaseRecordInput = {
       status: "failed",
-      failureReason: assertNonEmpty(reason, "reason"),
-      now
-    });
+      failureReason: assertNonEmpty(reason, "reason")
+    };
+
+    if (now !== undefined) {
+      updateInput.now = now;
+    }
+
+    return this.update(purchaseId, updateInput);
   }
 
   async markIgnored(
@@ -493,11 +516,16 @@ export class InMemoryPurchaseStore implements PurchaseStore {
     reason: string,
     now?: number
   ): Promise<PurchaseRecord> {
-    return this.update(purchaseId, {
+    const updateInput: UpdatePurchaseRecordInput = {
       status: "ignored",
-      failureReason: assertNonEmpty(reason, "reason"),
-      now
-    });
+      failureReason: assertNonEmpty(reason, "reason")
+    };
+
+    if (now !== undefined) {
+      updateInput.now = now;
+    }
+
+    return this.update(purchaseId, updateInput);
   }
 
   async listReplayableFailures(): Promise<PurchaseRecord[]> {
@@ -562,6 +590,26 @@ function assertNonEmpty(value: string, fieldName: string): string {
 
 function isAllocatableStatus(status: PurchaseRecord["status"]): boolean {
   return status === "verified" || status === "received";
+}
+
+function toErrorMessage(error: unknown): string {
+  if (typeof error === "string" && error.trim()) {
+    return error.trim();
+  }
+
+  if (
+    error &&
+    typeof error === "object" &&
+    "message" in error &&
+    typeof (error as { message?: unknown }).message === "string"
+  ) {
+    const message = (error as { message: string }).message.trim();
+    if (message) {
+      return message;
+    }
+  }
+
+  return "Allocation failed";
 }
 
 export class AllocationService {
@@ -629,8 +677,7 @@ export class AllocationService {
       purchase.buyerWallet
     );
 
-    const ambassadorWallet =
-      alreadyBoundAmbassador || purchase.ambassadorWallet || null;
+    const ambassadorWallet = alreadyBoundAmbassador || purchase.ambassadorWallet || null;
 
     if (!ambassadorWallet) {
       const failedPurchase = await this.store.markFailed(
@@ -671,12 +718,7 @@ export class AllocationService {
         reason: null
       };
     } catch (error) {
-      const message =
-        error && typeof error === "object" && "message" in error
-          ? String((error as { message?: unknown }).message || "").trim() || "Allocation failed"
-          : typeof error === "string" && error.trim()
-            ? error.trim()
-            : "Allocation failed";
+      const message = toErrorMessage(error);
 
       const failedPurchase = await this.store.markFailed(
         purchase.purchaseId,
@@ -699,7 +741,8 @@ export class AllocationService {
     feeLimitSun?: number,
     now?: number
   ): Promise<AllocationDecision> {
-    const purchase = await this.store.getByPurchaseId(assertNonEmpty(purchaseId, "purchaseId"));
+    const normalizedPurchaseId = assertNonEmpty(purchaseId, "purchaseId");
+    const purchase = await this.store.getByPurchaseId(normalizedPurchaseId);
 
     if (!purchase) {
       return {
@@ -721,17 +764,27 @@ export class AllocationService {
       };
     }
 
+    const updateNow = now ?? Date.now();
+
     await this.store.update(purchase.purchaseId, {
       status: "verified",
       failureReason: null,
-      now
+      now: updateNow
     });
 
-    return this.executeAllocation({
-      purchaseId: purchase.purchaseId,
-      feeLimitSun,
-      now
-    });
+    const executeInput: ExecuteAllocationInput = {
+      purchaseId: purchase.purchaseId
+    };
+
+    if (feeLimitSun !== undefined) {
+      executeInput.feeLimitSun = feeLimitSun;
+    }
+
+    if (now !== undefined) {
+      executeInput.now = now;
+    }
+
+    return this.executeAllocation(executeInput);
   }
 }
 
@@ -1661,7 +1714,7 @@ export class BuyTokensScanner {
 ===== FILE: services/allocation-worker/src/server.ts =====
 import http from "node:http";
 import { URL } from "node:url";
-import TronWeb from "tronweb";
+import TronWebModule from "tronweb";
 import { createAllocationWorker } from "./index";
 import { BuyTokensScanner } from "./run-scan";
 
@@ -1674,6 +1727,24 @@ interface EnvConfig {
   scanPageSize: number;
 }
 
+type TronWebConstructor = new (config: {
+  fullHost: string;
+  privateKey: string;
+}) => any;
+
+function getTronWebConstructor(): TronWebConstructor {
+  const candidate =
+    (TronWebModule as any)?.TronWeb ??
+    (TronWebModule as any)?.default ??
+    TronWebModule;
+
+  if (typeof candidate !== "function") {
+    throw new Error("Unable to resolve TronWeb constructor");
+  }
+
+  return candidate as TronWebConstructor;
+}
+
 function assertNonEmpty(value: string | undefined, fieldName: string): string {
   const normalized = String(value || "").trim();
 
@@ -1684,7 +1755,11 @@ function assertNonEmpty(value: string | undefined, fieldName: string): string {
   return normalized;
 }
 
-function parsePositiveInteger(value: string | undefined, fallback: number, fieldName: string): number {
+function parsePositiveInteger(
+  value: string | undefined,
+  fallback: number,
+  fieldName: string
+): number {
   if (value == null || String(value).trim() === "") {
     return fallback;
   }
@@ -1699,14 +1774,25 @@ function parsePositiveInteger(value: string | undefined, fallback: number, field
 }
 
 function loadEnv(): EnvConfig {
-  return {
+  const config: EnvConfig = {
     port: parsePositiveInteger(process.env.PORT, 3000, "PORT"),
     tronFullHost: assertNonEmpty(process.env.TRON_FULL_HOST, "TRON_FULL_HOST"),
     tronPrivateKey: assertNonEmpty(process.env.TRON_PRIVATE_KEY, "TRON_PRIVATE_KEY"),
-    controllerContractAddress: process.env.FOURTEEN_CONTROLLER_CONTRACT?.trim() || undefined,
-    tokenContractAddress: process.env.FOURTEEN_TOKEN_CONTRACT?.trim() || undefined,
     scanPageSize: parsePositiveInteger(process.env.SCAN_PAGE_SIZE, 50, "SCAN_PAGE_SIZE")
   };
+
+  const controllerContractAddress = process.env.FOURTEEN_CONTROLLER_CONTRACT?.trim();
+  const tokenContractAddress = process.env.FOURTEEN_TOKEN_CONTRACT?.trim();
+
+  if (controllerContractAddress) {
+    config.controllerContractAddress = controllerContractAddress;
+  }
+
+  if (tokenContractAddress) {
+    config.tokenContractAddress = tokenContractAddress;
+  }
+
+  return config;
 }
 
 function sendJson(
@@ -1773,6 +1859,7 @@ function toErrorMessage(error: unknown): string {
 
 async function bootstrap() {
   const env = loadEnv();
+  const TronWeb = getTronWebConstructor();
 
   const tronWeb = new TronWeb({
     fullHost: env.tronFullHost,
@@ -1811,11 +1898,13 @@ async function bootstrap() {
       if (method === "POST" && pathname === "/scan") {
         const body = await readJsonBody(req);
 
+        const fingerprint =
+          typeof body.fingerprint === "string" && body.fingerprint.trim()
+            ? body.fingerprint.trim()
+            : undefined;
+
         const result = await scanner.fetchEvents({
-          fingerprint:
-            typeof body.fingerprint === "string" && body.fingerprint.trim()
-              ? body.fingerprint.trim()
-              : undefined
+          fingerprint
         });
 
         sendJson(res, 200, {
@@ -1828,6 +1917,7 @@ async function bootstrap() {
       if (method === "POST" && pathname === "/replay-failed") {
         const body = await readJsonBody(req);
         const purchaseId = assertNonEmpty(body.purchaseId, "purchaseId");
+
         const feeLimitSun =
           body.feeLimitSun !== undefined
             ? parsePositiveInteger(String(body.feeLimitSun), 0, "feeLimitSun")
@@ -2200,22 +2290,26 @@ export class TronHashing implements AttributionHashing {
   "compilerOptions": {
     "target": "ES2022",
     "lib": ["ES2022"],
-    "module": "NodeNext",
-    "moduleResolution": "NodeNext",
+    "module": "CommonJS",
+    "moduleResolution": "Node",
     "outDir": "dist",
-    "rootDir": "src",
+    "rootDir": "../..",
     "strict": true,
     "noImplicitAny": true,
     "noUncheckedIndexedAccess": true,
-    "exactOptionalPropertyTypes": true,
+    "exactOptionalPropertyTypes": false,
     "esModuleInterop": true,
+    "allowSyntheticDefaultImports": true,
     "skipLibCheck": true,
     "resolveJsonModule": true,
     "declaration": false,
     "sourceMap": true,
     "types": ["node"]
   },
-  "include": ["src/**/*.ts"],
+  "include": [
+    "src/**/*.ts",
+    "../../shared/**/*.ts"
+  ],
   "exclude": ["dist", "node_modules"]
 }
 

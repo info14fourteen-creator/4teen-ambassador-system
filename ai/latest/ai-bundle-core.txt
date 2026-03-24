@@ -1,6 +1,6 @@
 # AI BUNDLE — CORE
 
-Generated: 2026-03-24T04:59:37.186Z
+Generated: 2026-03-24T05:44:21.024Z
 
 ===== FILE: .github/workflows/build-ai-bundles.yml =====
 name: Build and Publish AI Bundles
@@ -698,9 +698,15 @@ Everything must work step-by-step.
 
 ===== FILE: package.json =====
 {
+  "name": "fourteen-heroku-worker-root",
+  "private": true,
   "scripts": {
-    "build": "echo \"Build step placeholder\"",
-    "build:ai": "node scripts/build-ai-bundles.mjs"
+    "build": "npm run build:worker",
+    "build:worker": "npm --prefix services/allocation-worker install && npm --prefix services/allocation-worker run build",
+    "start": "npm run start:worker",
+    "start:worker": "npm --prefix services/allocation-worker run start",
+    "build:ai": "node scripts/build-ai-bundles.mjs",
+    "heroku-postbuild": "npm run build:worker"
   }
 }
 
