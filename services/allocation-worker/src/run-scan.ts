@@ -101,8 +101,7 @@ function pickObjectValue(source: any, keys: string[]): unknown {
 
 function normalizeTxHashFromEvent(event: any): string {
   const value =
-    pickObjectValue(event, ["transaction_id", "transactionId", "txHash", "txid"]) ??
-    "";
+    pickObjectValue(event, ["transaction_id", "transactionId", "txHash", "txid"]) ?? "";
 
   return assertNonEmpty(String(value), "event.txHash");
 }
@@ -147,9 +146,7 @@ function toTronBase58Address(rawAddress: string, tronWeb: any): string {
 
 function normalizeBuyerWalletFromEvent(event: any, tronWeb: any): string {
   const result = pickObjectValue(event, ["result"]);
-  const buyer =
-    pickObjectValue(result, ["buyer"]) ??
-    pickObjectValue(event, ["buyer"]);
+  const buyer = pickObjectValue(result, ["buyer"]) ?? pickObjectValue(event, ["buyer"]);
 
   const rawBuyer = assertNonEmpty(String(buyer), "event.result.buyer");
   return toTronBase58Address(rawBuyer, tronWeb);
@@ -158,8 +155,7 @@ function normalizeBuyerWalletFromEvent(event: any, tronWeb: any): string {
 function normalizePurchaseAmountSunFromEvent(event: any): string {
   const result = pickObjectValue(event, ["result"]);
   const amountTRX =
-    pickObjectValue(result, ["amountTRX"]) ??
-    pickObjectValue(event, ["amountTRX"]);
+    pickObjectValue(result, ["amountTRX"]) ?? pickObjectValue(event, ["amountTRX"]);
 
   return normalizeSunAmount(amountTRX, "event.result.amountTRX");
 }
@@ -196,77 +192,74 @@ function normalizeBlockTimestampFromEvent(event: any): number | null {
   return Number.isFinite(parsed) ? parsed : null;
 }
 
-function mapBuyTokensEvent(event: any, tronWeb: any): BuyTokensEvent {
+function parseBuyTokensEvent(event: any, tronWeb: any): BuyTokensEvent {
   const txHash = normalizeTxHashFromEvent(event);
   const buyerWallet = normalizeBuyerWalletFromEvent(event, tronWeb);
   const purchaseAmountSun = normalizePurchaseAmountSunFromEvent(event);
   const amountTokens = normalizeAmountTokensFromEvent(event);
+  const ownerShareSun = computeOwnerShareSun(purchaseAmountSun);
+  const blockNumber = normalizeBlockNumberFromEvent(event);
+  const blockTimestamp = normalizeBlockTimestampFromEvent(event);
+  const fingerprint = normalizeFingerprintFromEvent(event);
 
   return {
     txHash,
     buyerWallet,
     purchaseAmountSun,
     amountTokens,
-    ownerShareSun: computeOwnerShareSun(purchaseAmountSun),
-    blockNumber: normalizeBlockNumberFromEvent(event),
-    blockTimestamp: normalizeBlockTimestampFromEvent(event),
-    fingerprint: normalizeFingerprintFromEvent(event),
+    ownerShareSun,
+    blockNumber,
+    blockTimestamp,
+    fingerprint,
     raw: event
   };
 }
 
-function extractEventsArray(rawEvents: any): any[] {
-  if (Array.isArray(rawEvents)) {
-    return rawEvents;
+function extractEventArray(payload: any): any[] {
+  if (Array.isArray(payload)) {
+    return payload;
   }
 
-  if (rawEvents && typeof rawEvents === "object" && Array.isArray(rawEvents.data)) {
-    return rawEvents.data;
+  if (payload && typeof payload === "object" && Array.isArray(payload.data)) {
+    return payload.data;
   }
 
   return [];
 }
 
-function extractNextFingerprint(rawEvents: any, mappedEvents: BuyTokensEvent[]): string | null {
-  const metaFingerprint =
-    rawEvents &&
-    typeof rawEvents === "object" &&
-    rawEvents.meta &&
-    typeof rawEvents.meta === "object" &&
-    typeof rawEvents.meta.fingerprint === "string" &&
-    rawEvents.meta.fingerprint.trim()
-      ? rawEvents.meta.fingerprint.trim()
-      : null;
-
-  if (metaFingerprint) {
-    return metaFingerprint;
+function extractNextFingerprint(payload: any): string | null {
+  const metaFingerprint = pickObjectValue(payload, ["fingerprint"]);
+  if (typeof metaFingerprint === "string" && metaFingerprint.trim()) {
+    return metaFingerprint.trim();
   }
 
-  if (mappedEvents.length > 0) {
-    return mappedEvents[mappedEvents.length - 1]?.fingerprint ?? null;
+  const meta = pickObjectValue(payload, ["meta"]);
+  const links = meta && typeof meta === "object" ? pickObjectValue(meta, ["links"]) : null;
+  const nextLink = links && typeof links === "object" ? pickObjectValue(links, ["next"]) : null;
+
+  if (typeof nextLink === "string" && nextLink.includes("fingerprint=")) {
+    const match = nextLink.match(/[?&]fingerprint=([^&]+)/);
+    if (match?.[1]) {
+      return decodeURIComponent(match[1]);
+    }
   }
 
   return null;
 }
 
-function getErrorMessage(error: unknown): string {
-  if (typeof error === "string" && error.trim()) {
-    return error.trim();
+function getRetryAfterTimestamp(failureReason: string | null): number | null {
+  const raw = String(failureReason || "").trim();
+  if (!raw) {
+    return null;
   }
 
-  if (
-    error &&
-    typeof error === "object" &&
-    "message" in error &&
-    typeof (error as { message?: unknown }).message === "string"
-  ) {
-    const message = (error as { message: string }).message.trim();
-    if (message) {
-      return message;
-    }
+  const match = raw.match(/\[RETRY_AFTER=(\d+)\]/);
+  if (!match?.[1]) {
+    return null;
   }
 
-  return "Unknown error";
+  const parsed = Number(match[1]);
+  return Number.isFinite(parsed) ? parsed : null;
 }
 
 export class BuyTokensScanner {
@@ -302,29 +295,12 @@ export class BuyTokensScanner {
   }
 
   async fetchEvents(cursor: ScanCursor = {}): Promise<RunScanResult> {
-    if (typeof this.tronWeb.getEventResult !== "function") {
-      throw new Error("tronWeb.getEventResult is required");
-    }
+    const tokenContract = await this.tronWeb.contract().at(this.tokenContractAddress);
 
-    let rawEvents: any;
-
-    try {
-      rawEvents = await this.tronWeb.getEventResult(this.tokenContractAddress, {
-        eventName: this.eventName,
-        size: this.pageSize,
-        fingerprint: cursor.fingerprint ?? undefined
-      });
-    } catch (error) {
-      const message = getErrorMessage(error);
-
-      if (message.includes("429")) {
-        throw new Error("TRON events API rate limit reached. Retry in 20-60 seconds.");
-      }
-
-      throw error;
-    }
-
-    const rawEventsArray = extractEventsArray(rawEvents);
+    const rawEvents = await tokenContract.getEventResult(this.eventName, {
+      size: this.pageSize,
+      fingerprint: cursor.fingerprint ?? undefined
+    });
 
     console.log(
       JSON.stringify({
@@ -334,45 +310,61 @@ export class BuyTokensScanner {
         pageSize: this.pageSize,
         fingerprint: cursor.fingerprint ?? null,
         rawEventsType: Array.isArray(rawEvents) ? "array" : typeof rawEvents,
-        rawEventsLength: rawEventsArray.length,
+        rawEventsLength: Array.isArray(rawEvents)
+          ? rawEvents.length
+          : Array.isArray(rawEvents?.data)
+            ? rawEvents.data.length
+            : null,
         rawEventsPreview: rawEvents
       })
     );
 
-    const events: BuyTokensEvent[] = [];
+    const rawEventList = extractEventArray(rawEvents);
+    const parsedEvents: BuyTokensEvent[] = [];
     const processed: ScanProcessResult[] = [];
 
-    for (const rawEvent of rawEventsArray) {
+    for (const rawEvent of rawEventList) {
       try {
-        const mappedEvent = mapBuyTokensEvent(rawEvent, this.tronWeb);
-        events.push(mappedEvent);
+        const event = parseBuyTokensEvent(rawEvent, this.tronWeb);
+        parsedEvents.push(event);
 
         try {
-          processed.push(await this.processEvent(mappedEvent));
+          const result = await this.processEvent(event);
+          processed.push(result);
         } catch (error) {
+          const message =
+            error && typeof error === "object" && "message" in error
+              ? String((error as { message?: unknown }).message || "").trim()
+              : "";
+
           processed.push({
             status: "event-processing-failed",
-            event: mappedEvent,
+            event,
             purchaseId: null,
-            reason: getErrorMessage(error),
+            reason: message || "Failed to process parsed event",
             rawResult: error
           });
         }
       } catch (error) {
+        const message =
+          error && typeof error === "object" && "message" in error
+            ? String((error as { message?: unknown }).message || "").trim()
+            : "";
+
         processed.push({
           status: "event-parse-failed",
           event: null,
           purchaseId: null,
-          reason: getErrorMessage(error),
+          reason: message || "Failed to parse BuyTokens event",
           rawResult: rawEvent
         });
       }
     }
 
-    const nextFingerprint = extractNextFingerprint(rawEvents, events);
+    const nextFingerprint = extractNextFingerprint(rawEvents);
 
     return {
-      events,
+      events: parsedEvents,
       processed,
       nextCursor: {
         fingerprint: nextFingerprint
@@ -380,7 +372,7 @@ export class BuyTokensScanner {
     };
   }
 
-  private async processEvent(event: BuyTokensEvent): Promise<ScanProcessResult> {
+  async processEvent(event: BuyTokensEvent): Promise<ScanProcessResult> {
     const localPurchase = await this.store.getByTxHash(event.txHash);
 
     if (!localPurchase) {
@@ -408,6 +400,20 @@ export class BuyTokensScanner {
         purchaseId: localPurchase.purchaseId,
         reason: `Purchase already finalized with status: ${localPurchase.status}`
       };
+    }
+
+    if (localPurchase.status === "failed") {
+      const retryAfter = getRetryAfterTimestamp(localPurchase.failureReason);
+      const now = event.blockTimestamp ?? Date.now();
+
+      if (retryAfter && now < retryAfter) {
+        return {
+          status: "skipped-already-final",
+          event,
+          purchaseId: localPurchase.purchaseId,
+          reason: `Retry deferred until ${new Date(retryAfter).toISOString()}`
+        };
+      }
     }
 
     const result = await this.processor.processVerifiedPurchaseAndAllocate({
