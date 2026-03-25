@@ -1,6 +1,6 @@
 # AI BUNDLE — WORKER
 
-Generated: 2026-03-25T01:05:05.893Z
+Generated: 2026-03-25T01:14:55.477Z
 
 ===== FILE: services/allocation-worker/.gitignore =====
 node_modules
@@ -2567,6 +2567,7 @@ import {
   initAmbassadorRegistryTables,
   isSlugTaken
 } from "./db/ambassadors";
+import { initPurchaseTables } from "./db/purchases";
 
 interface EnvConfig {
   port: number;
@@ -2787,6 +2788,7 @@ async function bootstrap() {
   const TronWeb = getTronWebConstructor();
 
   await initAmbassadorRegistryTables();
+  await initPurchaseTables();
 
   const tronWeb = new TronWeb({
     fullHost: env.tronFullHost,
