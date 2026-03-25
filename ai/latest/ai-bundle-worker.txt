@@ -1,6 +1,6 @@
 # AI BUNDLE — WORKER
 
-Generated: 2026-03-25T12:46:05.051Z
+Generated: 2026-03-25T12:49:21.656Z
 
 ===== FILE: services/allocation-worker/.gitignore =====
 node_modules
@@ -1976,59 +1976,94 @@ export class InMemoryPurchaseStore implements PurchaseStore {
 ===== END FILE: services/allocation-worker/src/db/purchases.ts =====
 
 ===== FILE: services/allocation-worker/src/domain/allocation.ts =====
-import TronWeb from "tronweb";
-import { PurchaseRecord, PurchaseStore } from "../db/purchases";
-import { ControllerClient } from "../tron/controller";
+import type {
+  AllocationMode,
+  PurchaseRecord,
+  PurchaseStore
+} from "../db/purchases";
 
-export type AllocationDecisionStatus =
+export interface AllocationDependencies {
+  store: PurchaseStore;
+  executor: AllocationExecutor;
+  now?: () => number;
+  logger?: AllocationLogger;
+}
+
+export interface AllocationLogger {
+  info?(payload: Record<string, unknown>): void;
+  warn?(payload: Record<string, unknown>): void;
+  error?(payload: Record<string, unknown>): void;
+}
+
+export interface AllocationExecutorInput {
+  purchase: PurchaseRecord;
+  feeLimitSun?: number;
+}
+
+export interface AllocationExecutorResult {
+  txid: string;
+}
+
+export interface AllocationExecutor {
+  allocate(
+    input: AllocationExecutorInput
+  ): Promise<AllocationExecutorResult>;
+}
+
+export type AllocationAttemptStatus =
   | "allocated"
-  | "already-processed-on-chain"
-  | "missing-purchase"
-  | "invalid-purchase-status"
-  | "missing-ambassador"
-  | "deferred-insufficient-energy"
-  | "failed";
+  | "deferred"
+  | "retryable-failed"
+  | "final-failed"
+  | "skipped-already-final"
+  | "skipped-no-ambassador-wallet";
 
-export interface AllocationDecision {
-  status: AllocationDecisionStatus;
-  purchase: PurchaseRecord | null;
+export interface AllocationAttemptResult {
+  status: AllocationAttemptStatus;
+  purchase: PurchaseRecord;
+  txid: string | null;
+  reason: string | null;
+  errorCode: string | null;
+  errorMessage: string | null;
+}
+
+export interface ReplayFailedAllocationResult {
+  status: "allocated" | "failed" | "skipped";
+  purchase: PurchaseRecord;
   ambassadorWallet: string | null;
   txid: string | null;
   reason: string | null;
 }
 
-export interface ExecuteAllocationInput {
-  purchaseId: string;
+export interface PrepareWithdrawBatchInput {
+  ambassadorWallet: string;
+  limit?: number;
+}
+
+export interface PrepareWithdrawBatchResult {
+  ambassadorWallet: string;
+  purchases: PurchaseRecord[];
+}
+
+export interface AllocatePendingBatchInput {
+  ambassadorWallet: string;
   feeLimitSun?: number;
-  now?: number;
+  limit?: number;
+  allocationMode?: AllocationMode;
 }
 
-export interface AllocationServiceConfig {
-  store: PurchaseStore;
-  controllerClient: ControllerClient;
+export interface AllocatePendingBatchResult {
+  ambassadorWallet: string;
+  processed: AllocationAttemptResult[];
 }
 
-interface AccountResourceResponse {
-  freeNetLimit?: number;
-  freeNetUsed?: number;
-  NetLimit?: number;
-  NetUsed?: number;
-  EnergyLimit?: number;
-  EnergyUsed?: number;
-}
+type AllocationErrorKind = "resource" | "retryable" | "final" | "unknown";
 
-function assertNonEmpty(value: string, fieldName: string): string {
-  const normalized = String(value || "").trim();
-
-  if (!normalized) {
-    throw new Error(`${fieldName} is required`);
-  }
-
-  return normalized;
-}
-
-function isAllocatableStatus(status: PurchaseRecord["status"]): boolean {
-  return status === "verified" || status === "received";
+interface ClassifiedAllocationError {
+  kind: AllocationErrorKind;
+  code: string | null;
+  reason: string;
+  message: string;
 }
 
 function toErrorMessage(error: unknown): string {
@@ -2043,299 +2078,466 @@ function toErrorMessage(error: unknown): string {
     typeof (error as { message?: unknown }).message === "string"
   ) {
     const message = (error as { message: string }).message.trim();
+
     if (message) {
       return message;
     }
   }
 
-  return "Allocation failed";
+  try {
+    return JSON.stringify(error);
+  } catch {
+    return "Unknown allocation error";
+  }
 }
 
-function getTronResourceApiUrl(): string {
-  return String(process.env.TRON_RESOURCE_API_URL || "https://api.trongrid.io").replace(/\/+$/, "");
+function toLowerSafe(value: unknown): string {
+  return typeof value === "string" ? value.toLowerCase() : "";
 }
 
-function getTronHeaders(): Record<string, string> {
-  const headers: Record<string, string> = {
-    "Content-Type": "application/json"
-  };
-
-  const apiKey = String(process.env.TRONGRID_API_KEY || "").trim();
-  if (apiKey) {
-    headers["TRON-PRO-API-KEY"] = apiKey;
+function extractErrorCode(error: unknown): string | null {
+  if (!error || typeof error !== "object") {
+    return null;
   }
 
-  return headers;
-}
-
-function getResourceAddressFromEnv(): string {
-  const candidates = [
-    process.env.TRON_RESOURCE_ADDRESS,
-    process.env.CONTROLLER_OWNER_WALLET,
-    process.env.CONTROLLER_WALLET,
-    process.env.OWNER_WALLET
+  const candidates: unknown[] = [
+    (error as any).code,
+    (error as any).errorCode,
+    (error as any).error_code,
+    (error as any).name
   ];
 
   for (const candidate of candidates) {
-    const normalized = String(candidate || "").trim();
-    if (normalized) {
-      return normalized;
+    if (typeof candidate === "string" && candidate.trim()) {
+      return candidate.trim();
     }
   }
 
-  throw new Error(
-    "Resource wallet is not configured. Set TRON_RESOURCE_ADDRESS or CONTROLLER_OWNER_WALLET"
+  return null;
+}
+
+function isResourceInsufficientMessage(message: string): boolean {
+  const value = message.toLowerCase();
+
+  return (
+    value.includes("account resource insufficient") ||
+    value.includes("resource insufficient") ||
+    value.includes("out of energy") ||
+    value.includes("energy limit") ||
+    value.includes("insufficient energy") ||
+    value.includes("insufficient bandwidth") ||
+    value.includes("bandwidth limit") ||
+    value.includes("account resources are insufficient") ||
+    value.includes("not enough energy") ||
+    value.includes("not enough bandwidth")
   );
 }
 
-function getRequiredEnergyThreshold(): number {
-  const raw = Number(process.env.TRON_MIN_REQUIRED_ENERGY || "185000");
-  return Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : 185000;
+function isRetryableTransportMessage(message: string): boolean {
+  const value = message.toLowerCase();
+
+  return (
+    value.includes("timeout") ||
+    value.includes("timed out") ||
+    value.includes("network") ||
+    value.includes("socket hang up") ||
+    value.includes("econnreset") ||
+    value.includes("503") ||
+    value.includes("502") ||
+    value.includes("gateway") ||
+    value.includes("temporar") ||
+    value.includes("rate limit") ||
+    value.includes("too many requests")
+  );
 }
 
-function getReserveEnergyThreshold(): number {
-  const raw = Number(process.env.TRON_RESERVE_ENERGY || "15000");
-  return Number.isFinite(raw) && raw >= 0 ? Math.floor(raw) : 15000;
+function isFinalMessage(message: string): boolean {
+  const value = message.toLowerCase();
+
+  return (
+    value.includes("contract validate error") ||
+    value.includes("revert") ||
+    value.includes("invalid address") ||
+    value.includes("owner address is not set") ||
+    value.includes("purchase not eligible") ||
+    value.includes("already allocated") ||
+    value.includes("already processed") ||
+    value.includes("permission denied") ||
+    value.includes("bad request")
+  );
 }
 
-async function getAvailableEnergy(addressBase58: string): Promise<number> {
-  const addressHex = TronWeb.address.toHex(addressBase58);
-  const url = `${getTronResourceApiUrl()}/wallet/getaccountresource`;
+function classifyAllocationError(error: unknown): ClassifiedAllocationError {
+  const message = toErrorMessage(error);
+  const code = extractErrorCode(error);
+  const lowerCode = toLowerSafe(code);
 
-  const response = await fetch(url, {
-    method: "POST",
-    headers: getTronHeaders(),
-    body: JSON.stringify({
-      address: addressHex,
-      visible: false
-    })
-  });
-
-  const text = await response.text();
-  let data: AccountResourceResponse = {};
-
-  try {
-    data = text ? JSON.parse(text) : {};
-  } catch {
-    throw new Error(`Invalid TRON resource response: ${text || "empty response"}`);
+  if (
+    isResourceInsufficientMessage(message) ||
+    lowerCode.includes("out_of_energy") ||
+    lowerCode.includes("insufficient")
+  ) {
+    return {
+      kind: "resource",
+      code,
+      reason: "Account resource insufficient error.",
+      message
+    };
   }
 
-  if (!response.ok) {
-    throw new Error(`TRON resource API HTTP ${response.status}`);
+  if (
+    isRetryableTransportMessage(message) ||
+    lowerCode.includes("timeout") ||
+    lowerCode.includes("network")
+  ) {
+    return {
+      kind: "retryable",
+      code,
+      reason: "Temporary allocation transport error.",
+      message
+    };
   }
 
-  const energyLimit = Number(data.EnergyLimit || 0);
-  const energyUsed = Number(data.EnergyUsed || 0);
-  const available = Math.max(0, energyLimit - energyUsed);
+  if (isFinalMessage(message)) {
+    return {
+      kind: "final",
+      code,
+      reason: message,
+      message
+    };
+  }
 
-  return Number.isFinite(available) ? available : 0;
+  return {
+    kind: "unknown",
+    code,
+    reason: message,
+    message
+  };
+}
+
+function isFinalPurchaseStatus(status: PurchaseRecord["status"]): boolean {
+  return (
+    status === "allocated" ||
+    status === "ignored" ||
+    status === "allocation_failed_final"
+  );
+}
+
+function isClaimQueueEligible(status: PurchaseRecord["status"]): boolean {
+  return (
+    status === "verified" ||
+    status === "deferred" ||
+    status === "allocation_failed_retryable"
+  );
 }
 
 export class AllocationService {
   private readonly store: PurchaseStore;
-  private readonly controllerClient: ControllerClient;
+  private readonly executor: AllocationExecutor;
+  private readonly now: () => number;
+  private readonly logger?: AllocationLogger;
 
-  constructor(config: AllocationServiceConfig) {
-    if (!config?.store) {
-      throw new Error("store is required");
-    }
-
-    if (!config?.controllerClient) {
-      throw new Error("controllerClient is required");
-    }
-
-    this.store = config.store;
-    this.controllerClient = config.controllerClient;
+  constructor(deps: AllocationDependencies) {
+    this.store = deps.store;
+    this.executor = deps.executor;
+    this.now = deps.now ?? (() => Date.now());
+    this.logger = deps.logger;
   }
 
-  async executeAllocation(input: ExecuteAllocationInput): Promise<AllocationDecision> {
-    const purchaseId = assertNonEmpty(input.purchaseId, "purchaseId");
-    const now = input.now ?? Date.now();
-
+  async tryAllocateVerifiedPurchase(
+    purchaseId: string,
+    options?: {
+      feeLimitSun?: number;
+      allocationMode?: AllocationMode;
+    }
+  ): Promise<AllocationAttemptResult> {
     const purchase = await this.store.getByPurchaseId(purchaseId);
 
     if (!purchase) {
-      return {
-        status: "missing-purchase",
-        purchase: null,
-        ambassadorWallet: null,
-        txid: null,
-        reason: "Purchase not found in local store"
-      };
+      throw new Error(`Purchase not found: ${purchaseId}`);
     }
 
-    if (!isAllocatableStatus(purchase.status)) {
-      return {
-        status: "invalid-purchase-status",
-        purchase,
-        ambassadorWallet: purchase.ambassadorWallet,
-        txid: null,
-        reason: `Purchase status is not allocatable: ${purchase.status}`
-      };
-    }
-
-    const resourceAddress = getResourceAddressFromEnv();
-    const minRequiredEnergy = getRequiredEnergyThreshold();
-    const reserveEnergy = getReserveEnergyThreshold();
-    const totalRequiredEnergy = minRequiredEnergy + reserveEnergy;
-    const availableEnergy = await getAvailableEnergy(resourceAddress);
-
-    if (availableEnergy < totalRequiredEnergy) {
-      const deferredPurchase = await this.store.update(purchase.purchaseId, {
-        status: "verified",
-        failureReason: `Awaiting energy: available=${availableEnergy}, required=${totalRequiredEnergy}`,
-        now
-      });
-
-      return {
-        status: "deferred-insufficient-energy",
-        purchase: deferredPurchase,
-        ambassadorWallet: deferredPurchase.ambassadorWallet,
-        txid: null,
-        reason: `Insufficient energy on ${resourceAddress}: available ${availableEnergy}, required ${totalRequiredEnergy}`
-      };
-    }
-
-    const onChainProcessed = await this.controllerClient.isPurchaseProcessed(purchase.purchaseId);
-
-    if (onChainProcessed) {
-      const ignoredPurchase = await this.store.markIgnored(
-        purchase.purchaseId,
-        "Purchase already processed on-chain",
-        now
-      );
-
-      return {
-        status: "already-processed-on-chain",
-        purchase: ignoredPurchase,
-        ambassadorWallet: ignoredPurchase.ambassadorWallet,
-        txid: null,
-        reason: "Purchase already processed on-chain"
-      };
-    }
-
-    const alreadyBoundAmbassador = await this.controllerClient.getBuyerAmbassador(
-      purchase.buyerWallet
-    );
-
-    const ambassadorWallet = alreadyBoundAmbassador || purchase.ambassadorWallet || null;
-
-    if (!ambassadorWallet) {
-      const failedPurchase = await this.store.markFailed(
-        purchase.purchaseId,
-        "Ambassador wallet is missing for allocation",
-        now
-      );
-
-      return {
-        status: "missing-ambassador",
-        purchase: failedPurchase,
-        ambassadorWallet: null,
-        txid: null,
-        reason: "Ambassador wallet is missing for allocation"
-      };
-    }
-
-    try {
-      const txid = await this.controllerClient.allocatePurchase({
-        purchaseId: purchase.purchaseId,
-        buyerWallet: purchase.buyerWallet,
-        ambassadorWallet,
-        amountSun: purchase.ownerShareSun,
-        feeLimitSun: input.feeLimitSun
-      });
-
-      const allocatedPurchase = await this.store.markAllocated(purchase.purchaseId, {
-        ambassadorWallet,
-        now
-      });
-
-      return {
-        status: "allocated",
-        purchase: allocatedPurchase,
-        ambassadorWallet,
-        txid,
-        reason: null
-      };
-    } catch (error) {
-      const message = toErrorMessage(error);
-
-      const lowered = message.toLowerCase();
-      const looksLikeEnergyProblem =
-        lowered.includes("out_of_energy") ||
-        lowered.includes("insufficient energy") ||
-        lowered.includes("energy");
-
-      if (looksLikeEnergyProblem) {
-        const deferredPurchase = await this.store.update(purchase.purchaseId, {
-          status: "verified",
-          failureReason: message,
-          now
-        });
-
-        return {
-          status: "deferred-insufficient-energy",
-          purchase: deferredPurchase,
-          ambassadorWallet,
-          txid: null,
-          reason: message
-        };
-      }
-
-      const failedPurchase = await this.store.markFailed(
-        purchase.purchaseId,
-        message,
-        now
-      );
-
-      return {
-        status: "failed",
-        purchase: failedPurchase,
-        ambassadorWallet,
-        txid: null,
-        reason: message
-      };
-    }
+    return this.tryAllocatePurchaseRecord(purchase, {
+      feeLimitSun: options?.feeLimitSun,
+      allocationMode: options?.allocationMode ?? "eager"
+    });
   }
 
   async replayFailedAllocation(
     purchaseId: string,
     feeLimitSun?: number,
     now?: number
-  ): Promise<AllocationDecision> {
-    const purchase = await this.store.getByPurchaseId(assertNonEmpty(purchaseId, "purchaseId"));
+  ): Promise<ReplayFailedAllocationResult> {
+    const purchase = await this.store.getByPurchaseId(purchaseId);
 
     if (!purchase) {
+      throw new Error(`Purchase not found: ${purchaseId}`);
+    }
+
+    if (isFinalPurchaseStatus(purchase.status) && purchase.status !== "allocated") {
       return {
-        status: "missing-purchase",
-        purchase: null,
-        ambassadorWallet: null,
+        status: "skipped",
+        purchase,
+        ambassadorWallet: purchase.ambassadorWallet,
         txid: null,
-        reason: "Purchase not found in local store"
+        reason: `Purchase already finalized with status: ${purchase.status}`
       };
     }
 
-    const updateNow = now ?? Date.now();
-
-    await this.store.update(purchase.purchaseId, {
-      status: "verified",
-      failureReason: null,
-      now: updateNow
+    const result = await this.tryAllocatePurchaseRecord(purchase, {
+      feeLimitSun,
+      allocationMode: "manual-replay",
+      nowOverride: now
     });
 
-    const executeInput: ExecuteAllocationInput = {
-      purchaseId: purchase.purchaseId
+    return {
+      status:
+        result.status === "allocated"
+          ? "allocated"
+          : result.status === "skipped-already-final" ||
+              result.status === "skipped-no-ambassador-wallet"
+            ? "skipped"
+            : "failed",
+      purchase: result.purchase,
+      ambassadorWallet: result.purchase.ambassadorWallet,
+      txid: result.txid,
+      reason: result.reason
     };
+  }
 
-    if (feeLimitSun !== undefined) {
-      executeInput.feeLimitSun = feeLimitSun;
+  async prepareWithdrawBatch(
+    input: PrepareWithdrawBatchInput
+  ): Promise<PrepareWithdrawBatchResult> {
+    const ambassadorWallet = String(input.ambassadorWallet || "").trim();
+
+    if (!ambassadorWallet) {
+      throw new Error("ambassadorWallet is required");
     }
 
-    if (now !== undefined) {
-      executeInput.now = now;
+    const purchases = await this.store.listPendingByAmbassador({
+      ambassadorWallet,
+      limit: input.limit
+    });
+
+    return {
+      ambassadorWallet,
+      purchases
+    };
+  }
+
+  async allocatePendingBatch(
+    input: AllocatePendingBatchInput
+  ): Promise<AllocatePendingBatchResult> {
+    const ambassadorWallet = String(input.ambassadorWallet || "").trim();
+
+    if (!ambassadorWallet) {
+      throw new Error("ambassadorWallet is required");
     }
 
-    return this.executeAllocation(executeInput);
+    const pending = await this.store.listPendingByAmbassador({
+      ambassadorWallet,
+      limit: input.limit
+    });
+
+    const processed: AllocationAttemptResult[] = [];
+
+    for (const purchase of pending) {
+      const result = await this.tryAllocatePurchaseRecord(purchase, {
+        feeLimitSun: input.feeLimitSun,
+        allocationMode: input.allocationMode ?? "claim-first"
+      });
+
+      processed.push(result);
+    }
+
+    return {
+      ambassadorWallet,
+      processed
+    };
+  }
+
+  private async tryAllocatePurchaseRecord(
+    purchase: PurchaseRecord,
+    options: {
+      feeLimitSun?: number;
+      allocationMode?: AllocationMode;
+      nowOverride?: number;
+    }
+  ): Promise<AllocationAttemptResult> {
+    const now = options.nowOverride ?? this.now();
+    const allocationMode = options.allocationMode ?? "eager";
+
+    if (isFinalPurchaseStatus(purchase.status)) {
+      return {
+        status: "skipped-already-final",
+        purchase,
+        txid: null,
+        reason: `Purchase already finalized with status: ${purchase.status}`,
+        errorCode: null,
+        errorMessage: null
+      };
+    }
+
+    if (!isClaimQueueEligible(purchase.status) && purchase.status !== "allocation_in_progress") {
+      const refreshed = await this.store.markAllocationRetryableFailed(purchase.purchaseId, {
+        reason: `Purchase is not eligible for allocation from status: ${purchase.status}`,
+        allocationMode,
+        errorCode: "INVALID_STATUS",
+        errorMessage: `Purchase is not eligible for allocation from status: ${purchase.status}`,
+        now
+      });
+
+      return {
+        status: "retryable-failed",
+        purchase: refreshed,
+        txid: null,
+        reason: refreshed.failureReason,
+        errorCode: "INVALID_STATUS",
+        errorMessage: `Purchase is not eligible for allocation from status: ${purchase.status}`
+      };
+    }
+
+    if (!purchase.ambassadorWallet) {
+      const deferred = await this.store.markDeferred(purchase.purchaseId, {
+        reason: "Ambassador wallet is missing for this purchase.",
+        allocationMode,
+        errorCode: "NO_AMBASSADOR_WALLET",
+        errorMessage: "Ambassador wallet is missing for this purchase.",
+        now
+      });
+
+      return {
+        status: "skipped-no-ambassador-wallet",
+        purchase: deferred,
+        txid: null,
+        reason: "Ambassador wallet is missing for this purchase.",
+        errorCode: "NO_AMBASSADOR_WALLET",
+        errorMessage: "Ambassador wallet is missing for this purchase."
+      };
+    }
+
+    const inProgress = await this.store.markAllocationInProgress(purchase.purchaseId, {
+      allocationMode,
+      now
+    });
+
+    try {
+      this.logger?.info?.({
+        scope: "allocation",
+        stage: "execute-start",
+        purchaseId: inProgress.purchaseId,
+        txHash: inProgress.txHash,
+        ambassadorWallet: inProgress.ambassadorWallet,
+        allocationMode,
+        feeLimitSun: options.feeLimitSun ?? null
+      });
+
+      const execution = await this.executor.allocate({
+        purchase: inProgress,
+        feeLimitSun: options.feeLimitSun
+      });
+
+      const allocated = await this.store.markAllocated(inProgress.purchaseId, {
+        ambassadorWallet: inProgress.ambassadorWallet,
+        allocationMode,
+        now: this.now()
+      });
+
+      this.logger?.info?.({
+        scope: "allocation",
+        stage: "execute-success",
+        purchaseId: allocated.purchaseId,
+        txHash: allocated.txHash,
+        ambassadorWallet: allocated.ambassadorWallet,
+        allocationMode,
+        txid: execution.txid
+      });
+
+      return {
+        status: "allocated",
+        purchase: allocated,
+        txid: execution.txid,
+        reason: null,
+        errorCode: null,
+        errorMessage: null
+      };
+    } catch (error) {
+      const classified = classifyAllocationError(error);
+
+      this.logger?.warn?.({
+        scope: "allocation",
+        stage: "execute-failed",
+        purchaseId: inProgress.purchaseId,
+        txHash: inProgress.txHash,
+        ambassadorWallet: inProgress.ambassadorWallet,
+        allocationMode,
+        kind: classified.kind,
+        code: classified.code,
+        reason: classified.reason,
+        message: classified.message
+      });
+
+      if (classified.kind === "resource") {
+        const deferred = await this.store.markDeferred(inProgress.purchaseId, {
+          reason: classified.reason,
+          allocationMode,
+          errorCode: classified.code,
+          errorMessage: classified.message,
+          now: this.now()
+        });
+
+        return {
+          status: "deferred",
+          purchase: deferred,
+          txid: null,
+          reason: classified.reason,
+          errorCode: classified.code,
+          errorMessage: classified.message
+        };
+      }
+
+      if (classified.kind === "retryable" || classified.kind === "unknown") {
+        const failed = await this.store.markAllocationRetryableFailed(
+          inProgress.purchaseId,
+          {
+            reason: classified.reason,
+            allocationMode,
+            errorCode: classified.code,
+            errorMessage: classified.message,
+            now: this.now()
+          }
+        );
+
+        return {
+          status: "retryable-failed",
+          purchase: failed,
+          txid: null,
+          reason: classified.reason,
+          errorCode: classified.code,
+          errorMessage: classified.message
+        };
+      }
+
+      const finalFailed = await this.store.markAllocationFinalFailed(
+        inProgress.purchaseId,
+        {
+          reason: classified.reason,
+          allocationMode,
+          errorCode: classified.code,
+          errorMessage: classified.message,
+          now: this.now()
+        }
+      );
+
+      return {
+        status: "final-failed",
+        purchase: finalFailed,
+        txid: null,
+        reason: classified.reason,
+        errorCode: classified.code,
+        errorMessage: classified.message
+      };
+    }
   }
 }
 
