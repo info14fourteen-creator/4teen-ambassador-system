@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   AmbassadorDashboard,
+  AmbassadorWithdrawalQueue,
   WithdrawResult,
   getConnectedWalletAddress,
   readAmbassadorDashboard,
@@ -87,33 +88,6 @@ function toErrorMessage(error: unknown): string {
   return "Unknown error";
 }
 
-function toSafeStringNumber(value: unknown): string {
-  if (typeof value === "string" && value.trim()) {
-    return value.trim();
-  }
-
-  if (typeof value === "number" && Number.isFinite(value)) {
-    return String(Math.trunc(value));
-  }
-
-  return "0";
-}
-
-function toSafeInteger(value: unknown): number {
-  if (typeof value === "number" && Number.isFinite(value) && value >= 0) {
-    return Math.trunc(value);
-  }
-
-  if (typeof value === "string" && value.trim()) {
-    const parsed = Number(value);
-    if (Number.isFinite(parsed) && parsed >= 0) {
-      return Math.trunc(parsed);
-    }
-  }
-
-  return 0;
-}
-
 function isPositiveSun(value: string): boolean {
   try {
     return BigInt(value) > 0n;
@@ -122,46 +96,20 @@ function isPositiveSun(value: string): boolean {
   }
 }
 
-function buildStatusCards(dashboard: AmbassadorDashboard | null): AmbassadorDashboardStatusCards {
-  if (!dashboard) {
+function buildStatusCards(
+  withdrawalQueue: AmbassadorWithdrawalQueue | null | undefined
+): AmbassadorDashboardStatusCards {
+  if (!withdrawalQueue) {
     return EMPTY_STATUS_CARDS;
   }
 
-  const availableOnChainSun = toSafeStringNumber(
-    (dashboard as any).availableOnChainSun ??
-      (dashboard as any).balances?.availableOnChainSun ??
-      (dashboard as any).withdrawal?.availableOnChainSun
-  );
+  const availableOnChainSun = withdrawalQueue.availableOnChainSun || "0";
+  const pendingBackendSyncSun = withdrawalQueue.pendingBackendSyncSun || "0";
+  const requestedForProcessingSun = withdrawalQueue.requestedForProcessingSun || "0";
 
-  const pendingBackendSyncSun = toSafeStringNumber(
-    (dashboard as any).pendingBackendSyncSun ??
-      (dashboard as any).balances?.pendingBackendSyncSun ??
-      (dashboard as any).withdrawal?.pendingBackendSyncSun
-  );
-
-  const requestedForProcessingSun = toSafeStringNumber(
-    (dashboard as any).requestedForProcessingSun ??
-      (dashboard as any).balances?.requestedForProcessingSun ??
-      (dashboard as any).withdrawal?.requestedForProcessingSun
-  );
-
-  const availableOnChainCount = toSafeInteger(
-    (dashboard as any).availableOnChainCount ??
-      (dashboard as any).counts?.availableOnChainCount ??
-      (dashboard as any).withdrawal?.availableOnChainCount
-  );
-
-  const pendingBackendSyncCount = toSafeInteger(
-    (dashboard as any).pendingBackendSyncCount ??
-      (dashboard as any).counts?.pendingBackendSyncCount ??
-      (dashboard as any).withdrawal?.pendingBackendSyncCount
-  );
-
-  const requestedForProcessingCount = toSafeInteger(
-    (dashboard as any).requestedForProcessingCount ??
-      (dashboard as any).counts?.requestedForProcessingCount ??
-      (dashboard as any).withdrawal?.requestedForProcessingCount
-  );
+  const availableOnChainCount = withdrawalQueue.availableOnChainCount || 0;
+  const pendingBackendSyncCount = withdrawalQueue.pendingBackendSyncCount || 0;
+  const requestedForProcessingCount = withdrawalQueue.requestedForProcessingCount || 0;
 
   return {
     availableOnChainSun,
@@ -171,30 +119,21 @@ function buildStatusCards(dashboard: AmbassadorDashboard | null): AmbassadorDash
     pendingBackendSyncCount,
     requestedForProcessingCount,
     hasAvailableOnChain: isPositiveSun(availableOnChainSun) || availableOnChainCount > 0,
-    hasPendingBackendSync: isPositiveSun(pendingBackendSyncSun) || pendingBackendSyncCount > 0,
+    hasPendingBackendSync:
+      isPositiveSun(pendingBackendSyncSun) || pendingBackendSyncCount > 0,
     hasRequestedForProcessing:
       isPositiveSun(requestedForProcessingSun) || requestedForProcessingCount > 0
   };
 }
 
 function detectProcessingWithdrawal(
-  dashboard: AmbassadorDashboard | null,
-  statusCards: AmbassadorDashboardStatusCards
+  withdrawalQueue: AmbassadorWithdrawalQueue | null | undefined
 ): boolean {
-  if (!dashboard) {
+  if (!withdrawalQueue) {
     return false;
   }
 
-  const explicitFlag =
-    (dashboard as any).hasProcessingWithdrawal ??
-    (dashboard as any).withdrawal?.hasProcessingWithdrawal ??
-    (dashboard as any).queue?.hasProcessingWithdrawal;
-
-  if (typeof explicitFlag === "boolean") {
-    return explicitFlag;
-  }
-
-  return statusCards.hasRequestedForProcessing;
+  return Boolean(withdrawalQueue.hasProcessingWithdrawal);
 }
 
 export function useAmbassadorDashboard(): UseAmbassadorDashboardResult {
@@ -211,8 +150,10 @@ export function useAmbassadorDashboard(): UseAmbassadorDashboardResult {
     try {
       const wallet = await getConnectedWalletAddress();
       const dashboard = await readAmbassadorDashboard(wallet);
-      const statusCards = buildStatusCards(dashboard);
-      const hasProcessingWithdrawal = detectProcessingWithdrawal(dashboard, statusCards);
+      const statusCards = buildStatusCards(dashboard.withdrawalQueue);
+      const hasProcessingWithdrawal = detectProcessingWithdrawal(
+        dashboard.withdrawalQueue
+      );
 
       setState((current) => ({
         ...current,
@@ -221,7 +162,7 @@ export function useAmbassadorDashboard(): UseAmbassadorDashboardResult {
         statusCards,
         hasProcessingWithdrawal,
         isConnected: true,
-        isRegistered: Boolean((dashboard as any)?.identity?.exists),
+        isRegistered: dashboard.identity.exists,
         isLoading: false,
         isRefreshing: false,
         error: null
