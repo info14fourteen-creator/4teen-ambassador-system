@@ -10,6 +10,7 @@ import {
   initAmbassadorRegistryTables,
   isSlugTaken
 } from "./db/ambassadors";
+import { initPurchaseTables } from "./db/purchases";
 
 interface EnvConfig {
   port: number;
@@ -230,6 +231,7 @@ async function bootstrap() {
   const TronWeb = getTronWebConstructor();
 
   await initAmbassadorRegistryTables();
+  await initPurchaseTables();
 
   const tronWeb = new TronWeb({
     fullHost: env.tronFullHost,
