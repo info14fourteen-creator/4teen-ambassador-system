@@ -1,4 +1,4 @@
-import { assertValidSlug } from "../../../../shared/utils/slug";
+import { assertValidSlug, normalizeSlug } from "../../../../shared/utils/slug";
 
 export interface AttributionPayload {
   txHash: string;
@@ -29,6 +29,10 @@ function assertNonEmpty(value: string, fieldName: string): string {
   return normalized;
 }
 
+function normalizeEndpoint(endpoint: string): string {
+  return assertNonEmpty(endpoint, "endpoint").replace(/\/+$/, "");
+}
+
 function normalizeWallet(wallet: string): string {
   return assertNonEmpty(wallet, "buyerWallet");
 }
@@ -37,14 +41,46 @@ function normalizeTxHash(txHash: string): string {
   return assertNonEmpty(txHash, "txHash");
 }
 
+function normalizeAttributionSlug(slug: string): string {
+  return assertValidSlug(normalizeSlug(assertNonEmpty(slug, "slug")));
+}
+
+async function parseResponseBody<T>(response: Response): Promise<T | null> {
+  const responseText = await response.text();
+
+  if (!responseText) {
+    return null;
+  }
+
+  try {
+    return JSON.parse(responseText) as T;
+  } catch {
+    return null;
+  }
+}
+
+function extractErrorMessage(data: unknown, status: number): string {
+  if (
+    data &&
+    typeof data === "object" &&
+    "error" in data &&
+    typeof (data as { error?: unknown }).error === "string" &&
+    (data as { error: string }).error.trim()
+  ) {
+    return (data as { error: string }).error.trim();
+  }
+
+  return `Attribution request failed with status ${status}`;
+}
+
 export async function submitAttribution<T = unknown>(
   payload: AttributionPayload,
   options: SubmitAttributionOptions
 ): Promise<SubmitAttributionResponse<T>> {
-  const endpoint = assertNonEmpty(options.endpoint, "endpoint");
+  const endpoint = normalizeEndpoint(options.endpoint);
   const txHash = normalizeTxHash(payload.txHash);
   const buyerWallet = normalizeWallet(payload.buyerWallet);
-  const slug = assertValidSlug(payload.slug);
+  const slug = normalizeAttributionSlug(payload.slug);
 
   const fetchImpl = options.fetchImpl ?? fetch;
 
@@ -66,19 +102,10 @@ export async function submitAttribution<T = unknown>(
     })
   });
 
-  let data: T | null = null;
-  const responseText = await response.text();
-
-  if (responseText) {
-    try {
-      data = JSON.parse(responseText) as T;
-    } catch {
-      data = null;
-    }
-  }
+  const data = await parseResponseBody<T>(response);
 
   if (!response.ok) {
-    throw new Error(`Attribution request failed with status ${response.status}`);
+    throw new Error(extractErrorMessage(data, response.status));
   }
 
   return {
