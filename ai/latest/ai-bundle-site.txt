@@ -1,6 +1,6 @@
 # AI BUNDLE — SITE INTEGRATION
 
-Generated: 2026-03-25T00:16:18.243Z
+Generated: 2026-03-25T00:17:17.333Z
 
 ===== FILE: apps/site-integration/src/ambassador/autoMount.ts =====
 import { mountAmbassadorWidget } from "./widget";
