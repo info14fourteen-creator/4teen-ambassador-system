@@ -245,7 +245,18 @@ export class BuyTokensScanner {
       limit: this.pageSize,
       fingerprint: cursor.fingerprint ?? undefined
     });
-
+    console.log(
+  JSON.stringify({
+    stage: "scan:getEventResult",
+    tokenContractAddress: this.tokenContractAddress,
+    eventName: this.eventName,
+    pageSize: this.pageSize,
+    fingerprint: cursor.fingerprint ?? null,
+    rawEventsType: Array.isArray(rawEvents) ? "array" : typeof rawEvents,
+    rawEventsLength: Array.isArray(rawEvents) ? rawEvents.length : null,
+    rawEventsPreview: Array.isArray(rawEvents) ? rawEvents.slice(0, 2) : rawEvents
+  })
+);
     const events = Array.isArray(rawEvents)
       ? rawEvents.map((event) => mapBuyTokensEvent(event, this.tronWeb))
       : [];
