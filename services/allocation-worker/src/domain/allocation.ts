@@ -38,6 +38,15 @@ function assertNonEmpty(value: string, fieldName: string): string {
   return normalized;
 }
 
+function normalizeOptionalWallet(value: string | null | undefined): string | null {
+  if (value == null) {
+    return null;
+  }
+
+  const normalized = String(value).trim();
+  return normalized || null;
+}
+
 function isAllocatableStatus(status: PurchaseRecord["status"]): boolean {
   return status === "verified" || status === "received";
 }
@@ -54,12 +63,104 @@ function toErrorMessage(error: unknown): string {
     typeof (error as { message?: unknown }).message === "string"
   ) {
     const message = (error as { message: string }).message.trim();
+
     if (message) {
       return message;
     }
   }
 
   return "Allocation failed";
+}
+
+function readResultStatus(value: unknown): string {
+  if (!value || typeof value !== "object") {
+    return "";
+  }
+
+  if ("status" in value && typeof (value as { status?: unknown }).status === "string") {
+    return String((value as { status: string }).status).trim();
+  }
+
+  return "";
+}
+
+function readResultReason(value: unknown): string | null {
+  if (!value || typeof value !== "object") {
+    return null;
+  }
+
+  if ("reason" in value && typeof (value as { reason?: unknown }).reason === "string") {
+    const reason = String((value as { reason: string }).reason).trim();
+    return reason || null;
+  }
+
+  if ("message" in value && typeof (value as { message?: unknown }).message === "string") {
+    const message = String((value as { message: string }).message).trim();
+    return message || null;
+  }
+
+  return null;
+}
+
+function readResultTxid(value: unknown): string | null {
+  if (!value || typeof value !== "object") {
+    return null;
+  }
+
+  const candidateKeys = ["txid", "txId", "transactionId", "hash"];
+
+  for (const key of candidateKeys) {
+    if (key in value && typeof (value as Record<string, unknown>)[key] === "string") {
+      const normalized = String((value as Record<string, unknown>)[key]).trim();
+
+      if (normalized) {
+        return normalized;
+      }
+    }
+  }
+
+  return null;
+}
+
+function readAmbassadorWalletFromLookup(value: unknown): string | null {
+  if (!value || typeof value !== "object") {
+    return null;
+  }
+
+  const candidateKeys = [
+    "ambassadorWallet",
+    "wallet",
+    "boundAmbassadorWallet",
+    "address"
+  ];
+
+  for (const key of candidateKeys) {
+    if (key in value && typeof (value as Record<string, unknown>)[key] === "string") {
+      const normalized = String((value as Record<string, unknown>)[key]).trim();
+
+      if (normalized) {
+        return normalized;
+      }
+    }
+  }
+
+  return null;
+}
+
+function isLookupMissing(value: unknown): boolean {
+  const status = readResultStatus(value).toLowerCase();
+
+  if (
+    status === "not-found" ||
+    status === "missing" ||
+    status === "unbound" ||
+    status === "none"
+  ) {
+    return true;
+  }
+
+  const wallet = readAmbassadorWalletFromLookup(value);
+  return !wallet;
 }
 
 export class AllocationService {
@@ -79,7 +180,9 @@ export class AllocationService {
     this.controllerClient = config.controllerClient;
   }
 
-  async executeAllocation(input: ExecuteAllocationInput): Promise<AllocationDecision> {
+  async executeAllocation(
+    input: ExecuteAllocationInput
+  ): Promise<AllocationDecision> {
     const purchaseId = assertNonEmpty(input.purchaseId, "purchaseId");
     const now = input.now ?? Date.now();
 
@@ -91,7 +194,7 @@ export class AllocationService {
         purchase: null,
         ambassadorWallet: null,
         txid: null,
-        reason: "Purchase not found in local store"
+        reason: "Purchase record not found"
       };
     }
 
@@ -105,83 +208,132 @@ export class AllocationService {
       };
     }
 
-    const onChainProcessed = await this.controllerClient.isPurchaseProcessed(purchase.purchaseId);
+    let ambassadorWallet = normalizeOptionalWallet(purchase.ambassadorWallet);
 
-    if (onChainProcessed) {
-      const ignoredPurchase = await this.store.markIgnored(
-        purchase.purchaseId,
-        "Purchase already processed on-chain",
-        now
-      );
+    /**
+     * Primary source of truth for allocation is the verified local purchase record.
+     * We only hit the controller read endpoint if the local record still has no
+     * ambassador wallet. This avoids unnecessary TronGrid constant-call traffic
+     * and prevents 429 failures during scan replay.
+     */
+    if (!ambassadorWallet) {
+      try {
+        const lookupResult = await (this.controllerClient as any).getBuyerAmbassador(
+          purchase.buyerWallet
+        );
 
-      return {
-        status: "already-processed-on-chain",
-        purchase: ignoredPurchase,
-        ambassadorWallet: ignoredPurchase.ambassadorWallet,
-        txid: null,
-        reason: "Purchase already processed on-chain"
-      };
+        if (!isLookupMissing(lookupResult)) {
+          ambassadorWallet = readAmbassadorWalletFromLookup(lookupResult);
+        }
+      } catch (error) {
+        const reason = toErrorMessage(error);
+
+        await this.store.markFailed(purchase.purchaseId, reason, now);
+
+        return {
+          status: "failed",
+          purchase: await this.store.getByPurchaseId(purchase.purchaseId),
+          ambassadorWallet: null,
+          txid: null,
+          reason
+        };
+      }
     }
 
-    const alreadyBoundAmbassador = await this.controllerClient.getBuyerAmbassador(
-      purchase.buyerWallet
-    );
-
-    const ambassadorWallet = alreadyBoundAmbassador || purchase.ambassadorWallet || null;
-
     if (!ambassadorWallet) {
-      const failedPurchase = await this.store.markFailed(
+      await this.store.markFailed(
         purchase.purchaseId,
-        "Ambassador wallet is missing for allocation",
+        "Ambassador wallet is missing for verified purchase",
         now
       );
 
       return {
         status: "missing-ambassador",
-        purchase: failedPurchase,
+        purchase: await this.store.getByPurchaseId(purchase.purchaseId),
         ambassadorWallet: null,
         txid: null,
-        reason: "Ambassador wallet is missing for allocation"
+        reason: "Ambassador wallet is missing for verified purchase"
       };
     }
 
-    try {
-      const result = await this.controllerClient.recordVerifiedPurchase({
-        purchaseId: purchase.purchaseId,
-        buyerWallet: purchase.buyerWallet,
+    if (purchase.ambassadorWallet !== ambassadorWallet) {
+      await this.store.update(purchase.purchaseId, {
         ambassadorWallet,
+        now
+      });
+    }
+
+    try {
+      const recordInput: any = {
+        purchaseId: purchase.purchaseId,
+        txHash: purchase.txHash,
+        buyerWallet: purchase.buyerWallet,
         purchaseAmountSun: purchase.purchaseAmountSun,
         ownerShareSun: purchase.ownerShareSun,
-        feeLimitSun: input.feeLimitSun
-      });
+        ambassadorWallet
+      };
 
-      const allocatedPurchase = await this.store.markAllocated(purchase.purchaseId, {
+      if (input.feeLimitSun !== undefined) {
+        recordInput.feeLimitSun = input.feeLimitSun;
+      }
+
+      const result = await (this.controllerClient as any).recordVerifiedPurchase(recordInput);
+      const resultStatus = readResultStatus(result).toLowerCase();
+      const txid = readResultTxid(result);
+      const reason = readResultReason(result);
+
+      if (resultStatus === "already-processed-on-chain") {
+        await this.store.markAllocated(purchase.purchaseId, {
+          ambassadorWallet,
+          now
+        });
+
+        return {
+          status: "already-processed-on-chain",
+          purchase: await this.store.getByPurchaseId(purchase.purchaseId),
+          ambassadorWallet,
+          txid,
+          reason: reason ?? "Purchase was already processed on-chain"
+        };
+      }
+
+      if (resultStatus && resultStatus !== "allocated" && resultStatus !== "success") {
+        const failureReason = reason ?? `Unexpected controller result status: ${resultStatus}`;
+
+        await this.store.markFailed(purchase.purchaseId, failureReason, now);
+
+        return {
+          status: "failed",
+          purchase: await this.store.getByPurchaseId(purchase.purchaseId),
+          ambassadorWallet,
+          txid,
+          reason: failureReason
+        };
+      }
+
+      await this.store.markAllocated(purchase.purchaseId, {
         ambassadorWallet,
         now
       });
 
       return {
         status: "allocated",
-        purchase: allocatedPurchase,
+        purchase: await this.store.getByPurchaseId(purchase.purchaseId),
         ambassadorWallet,
-        txid: result.txid,
+        txid,
         reason: null
       };
     } catch (error) {
-      const message = toErrorMessage(error);
+      const reason = toErrorMessage(error);
 
-      const failedPurchase = await this.store.markFailed(
-        purchase.purchaseId,
-        message,
-        now
-      );
+      await this.store.markFailed(purchase.purchaseId, reason, now);
 
       return {
         status: "failed",
-        purchase: failedPurchase,
+        purchase: await this.store.getByPurchaseId(purchase.purchaseId),
         ambassadorWallet,
         txid: null,
-        reason: message
+        reason
       };
     }
   }
@@ -200,17 +352,7 @@ export class AllocationService {
         purchase: null,
         ambassadorWallet: null,
         txid: null,
-        reason: "Purchase not found in local store"
-      };
-    }
-
-    if (purchase.status !== "failed") {
-      return {
-        status: "invalid-purchase-status",
-        purchase,
-        ambassadorWallet: purchase.ambassadorWallet,
-        txid: null,
-        reason: `Replay is allowed only for failed purchases, got: ${purchase.status}`
+        reason: "Purchase record not found"
       };
     }
 
