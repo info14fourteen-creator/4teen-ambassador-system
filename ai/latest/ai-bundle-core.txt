@@ -1,6 +1,6 @@
 # AI BUNDLE — CORE
 
-Generated: 2026-03-25T16:36:10.814Z
+Generated: 2026-03-25T16:40:00.414Z
 
 ===== FILE: .github/workflows/allocation-worker-daily.yml =====
 name: allocation-worker-daily
