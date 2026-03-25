@@ -129,7 +129,8 @@ function normalizeBuyerWalletFromEvent(event: any, tronWeb: any): string {
       throw new Error("tronWeb.address.fromHex is required to normalize buyer wallet");
     }
 
-    return tronWeb.address.fromHex(rawBuyer);
+    const hex41 = `41${rawBuyer.slice(2)}`;
+    return tronWeb.address.fromHex(hex41);
   }
 
   if (/^[0-9a-fA-F]{40}$/.test(rawBuyer)) {
@@ -203,6 +204,18 @@ function mapBuyTokensEvent(event: any, tronWeb: any): BuyTokensEvent {
   };
 }
 
+function extractEventArray(rawEvents: any): any[] {
+  if (Array.isArray(rawEvents)) {
+    return rawEvents;
+  }
+
+  if (rawEvents && typeof rawEvents === "object" && Array.isArray(rawEvents.data)) {
+    return rawEvents.data;
+  }
+
+  return [];
+}
+
 export class BuyTokensScanner {
   private readonly tronWeb: any;
   private readonly processor: AttributionProcessor;
@@ -242,24 +255,32 @@ export class BuyTokensScanner {
 
     const rawEvents = await this.tronWeb.getEventResult(this.tokenContractAddress, {
       eventName: this.eventName,
-      limit: this.pageSize,
+      size: this.pageSize,
       fingerprint: cursor.fingerprint ?? undefined
     });
+
     console.log(
-  JSON.stringify({
-    stage: "scan:getEventResult",
-    tokenContractAddress: this.tokenContractAddress,
-    eventName: this.eventName,
-    pageSize: this.pageSize,
-    fingerprint: cursor.fingerprint ?? null,
-    rawEventsType: Array.isArray(rawEvents) ? "array" : typeof rawEvents,
-    rawEventsLength: Array.isArray(rawEvents) ? rawEvents.length : null,
-    rawEventsPreview: Array.isArray(rawEvents) ? rawEvents.slice(0, 2) : rawEvents
-  })
-);
-    const events = Array.isArray(rawEvents)
-      ? rawEvents.map((event) => mapBuyTokensEvent(event, this.tronWeb))
-      : [];
+      JSON.stringify({
+        stage: "scan:getEventResult",
+        tokenContractAddress: this.tokenContractAddress,
+        eventName: this.eventName,
+        pageSize: this.pageSize,
+        fingerprint: cursor.fingerprint ?? null,
+        rawEventsType: Array.isArray(rawEvents) ? "array" : typeof rawEvents,
+        rawEventsLength: Array.isArray(rawEvents)
+          ? rawEvents.length
+          : Array.isArray(rawEvents?.data)
+            ? rawEvents.data.length
+            : null,
+        rawEventsPreview: Array.isArray(rawEvents)
+          ? rawEvents.slice(0, 2)
+          : rawEvents
+      })
+    );
+
+    const rawEventList = extractEventArray(rawEvents);
+
+    const events = rawEventList.map((event) => mapBuyTokensEvent(event, this.tronWeb));
 
     const nextFingerprint =
       events.length > 0 ? events[events.length - 1]?.fingerprint ?? null : null;
