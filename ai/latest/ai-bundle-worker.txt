@@ -1,6 +1,6 @@
 # AI BUNDLE — WORKER
 
-Generated: 2026-03-25T12:33:09.307Z
+Generated: 2026-03-25T12:46:05.051Z
 
 ===== FILE: services/allocation-worker/.gitignore =====
 node_modules
@@ -627,14 +627,31 @@ export async function closePool(): Promise<void> {
 ===== END FILE: services/allocation-worker/src/db/postgres.ts =====
 
 ===== FILE: services/allocation-worker/src/db/purchases.ts =====
-import { getClient, query } from "./postgres";
+import { query } from "./postgres";
 
 export type PurchaseProcessingStatus =
   | "received"
   | "verified"
+  | "deferred"
+  | "allocation_in_progress"
   | "allocated"
-  | "failed"
+  | "allocation_failed_retryable"
+  | "allocation_failed_final"
   | "ignored";
+
+export type PurchaseSource =
+  | "frontend-attribution"
+  | "event-scan"
+  | "manual-replay"
+  | "withdraw-prepare";
+
+export type AllocationMode =
+  | "eager"
+  | "deferred"
+  | "claim-first"
+  | "maintenance-replay"
+  | "manual-replay"
+  | null;
 
 export interface PurchaseRecord {
   purchaseId: string;
@@ -646,7 +663,14 @@ export interface PurchaseRecord {
   ownerShareSun: string;
   status: PurchaseProcessingStatus;
   failureReason: string | null;
-  source: "frontend-attribution" | "event-scan" | "manual-replay";
+  source: PurchaseSource;
+  allocationMode: AllocationMode;
+  allocationAttempts: number;
+  lastAllocationAttemptAt: number | null;
+  lastAllocationErrorCode: string | null;
+  lastAllocationErrorMessage: string | null;
+  deferredReason: string | null;
+  withdrawSessionId: string | null;
   createdAt: number;
   updatedAt: number;
   allocatedAt: number | null;
@@ -660,9 +684,17 @@ export interface CreatePurchaseRecordInput {
   ambassadorWallet?: string | null;
   purchaseAmountSun?: string;
   ownerShareSun?: string;
-  source?: PurchaseRecord["source"];
+  source?: PurchaseSource;
   status?: PurchaseProcessingStatus;
   failureReason?: string | null;
+  allocationMode?: AllocationMode;
+  allocationAttempts?: number;
+  lastAllocationAttemptAt?: number | null;
+  lastAllocationErrorCode?: string | null;
+  lastAllocationErrorMessage?: string | null;
+  deferredReason?: string | null;
+  withdrawSessionId?: string | null;
+  allocatedAt?: number | null;
   now?: number;
 }
 
@@ -673,8 +705,22 @@ export interface UpdatePurchaseRecordInput {
   ambassadorWallet?: string | null;
   status?: PurchaseProcessingStatus;
   failureReason?: string | null;
+  allocationMode?: AllocationMode;
+  allocationAttempts?: number;
+  incrementAllocationAttempts?: boolean;
+  lastAllocationAttemptAt?: number | null;
+  lastAllocationErrorCode?: string | null;
+  lastAllocationErrorMessage?: string | null;
+  deferredReason?: string | null;
+  withdrawSessionId?: string | null;
   allocatedAt?: number | null;
   now?: number;
+}
+
+export interface PendingPurchaseQuery {
+  ambassadorWallet: string;
+  statuses?: PurchaseProcessingStatus[];
+  limit?: number;
 }
 
 export interface PurchaseStore {
@@ -682,6 +728,7 @@ export interface PurchaseStore {
   getByTxHash(txHash: string): Promise<PurchaseRecord | null>;
   create(input: CreatePurchaseRecordInput): Promise<PurchaseRecord>;
   update(purchaseId: string, input: UpdatePurchaseRecordInput): Promise<PurchaseRecord>;
+
   markVerified(
     purchaseId: string,
     input: {
@@ -689,29 +736,98 @@ export interface PurchaseStore {
       ownerShareSun: string;
       ambassadorSlug?: string | null;
       ambassadorWallet?: string | null;
+      allocationMode?: AllocationMode;
       now?: number;
     }
   ): Promise<PurchaseRecord>;
+
+  markDeferred(
+    purchaseId: string,
+    input: {
+      reason: string;
+      allocationMode?: AllocationMode;
+      errorCode?: string | null;
+      errorMessage?: string | null;
+      now?: number;
+    }
+  ): Promise<PurchaseRecord>;
+
+  markAllocationInProgress(
+    purchaseId: string,
+    input?: {
+      allocationMode?: AllocationMode;
+      now?: number;
+    }
+  ): Promise<PurchaseRecord>;
+
   markAllocated(
     purchaseId: string,
     input?: {
       ambassadorWallet?: string | null;
+      allocationMode?: AllocationMode;
       now?: number;
     }
   ): Promise<PurchaseRecord>;
+
+  markAllocationRetryableFailed(
+    purchaseId: string,
+    input: {
+      reason: string;
+      allocationMode?: AllocationMode;
+      errorCode?: string | null;
+      errorMessage?: string | null;
+      now?: number;
+    }
+  ): Promise<PurchaseRecord>;
+
+  markAllocationFinalFailed(
+    purchaseId: string,
+    input: {
+      reason: string;
+      allocationMode?: AllocationMode;
+      errorCode?: string | null;
+      errorMessage?: string | null;
+      now?: number;
+    }
+  ): Promise<PurchaseRecord>;
+
   markFailed(
     purchaseId: string,
     reason: string,
     now?: number
   ): Promise<PurchaseRecord>;
+
   markIgnored(
     purchaseId: string,
     reason: string,
     now?: number
   ): Promise<PurchaseRecord>;
+
+  assignWithdrawSession(
+    purchaseId: string,
+    withdrawSessionId: string,
+    now?: number
+  ): Promise<PurchaseRecord>;
+
+  clearWithdrawSession(
+    purchaseId: string,
+    now?: number
+  ): Promise<PurchaseRecord>;
+
   listReplayableFailures(): Promise<PurchaseRecord[]>;
+
+  listPendingByAmbassador(
+    input: PendingPurchaseQuery
+  ): Promise<PurchaseRecord[]>;
+
   hasProcessedPurchase(purchaseId: string): Promise<boolean>;
 }
+
+const DEFAULT_PENDING_STATUSES: PurchaseProcessingStatus[] = [
+  "verified",
+  "deferred",
+  "allocation_failed_retryable"
+];
 
 function assertNonEmpty(value: string, fieldName: string): string {
   const normalized = String(value || "").trim();
@@ -723,22 +839,23 @@ function assertNonEmpty(value: string, fieldName: string): string {
   return normalized;
 }
 
-function normalizeWallet(value: string | null | undefined): string | null {
-  if (value == null) return null;
+function normalizeOptionalString(value: string | null | undefined): string | null {
+  if (value == null) {
+    return null;
+  }
 
   const normalized = String(value).trim();
-  return normalized ? normalized : null;
+  return normalized || null;
 }
 
-function normalizeOptionalString(value: string | null | undefined): string | null {
-  if (value == null) return null;
-
-  const normalized = String(value).trim();
-  return normalized ? normalized : null;
+function normalizeWallet(value: string | null | undefined): string | null {
+  return normalizeOptionalString(value);
 }
 
 function normalizeSunAmount(value: string | number | bigint | undefined): string {
-  if (value == null) return "0";
+  if (value == null) {
+    return "0";
+  }
 
   const normalized = String(value).trim();
 
@@ -749,28 +866,83 @@ function normalizeSunAmount(value: string | number | bigint | undefined): string
   return normalized;
 }
 
-function normalizeStatus(status?: PurchaseProcessingStatus): PurchaseProcessingStatus {
-  return status ?? "received";
+function normalizeStatus(value?: PurchaseProcessingStatus): PurchaseProcessingStatus {
+  return value ?? "received";
+}
+
+function normalizeSource(value?: PurchaseSource): PurchaseSource {
+  return value ?? "frontend-attribution";
+}
+
+function normalizeAllocationMode(value?: AllocationMode): AllocationMode {
+  return value ?? null;
+}
+
+function normalizeCount(value: number | undefined, fieldName: string): number {
+  if (value == null) {
+    return 0;
+  }
+
+  if (!Number.isInteger(value) || value < 0) {
+    throw new Error(`${fieldName} must be a non-negative integer`);
+  }
+
+  return value;
+}
+
+function normalizeTimestamp(value: number | null | undefined, fieldName: string): number | null {
+  if (value == null) {
+    return null;
+  }
+
+  if (!Number.isFinite(value) || value < 0) {
+    throw new Error(`${fieldName} must be a non-negative timestamp`);
+  }
+
+  return Math.floor(value);
+}
+
+function normalizePendingStatuses(
+  statuses?: PurchaseProcessingStatus[]
+): PurchaseProcessingStatus[] {
+  const value = statuses?.length ? statuses : DEFAULT_PENDING_STATUSES;
+  return [...new Set(value)];
 }
 
 function createRecord(input: CreatePurchaseRecordInput): PurchaseRecord {
   const now = input.now ?? Date.now();
   const status = normalizeStatus(input.status);
+  const allocatedAt =
+    input.allocatedAt !== undefined
+      ? normalizeTimestamp(input.allocatedAt, "allocatedAt")
+      : status === "allocated"
+        ? now
+        : null;
 
   return {
     purchaseId: assertNonEmpty(input.purchaseId, "purchaseId"),
-    txHash: assertNonEmpty(input.txHash, "txHash"),
+    txHash: assertNonEmpty(input.txHash, "txHash").toLowerCase(),
     buyerWallet: assertNonEmpty(input.buyerWallet, "buyerWallet"),
-    ambassadorSlug: normalizeOptionalString(input.ambassadorSlug ?? null),
-    ambassadorWallet: normalizeWallet(input.ambassadorWallet ?? null),
+    ambassadorSlug: normalizeOptionalString(input.ambassadorSlug),
+    ambassadorWallet: normalizeWallet(input.ambassadorWallet),
     purchaseAmountSun: normalizeSunAmount(input.purchaseAmountSun),
     ownerShareSun: normalizeSunAmount(input.ownerShareSun),
     status,
-    failureReason: normalizeOptionalString(input.failureReason ?? null),
-    source: input.source ?? "frontend-attribution",
+    failureReason: normalizeOptionalString(input.failureReason),
+    source: normalizeSource(input.source),
+    allocationMode: normalizeAllocationMode(input.allocationMode),
+    allocationAttempts: normalizeCount(input.allocationAttempts, "allocationAttempts"),
+    lastAllocationAttemptAt: normalizeTimestamp(
+      input.lastAllocationAttemptAt,
+      "lastAllocationAttemptAt"
+    ),
+    lastAllocationErrorCode: normalizeOptionalString(input.lastAllocationErrorCode),
+    lastAllocationErrorMessage: normalizeOptionalString(input.lastAllocationErrorMessage),
+    deferredReason: normalizeOptionalString(input.deferredReason),
+    withdrawSessionId: normalizeOptionalString(input.withdrawSessionId),
     createdAt: now,
     updatedAt: now,
-    allocatedAt: status === "allocated" ? now : null
+    allocatedAt
   };
 }
 
@@ -778,12 +950,21 @@ function mergeRecord(
   current: PurchaseRecord,
   input: UpdatePurchaseRecordInput
 ): PurchaseRecord {
+  const now = input.now ?? Date.now();
   const nextStatus = input.status ?? current.status;
+
+  const nextAllocationAttempts =
+    input.allocationAttempts !== undefined
+      ? normalizeCount(input.allocationAttempts, "allocationAttempts")
+      : input.incrementAllocationAttempts
+        ? current.allocationAttempts + 1
+        : current.allocationAttempts;
+
   const nextAllocatedAt =
     input.allocatedAt !== undefined
-      ? input.allocatedAt
+      ? normalizeTimestamp(input.allocatedAt, "allocatedAt")
       : nextStatus === "allocated"
-        ? current.allocatedAt ?? (input.now ?? Date.now())
+        ? current.allocatedAt ?? now
         : current.allocatedAt;
 
   return {
@@ -809,8 +990,33 @@ function mergeRecord(
       input.failureReason !== undefined
         ? normalizeOptionalString(input.failureReason)
         : current.failureReason,
+    allocationMode:
+      input.allocationMode !== undefined
+        ? normalizeAllocationMode(input.allocationMode)
+        : current.allocationMode,
+    allocationAttempts: nextAllocationAttempts,
+    lastAllocationAttemptAt:
+      input.lastAllocationAttemptAt !== undefined
+        ? normalizeTimestamp(input.lastAllocationAttemptAt, "lastAllocationAttemptAt")
+        : current.lastAllocationAttemptAt,
+    lastAllocationErrorCode:
+      input.lastAllocationErrorCode !== undefined
+        ? normalizeOptionalString(input.lastAllocationErrorCode)
+        : current.lastAllocationErrorCode,
+    lastAllocationErrorMessage:
+      input.lastAllocationErrorMessage !== undefined
+        ? normalizeOptionalString(input.lastAllocationErrorMessage)
+        : current.lastAllocationErrorMessage,
+    deferredReason:
+      input.deferredReason !== undefined
+        ? normalizeOptionalString(input.deferredReason)
+        : current.deferredReason,
+    withdrawSessionId:
+      input.withdrawSessionId !== undefined
+        ? normalizeOptionalString(input.withdrawSessionId)
+        : current.withdrawSessionId,
     allocatedAt: nextAllocatedAt,
-    updatedAt: input.now ?? Date.now()
+    updatedAt: now
   };
 }
 
@@ -825,7 +1031,21 @@ function rowToPurchaseRecord(row: any): PurchaseRecord {
     ownerShareSun: String(row.owner_share_sun),
     status: String(row.status) as PurchaseProcessingStatus,
     failureReason: normalizeOptionalString(row.failure_reason),
-    source: String(row.source) as PurchaseRecord["source"],
+    source: String(row.source) as PurchaseSource,
+    allocationMode: normalizeAllocationMode(
+      normalizeOptionalString(row.allocation_mode)
+    ),
+    allocationAttempts: Number(row.allocation_attempts || 0),
+    lastAllocationAttemptAt:
+      row.last_allocation_attempt_at_ms == null
+        ? null
+        : Number(row.last_allocation_attempt_at_ms),
+    lastAllocationErrorCode: normalizeOptionalString(row.last_allocation_error_code),
+    lastAllocationErrorMessage: normalizeOptionalString(
+      row.last_allocation_error_message
+    ),
+    deferredReason: normalizeOptionalString(row.deferred_reason),
+    withdrawSessionId: normalizeOptionalString(row.withdraw_session_id),
     createdAt: Number(row.created_at_ms),
     updatedAt: Number(row.updated_at_ms),
     allocatedAt: row.allocated_at_ms == null ? null : Number(row.allocated_at_ms)
@@ -860,6 +1080,39 @@ function mapPgConflict(error: unknown): Error {
   return error instanceof Error ? error : new Error("Purchase store error");
 }
 
+function buildSelectSql(): string {
+  return `
+    SELECT
+      purchase_id,
+      tx_hash,
+      buyer_wallet,
+      ambassador_slug,
+      ambassador_wallet,
+      purchase_amount_sun,
+      owner_share_sun,
+      status,
+      failure_reason,
+      source,
+      allocation_mode,
+      allocation_attempts,
+      CASE
+        WHEN last_allocation_attempt_at IS NULL THEN NULL
+        ELSE FLOOR(EXTRACT(EPOCH FROM last_allocation_attempt_at) * 1000)
+      END AS last_allocation_attempt_at_ms,
+      last_allocation_error_code,
+      last_allocation_error_message,
+      deferred_reason,
+      withdraw_session_id,
+      FLOOR(EXTRACT(EPOCH FROM created_at) * 1000) AS created_at_ms,
+      FLOOR(EXTRACT(EPOCH FROM updated_at) * 1000) AS updated_at_ms,
+      CASE
+        WHEN allocated_at IS NULL THEN NULL
+        ELSE FLOOR(EXTRACT(EPOCH FROM allocated_at) * 1000)
+      END AS allocated_at_ms
+    FROM purchases
+  `;
+}
+
 export async function initPurchaseTables(): Promise<void> {
   await query(`
     CREATE TABLE IF NOT EXISTS purchases (
@@ -873,10 +1126,52 @@ export async function initPurchaseTables(): Promise<void> {
       status TEXT NOT NULL,
       failure_reason TEXT NULL,
       source TEXT NOT NULL,
+      allocation_mode TEXT NULL,
+      allocation_attempts INTEGER NOT NULL DEFAULT 0,
+      last_allocation_attempt_at TIMESTAMPTZ NULL,
+      last_allocation_error_code TEXT NULL,
+      last_allocation_error_message TEXT NULL,
+      deferred_reason TEXT NULL,
+      withdraw_session_id TEXT NULL,
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       allocated_at TIMESTAMPTZ NULL
     )
+  `);
+
+  await query(`
+    ALTER TABLE purchases
+    ADD COLUMN IF NOT EXISTS allocation_mode TEXT NULL
+  `);
+
+  await query(`
+    ALTER TABLE purchases
+    ADD COLUMN IF NOT EXISTS allocation_attempts INTEGER NOT NULL DEFAULT 0
+  `);
+
+  await query(`
+    ALTER TABLE purchases
+    ADD COLUMN IF NOT EXISTS last_allocation_attempt_at TIMESTAMPTZ NULL
+  `);
+
+  await query(`
+    ALTER TABLE purchases
+    ADD COLUMN IF NOT EXISTS last_allocation_error_code TEXT NULL
+  `);
+
+  await query(`
+    ALTER TABLE purchases
+    ADD COLUMN IF NOT EXISTS last_allocation_error_message TEXT NULL
+  `);
+
+  await query(`
+    ALTER TABLE purchases
+    ADD COLUMN IF NOT EXISTS deferred_reason TEXT NULL
+  `);
+
+  await query(`
+    ALTER TABLE purchases
+    ADD COLUMN IF NOT EXISTS withdraw_session_id TEXT NULL
   `);
 
   await query(`
@@ -898,6 +1193,26 @@ export async function initPurchaseTables(): Promise<void> {
     CREATE INDEX IF NOT EXISTS idx_purchases_ambassador_slug
     ON purchases(ambassador_slug)
   `);
+
+  await query(`
+    CREATE INDEX IF NOT EXISTS idx_purchases_ambassador_wallet
+    ON purchases(ambassador_wallet)
+  `);
+
+  await query(`
+    CREATE INDEX IF NOT EXISTS idx_purchases_status_ambassador_wallet_created_at
+    ON purchases(status, ambassador_wallet, created_at)
+  `);
+
+  await query(`
+    CREATE INDEX IF NOT EXISTS idx_purchases_withdraw_session_id
+    ON purchases(withdraw_session_id)
+  `);
+
+  await query(`
+    CREATE INDEX IF NOT EXISTS idx_purchases_retry_queue
+    ON purchases(status, updated_at)
+  `);
 }
 
 export class PostgresPurchaseStore implements PurchaseStore {
@@ -906,24 +1221,7 @@ export class PostgresPurchaseStore implements PurchaseStore {
 
     const result = await query(
       `
-        SELECT
-          purchase_id,
-          tx_hash,
-          buyer_wallet,
-          ambassador_slug,
-          ambassador_wallet,
-          purchase_amount_sun,
-          owner_share_sun,
-          status,
-          failure_reason,
-          source,
-          FLOOR(EXTRACT(EPOCH FROM created_at) * 1000) AS created_at_ms,
-          FLOOR(EXTRACT(EPOCH FROM updated_at) * 1000) AS updated_at_ms,
-          CASE
-            WHEN allocated_at IS NULL THEN NULL
-            ELSE FLOOR(EXTRACT(EPOCH FROM allocated_at) * 1000)
-          END AS allocated_at_ms
-        FROM purchases
+        ${buildSelectSql()}
         WHERE purchase_id = $1
         LIMIT 1
       `,
@@ -935,28 +1233,11 @@ export class PostgresPurchaseStore implements PurchaseStore {
   }
 
   async getByTxHash(txHash: string): Promise<PurchaseRecord | null> {
-    const normalizedTxHash = assertNonEmpty(txHash, "txHash");
+    const normalizedTxHash = assertNonEmpty(txHash, "txHash").toLowerCase();
 
     const result = await query(
       `
-        SELECT
-          purchase_id,
-          tx_hash,
-          buyer_wallet,
-          ambassador_slug,
-          ambassador_wallet,
-          purchase_amount_sun,
-          owner_share_sun,
-          status,
-          failure_reason,
-          source,
-          FLOOR(EXTRACT(EPOCH FROM created_at) * 1000) AS created_at_ms,
-          FLOOR(EXTRACT(EPOCH FROM updated_at) * 1000) AS updated_at_ms,
-          CASE
-            WHEN allocated_at IS NULL THEN NULL
-            ELSE FLOOR(EXTRACT(EPOCH FROM allocated_at) * 1000)
-          END AS allocated_at_ms
-        FROM purchases
+        ${buildSelectSql()}
         WHERE tx_hash = $1
         LIMIT 1
       `,
@@ -984,15 +1265,25 @@ export class PostgresPurchaseStore implements PurchaseStore {
             status,
             failure_reason,
             source,
+            allocation_mode,
+            allocation_attempts,
+            last_allocation_attempt_at,
+            last_allocation_error_code,
+            last_allocation_error_message,
+            deferred_reason,
+            withdraw_session_id,
             created_at,
             updated_at,
             allocated_at
           )
           VALUES (
             $1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
-            TO_TIMESTAMP($11 / 1000.0),
-            TO_TIMESTAMP($12 / 1000.0),
-            CASE WHEN $13::BIGINT IS NULL THEN NULL ELSE TO_TIMESTAMP($13 / 1000.0) END
+            $11, $12,
+            CASE WHEN $13::BIGINT IS NULL THEN NULL ELSE TO_TIMESTAMP($13 / 1000.0) END,
+            $14, $15, $16, $17,
+            TO_TIMESTAMP($18 / 1000.0),
+            TO_TIMESTAMP($19 / 1000.0),
+            CASE WHEN $20::BIGINT IS NULL THEN NULL ELSE TO_TIMESTAMP($20 / 1000.0) END
           )
           RETURNING
             purchase_id,
@@ -1005,6 +1296,16 @@ export class PostgresPurchaseStore implements PurchaseStore {
             status,
             failure_reason,
             source,
+            allocation_mode,
+            allocation_attempts,
+            CASE
+              WHEN last_allocation_attempt_at IS NULL THEN NULL
+              ELSE FLOOR(EXTRACT(EPOCH FROM last_allocation_attempt_at) * 1000)
+            END AS last_allocation_attempt_at_ms,
+            last_allocation_error_code,
+            last_allocation_error_message,
+            deferred_reason,
+            withdraw_session_id,
             FLOOR(EXTRACT(EPOCH FROM created_at) * 1000) AS created_at_ms,
             FLOOR(EXTRACT(EPOCH FROM updated_at) * 1000) AS updated_at_ms,
             CASE
@@ -1023,6 +1324,13 @@ export class PostgresPurchaseStore implements PurchaseStore {
           record.status,
           record.failureReason,
           record.source,
+          record.allocationMode,
+          record.allocationAttempts,
+          record.lastAllocationAttemptAt,
+          record.lastAllocationErrorCode,
+          record.lastAllocationErrorMessage,
+          record.deferredReason,
+          record.withdrawSessionId,
           record.createdAt,
           record.updatedAt,
           record.allocatedAt
@@ -1058,8 +1366,15 @@ export class PostgresPurchaseStore implements PurchaseStore {
           ambassador_wallet = $5,
           status = $6,
           failure_reason = $7,
-          updated_at = TO_TIMESTAMP($8 / 1000.0),
-          allocated_at = CASE WHEN $9::BIGINT IS NULL THEN NULL ELSE TO_TIMESTAMP($9 / 1000.0) END
+          allocation_mode = $8,
+          allocation_attempts = $9,
+          last_allocation_attempt_at = CASE WHEN $10::BIGINT IS NULL THEN NULL ELSE TO_TIMESTAMP($10 / 1000.0) END,
+          last_allocation_error_code = $11,
+          last_allocation_error_message = $12,
+          deferred_reason = $13,
+          withdraw_session_id = $14,
+          updated_at = TO_TIMESTAMP($15 / 1000.0),
+          allocated_at = CASE WHEN $16::BIGINT IS NULL THEN NULL ELSE TO_TIMESTAMP($16 / 1000.0) END
         WHERE purchase_id = $1
         RETURNING
           purchase_id,
@@ -1072,6 +1387,16 @@ export class PostgresPurchaseStore implements PurchaseStore {
           status,
           failure_reason,
           source,
+          allocation_mode,
+          allocation_attempts,
+          CASE
+            WHEN last_allocation_attempt_at IS NULL THEN NULL
+            ELSE FLOOR(EXTRACT(EPOCH FROM last_allocation_attempt_at) * 1000)
+          END AS last_allocation_attempt_at_ms,
+          last_allocation_error_code,
+          last_allocation_error_message,
+          deferred_reason,
+          withdraw_session_id,
           FLOOR(EXTRACT(EPOCH FROM created_at) * 1000) AS created_at_ms,
           FLOOR(EXTRACT(EPOCH FROM updated_at) * 1000) AS updated_at_ms,
           CASE
@@ -1087,6 +1412,13 @@ export class PostgresPurchaseStore implements PurchaseStore {
         updated.ambassadorWallet,
         updated.status,
         updated.failureReason,
+        updated.allocationMode,
+        updated.allocationAttempts,
+        updated.lastAllocationAttemptAt,
+        updated.lastAllocationErrorCode,
+        updated.lastAllocationErrorMessage,
+        updated.deferredReason,
+        updated.withdrawSessionId,
         updated.updatedAt,
         updated.allocatedAt
       ]
@@ -1102,53 +1434,146 @@ export class PostgresPurchaseStore implements PurchaseStore {
       ownerShareSun: string;
       ambassadorSlug?: string | null;
       ambassadorWallet?: string | null;
+      allocationMode?: AllocationMode;
       now?: number;
     }
   ): Promise<PurchaseRecord> {
-    const updateInput: UpdatePurchaseRecordInput = {
+    return this.update(purchaseId, {
       purchaseAmountSun: input.purchaseAmountSun,
       ownerShareSun: input.ownerShareSun,
+      ambassadorSlug: input.ambassadorSlug,
+      ambassadorWallet: input.ambassadorWallet,
       status: "verified",
-      failureReason: null
-    };
+      failureReason: null,
+      allocationMode: input.allocationMode,
+      deferredReason: null,
+      lastAllocationErrorCode: null,
+      lastAllocationErrorMessage: null,
+      withdrawSessionId: null,
+      now: input.now
+    });
+  }
 
-    if (input.ambassadorSlug !== undefined) {
-      updateInput.ambassadorSlug = input.ambassadorSlug;
+  async markDeferred(
+    purchaseId: string,
+    input: {
+      reason: string;
+      allocationMode?: AllocationMode;
+      errorCode?: string | null;
+      errorMessage?: string | null;
+      now?: number;
     }
+  ): Promise<PurchaseRecord> {
+    const now = input.now ?? Date.now();
 
-    if (input.ambassadorWallet !== undefined) {
-      updateInput.ambassadorWallet = input.ambassadorWallet;
+    return this.update(purchaseId, {
+      status: "deferred",
+      failureReason: null,
+      deferredReason: assertNonEmpty(input.reason, "reason"),
+      allocationMode: input.allocationMode ?? "deferred",
+      incrementAllocationAttempts: true,
+      lastAllocationAttemptAt: now,
+      lastAllocationErrorCode: normalizeOptionalString(input.errorCode),
+      lastAllocationErrorMessage:
+        normalizeOptionalString(input.errorMessage) ??
+        assertNonEmpty(input.reason, "reason"),
+      now
+    });
+  }
+
+  async markAllocationInProgress(
+    purchaseId: string,
+    input?: {
+      allocationMode?: AllocationMode;
+      now?: number;
     }
+  ): Promise<PurchaseRecord> {
+    const now = input?.now ?? Date.now();
 
-    if (input.now !== undefined) {
-      updateInput.now = input.now;
-    }
-
-    return this.update(purchaseId, updateInput);
+    return this.update(purchaseId, {
+      status: "allocation_in_progress",
+      failureReason: null,
+      allocationMode: input?.allocationMode,
+      incrementAllocationAttempts: true,
+      lastAllocationAttemptAt: now,
+      lastAllocationErrorCode: null,
+      lastAllocationErrorMessage: null,
+      deferredReason: null,
+      now
+    });
   }
 
   async markAllocated(
     purchaseId: string,
     input?: {
       ambassadorWallet?: string | null;
+      allocationMode?: AllocationMode;
       now?: number;
     }
   ): Promise<PurchaseRecord> {
-    const updateInput: UpdatePurchaseRecordInput = {
+    const now = input?.now ?? Date.now();
+
+    return this.update(purchaseId, {
+      ambassadorWallet: input?.ambassadorWallet,
       status: "allocated",
       failureReason: null,
-      allocatedAt: input?.now ?? Date.now()
-    };
+      allocationMode: input?.allocationMode,
+      deferredReason: null,
+      lastAllocationErrorCode: null,
+      lastAllocationErrorMessage: null,
+      allocatedAt: now,
+      now
+    });
+  }
 
-    if (input?.ambassadorWallet !== undefined) {
-      updateInput.ambassadorWallet = input.ambassadorWallet;
+  async markAllocationRetryableFailed(
+    purchaseId: string,
+    input: {
+      reason: string;
+      allocationMode?: AllocationMode;
+      errorCode?: string | null;
+      errorMessage?: string | null;
+      now?: number;
     }
+  ): Promise<PurchaseRecord> {
+    const reason = assertNonEmpty(input.reason, "reason");
+    const now = input.now ?? Date.now();
 
-    if (input?.now !== undefined) {
-      updateInput.now = input.now;
+    return this.update(purchaseId, {
+      status: "allocation_failed_retryable",
+      failureReason: reason,
+      allocationMode: input.allocationMode,
+      lastAllocationAttemptAt: now,
+      lastAllocationErrorCode: normalizeOptionalString(input.errorCode),
+      lastAllocationErrorMessage:
+        normalizeOptionalString(input.errorMessage) ?? reason,
+      now
+    });
+  }
+
+  async markAllocationFinalFailed(
+    purchaseId: string,
+    input: {
+      reason: string;
+      allocationMode?: AllocationMode;
+      errorCode?: string | null;
+      errorMessage?: string | null;
+      now?: number;
     }
+  ): Promise<PurchaseRecord> {
+    const reason = assertNonEmpty(input.reason, "reason");
+    const now = input.now ?? Date.now();
 
-    return this.update(purchaseId, updateInput);
+    return this.update(purchaseId, {
+      status: "allocation_failed_final",
+      failureReason: reason,
+      allocationMode: input.allocationMode,
+      lastAllocationAttemptAt: now,
+      lastAllocationErrorCode: normalizeOptionalString(input.errorCode),
+      lastAllocationErrorMessage:
+        normalizeOptionalString(input.errorMessage) ?? reason,
+      now
+    });
   }
 
   async markFailed(
@@ -1156,16 +1581,11 @@ export class PostgresPurchaseStore implements PurchaseStore {
     reason: string,
     now?: number
   ): Promise<PurchaseRecord> {
-    const updateInput: UpdatePurchaseRecordInput = {
-      status: "failed",
-      failureReason: assertNonEmpty(reason, "reason")
-    };
-
-    if (now !== undefined) {
-      updateInput.now = now;
-    }
-
-    return this.update(purchaseId, updateInput);
+    return this.markAllocationRetryableFailed(purchaseId, {
+      reason,
+      allocationMode: "manual-replay",
+      now
+    });
   }
 
   async markIgnored(
@@ -1173,44 +1593,70 @@ export class PostgresPurchaseStore implements PurchaseStore {
     reason: string,
     now?: number
   ): Promise<PurchaseRecord> {
-    const updateInput: UpdatePurchaseRecordInput = {
+    return this.update(purchaseId, {
       status: "ignored",
-      failureReason: assertNonEmpty(reason, "reason")
-    };
+      failureReason: assertNonEmpty(reason, "reason"),
+      now
+    });
+  }
 
-    if (now !== undefined) {
-      updateInput.now = now;
-    }
+  async assignWithdrawSession(
+    purchaseId: string,
+    withdrawSessionId: string,
+    now?: number
+  ): Promise<PurchaseRecord> {
+    return this.update(purchaseId, {
+      withdrawSessionId: assertNonEmpty(withdrawSessionId, "withdrawSessionId"),
+      now
+    });
+  }
 
-    return this.update(purchaseId, updateInput);
+  async clearWithdrawSession(
+    purchaseId: string,
+    now?: number
+  ): Promise<PurchaseRecord> {
+    return this.update(purchaseId, {
+      withdrawSessionId: null,
+      now
+    });
   }
 
   async listReplayableFailures(): Promise<PurchaseRecord[]> {
     const result = await query(
       `
-        SELECT
-          purchase_id,
-          tx_hash,
-          buyer_wallet,
-          ambassador_slug,
-          ambassador_wallet,
-          purchase_amount_sun,
-          owner_share_sun,
-          status,
-          failure_reason,
-          source,
-          FLOOR(EXTRACT(EPOCH FROM created_at) * 1000) AS created_at_ms,
-          FLOOR(EXTRACT(EPOCH FROM updated_at) * 1000) AS updated_at_ms,
-          CASE
-            WHEN allocated_at IS NULL THEN NULL
-            ELSE FLOOR(EXTRACT(EPOCH FROM allocated_at) * 1000)
-          END AS allocated_at_ms
-        FROM purchases
-        WHERE status = 'failed'
-        ORDER BY updated_at DESC
+        ${buildSelectSql()}
+        WHERE status IN ('deferred', 'allocation_failed_retryable')
+        ORDER BY created_at ASC
       `
     );
 
+    return result.rows.map(rowToPurchaseRecord);
+  }
+
+  async listPendingByAmbassador(
+    input: PendingPurchaseQuery
+  ): Promise<PurchaseRecord[]> {
+    const ambassadorWallet = assertNonEmpty(
+      input.ambassadorWallet,
+      "ambassadorWallet"
+    );
+    const statuses = normalizePendingStatuses(input.statuses);
+    const limit = input.limit && input.limit > 0 ? Math.floor(input.limit) : null;
+
+    const params: unknown[] = [ambassadorWallet, statuses];
+    let sql = `
+      ${buildSelectSql()}
+      WHERE ambassador_wallet = $1
+        AND status = ANY($2::text[])
+      ORDER BY created_at ASC
+    `;
+
+    if (limit != null) {
+      params.push(limit);
+      sql += ` LIMIT $3`;
+    }
+
+    const result = await query(sql, params);
     return result.rows.map(rowToPurchaseRecord);
   }
 
@@ -1221,7 +1667,11 @@ export class PostgresPurchaseStore implements PurchaseStore {
       return false;
     }
 
-    return record.status === "allocated" || record.status === "ignored";
+    return (
+      record.status === "allocated" ||
+      record.status === "ignored" ||
+      record.status === "allocation_failed_final"
+    );
   }
 }
 
@@ -1235,7 +1685,7 @@ export class InMemoryPurchaseStore implements PurchaseStore {
   }
 
   async getByTxHash(txHash: string): Promise<PurchaseRecord | null> {
-    const normalizedTxHash = assertNonEmpty(txHash, "txHash");
+    const normalizedTxHash = assertNonEmpty(txHash, "txHash").toLowerCase();
     const purchaseId = this.purchaseIdByTxHash.get(normalizedTxHash);
 
     if (!purchaseId) {
@@ -1286,53 +1736,146 @@ export class InMemoryPurchaseStore implements PurchaseStore {
       ownerShareSun: string;
       ambassadorSlug?: string | null;
       ambassadorWallet?: string | null;
+      allocationMode?: AllocationMode;
       now?: number;
     }
   ): Promise<PurchaseRecord> {
-    const updateInput: UpdatePurchaseRecordInput = {
+    return this.update(purchaseId, {
       purchaseAmountSun: input.purchaseAmountSun,
       ownerShareSun: input.ownerShareSun,
+      ambassadorSlug: input.ambassadorSlug,
+      ambassadorWallet: input.ambassadorWallet,
       status: "verified",
-      failureReason: null
-    };
+      failureReason: null,
+      allocationMode: input.allocationMode,
+      deferredReason: null,
+      lastAllocationErrorCode: null,
+      lastAllocationErrorMessage: null,
+      withdrawSessionId: null,
+      now: input.now
+    });
+  }
 
-    if (input.ambassadorSlug !== undefined) {
-      updateInput.ambassadorSlug = input.ambassadorSlug;
+  async markDeferred(
+    purchaseId: string,
+    input: {
+      reason: string;
+      allocationMode?: AllocationMode;
+      errorCode?: string | null;
+      errorMessage?: string | null;
+      now?: number;
     }
+  ): Promise<PurchaseRecord> {
+    const now = input.now ?? Date.now();
 
-    if (input.ambassadorWallet !== undefined) {
-      updateInput.ambassadorWallet = input.ambassadorWallet;
+    return this.update(purchaseId, {
+      status: "deferred",
+      failureReason: null,
+      deferredReason: assertNonEmpty(input.reason, "reason"),
+      allocationMode: input.allocationMode ?? "deferred",
+      incrementAllocationAttempts: true,
+      lastAllocationAttemptAt: now,
+      lastAllocationErrorCode: normalizeOptionalString(input.errorCode),
+      lastAllocationErrorMessage:
+        normalizeOptionalString(input.errorMessage) ??
+        assertNonEmpty(input.reason, "reason"),
+      now
+    });
+  }
+
+  async markAllocationInProgress(
+    purchaseId: string,
+    input?: {
+      allocationMode?: AllocationMode;
+      now?: number;
     }
+  ): Promise<PurchaseRecord> {
+    const now = input?.now ?? Date.now();
 
-    if (input.now !== undefined) {
-      updateInput.now = input.now;
-    }
-
-    return this.update(purchaseId, updateInput);
+    return this.update(purchaseId, {
+      status: "allocation_in_progress",
+      failureReason: null,
+      allocationMode: input?.allocationMode,
+      incrementAllocationAttempts: true,
+      lastAllocationAttemptAt: now,
+      lastAllocationErrorCode: null,
+      lastAllocationErrorMessage: null,
+      deferredReason: null,
+      now
+    });
   }
 
   async markAllocated(
     purchaseId: string,
     input?: {
       ambassadorWallet?: string | null;
+      allocationMode?: AllocationMode;
       now?: number;
     }
   ): Promise<PurchaseRecord> {
-    const updateInput: UpdatePurchaseRecordInput = {
+    const now = input?.now ?? Date.now();
+
+    return this.update(purchaseId, {
+      ambassadorWallet: input?.ambassadorWallet,
       status: "allocated",
       failureReason: null,
-      allocatedAt: input?.now ?? Date.now()
-    };
+      allocationMode: input?.allocationMode,
+      deferredReason: null,
+      lastAllocationErrorCode: null,
+      lastAllocationErrorMessage: null,
+      allocatedAt: now,
+      now
+    });
+  }
 
-    if (input?.ambassadorWallet !== undefined) {
-      updateInput.ambassadorWallet = input.ambassadorWallet;
+  async markAllocationRetryableFailed(
+    purchaseId: string,
+    input: {
+      reason: string;
+      allocationMode?: AllocationMode;
+      errorCode?: string | null;
+      errorMessage?: string | null;
+      now?: number;
     }
+  ): Promise<PurchaseRecord> {
+    const reason = assertNonEmpty(input.reason, "reason");
+    const now = input.now ?? Date.now();
 
-    if (input?.now !== undefined) {
-      updateInput.now = input.now;
+    return this.update(purchaseId, {
+      status: "allocation_failed_retryable",
+      failureReason: reason,
+      allocationMode: input.allocationMode,
+      lastAllocationAttemptAt: now,
+      lastAllocationErrorCode: normalizeOptionalString(input.errorCode),
+      lastAllocationErrorMessage:
+        normalizeOptionalString(input.errorMessage) ?? reason,
+      now
+    });
+  }
+
+  async markAllocationFinalFailed(
+    purchaseId: string,
+    input: {
+      reason: string;
+      allocationMode?: AllocationMode;
+      errorCode?: string | null;
+      errorMessage?: string | null;
+      now?: number;
     }
+  ): Promise<PurchaseRecord> {
+    const reason = assertNonEmpty(input.reason, "reason");
+    const now = input.now ?? Date.now();
 
-    return this.update(purchaseId, updateInput);
+    return this.update(purchaseId, {
+      status: "allocation_failed_final",
+      failureReason: reason,
+      allocationMode: input.allocationMode,
+      lastAllocationAttemptAt: now,
+      lastAllocationErrorCode: normalizeOptionalString(input.errorCode),
+      lastAllocationErrorMessage:
+        normalizeOptionalString(input.errorMessage) ?? reason,
+      now
+    });
   }
 
   async markFailed(
@@ -1340,16 +1883,11 @@ export class InMemoryPurchaseStore implements PurchaseStore {
     reason: string,
     now?: number
   ): Promise<PurchaseRecord> {
-    const updateInput: UpdatePurchaseRecordInput = {
-      status: "failed",
-      failureReason: assertNonEmpty(reason, "reason")
-    };
-
-    if (now !== undefined) {
-      updateInput.now = now;
-    }
-
-    return this.update(purchaseId, updateInput);
+    return this.markAllocationRetryableFailed(purchaseId, {
+      reason,
+      allocationMode: "manual-replay",
+      now
+    });
   }
 
   async markIgnored(
@@ -1357,22 +1895,67 @@ export class InMemoryPurchaseStore implements PurchaseStore {
     reason: string,
     now?: number
   ): Promise<PurchaseRecord> {
-    const updateInput: UpdatePurchaseRecordInput = {
+    return this.update(purchaseId, {
       status: "ignored",
-      failureReason: assertNonEmpty(reason, "reason")
-    };
+      failureReason: assertNonEmpty(reason, "reason"),
+      now
+    });
+  }
 
-    if (now !== undefined) {
-      updateInput.now = now;
-    }
+  async assignWithdrawSession(
+    purchaseId: string,
+    withdrawSessionId: string,
+    now?: number
+  ): Promise<PurchaseRecord> {
+    return this.update(purchaseId, {
+      withdrawSessionId: assertNonEmpty(withdrawSessionId, "withdrawSessionId"),
+      now
+    });
+  }
 
-    return this.update(purchaseId, updateInput);
+  async clearWithdrawSession(
+    purchaseId: string,
+    now?: number
+  ): Promise<PurchaseRecord> {
+    return this.update(purchaseId, {
+      withdrawSessionId: null,
+      now
+    });
   }
 
   async listReplayableFailures(): Promise<PurchaseRecord[]> {
-    return Array.from(this.byPurchaseId.values()).filter(
-      (record) => record.status === "failed"
+    return Array.from(this.byPurchaseId.values())
+      .filter(
+        (record) =>
+          record.status === "deferred" ||
+          record.status === "allocation_failed_retryable"
+      )
+      .sort((left, right) => left.createdAt - right.createdAt);
+  }
+
+  async listPendingByAmbassador(
+    input: PendingPurchaseQuery
+  ): Promise<PurchaseRecord[]> {
+    const ambassadorWallet = assertNonEmpty(
+      input.ambassadorWallet,
+      "ambassadorWallet"
     );
+    const statuses = normalizePendingStatuses(input.statuses);
+    const allowed = new Set(statuses);
+
+    let rows = Array.from(this.byPurchaseId.values())
+      .filter(
+        (record) =>
+          record.ambassadorWallet === ambassadorWallet &&
+          allowed.has(record.status)
+      )
+      .sort((left, right) => left.createdAt - right.createdAt);
+
+    if (input.limit && input.limit > 0) {
+      rows = rows.slice(0, Math.floor(input.limit));
+    }
+
+    return rows;
   }
 
   async hasProcessedPurchase(purchaseId: string): Promise<boolean> {
@@ -1382,7 +1965,11 @@ export class InMemoryPurchaseStore implements PurchaseStore {
       return false;
     }
 
-    return record.status === "allocated" || record.status === "ignored";
+    return (
+      record.status === "allocated" ||
+      record.status === "ignored" ||
+      record.status === "allocation_failed_final"
+    );
   }
 }
 
