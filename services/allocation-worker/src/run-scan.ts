@@ -247,21 +247,6 @@ function extractNextFingerprint(payload: any): string | null {
   return null;
 }
 
-function getRetryAfterTimestamp(failureReason: string | null): number | null {
-  const raw = String(failureReason || "").trim();
-  if (!raw) {
-    return null;
-  }
-
-  const match = raw.match(/\[RETRY_AFTER=(\d+)\]/);
-  if (!match?.[1]) {
-    return null;
-  }
-
-  const parsed = Number(match[1]);
-  return Number.isFinite(parsed) ? parsed : null;
-}
-
 export class BuyTokensScanner {
   private readonly tronWeb: any;
   private readonly processor: AttributionProcessor;
@@ -295,9 +280,8 @@ export class BuyTokensScanner {
   }
 
   async fetchEvents(cursor: ScanCursor = {}): Promise<RunScanResult> {
-    const tokenContract = await this.tronWeb.contract().at(this.tokenContractAddress);
-
-    const rawEvents = await tokenContract.getEventResult(this.eventName, {
+    const rawEvents = await this.tronWeb.getEventResult(this.tokenContractAddress, {
+      eventName: this.eventName,
       size: this.pageSize,
       fingerprint: cursor.fingerprint ?? undefined
     });
@@ -400,20 +384,6 @@ export class BuyTokensScanner {
         purchaseId: localPurchase.purchaseId,
         reason: `Purchase already finalized with status: ${localPurchase.status}`
       };
-    }
-
-    if (localPurchase.status === "failed") {
-      const retryAfter = getRetryAfterTimestamp(localPurchase.failureReason);
-      const now = event.blockTimestamp ?? Date.now();
-
-      if (retryAfter && now < retryAfter) {
-        return {
-          status: "skipped-already-final",
-          event,
-          purchaseId: localPurchase.purchaseId,
-          reason: `Retry deferred until ${new Date(retryAfter).toISOString()}`
-        };
-      }
     }
 
     const result = await this.processor.processVerifiedPurchaseAndAllocate({
