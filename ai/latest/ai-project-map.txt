@@ -1,6 +1,6 @@
 # AI PROJECT MAP
 
-Generated: 2026-03-25T12:59:51.820Z
+Generated: 2026-03-25T13:01:26.499Z
 
 ## CORE
 
@@ -49,6 +49,7 @@ Generated: 2026-03-25T12:59:51.820Z
 - services/allocation-worker/src/index.ts
 - services/allocation-worker/src/jobs/allocatePurchase.ts
 - services/allocation-worker/src/jobs/rentEnergy.ts
+- services/allocation-worker/src/jobs/replayDeferredPurchases.ts
 - services/allocation-worker/src/run-scan.ts
 - services/allocation-worker/src/server.ts
 - services/allocation-worker/src/services/gasStation.ts
