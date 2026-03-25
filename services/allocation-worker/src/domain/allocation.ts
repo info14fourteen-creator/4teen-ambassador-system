@@ -1,3 +1,4 @@
+import TronWeb from "tronweb";
 import { PurchaseRecord, PurchaseStore } from "../db/purchases";
 import { ControllerClient } from "../tron/controller";
 
@@ -7,6 +8,7 @@ export type AllocationDecisionStatus =
   | "missing-purchase"
   | "invalid-purchase-status"
   | "missing-ambassador"
+  | "deferred-insufficient-energy"
   | "failed";
 
 export interface AllocationDecision {
@@ -28,7 +30,14 @@ export interface AllocationServiceConfig {
   controllerClient: ControllerClient;
 }
 
-const RETRY_DELAY_MS = 60 * 60 * 1000;
+interface AccountResourceResponse {
+  freeNetLimit?: number;
+  freeNetUsed?: number;
+  NetLimit?: number;
+  NetUsed?: number;
+  EnergyLimit?: number;
+  EnergyUsed?: number;
+}
 
 function assertNonEmpty(value: string, fieldName: string): string {
   const normalized = String(value || "").trim();
@@ -41,7 +50,7 @@ function assertNonEmpty(value: string, fieldName: string): string {
 }
 
 function isAllocatableStatus(status: PurchaseRecord["status"]): boolean {
-  return status === "verified" || status === "received" || status === "failed";
+  return status === "verified" || status === "received";
 }
 
 function toErrorMessage(error: unknown): string {
@@ -64,38 +73,84 @@ function toErrorMessage(error: unknown): string {
   return "Allocation failed";
 }
 
-function isRetryableInfrastructureFailure(message: string): boolean {
-  const normalized = message.toLowerCase();
+function getTronResourceApiUrl(): string {
+  return String(process.env.TRON_RESOURCE_API_URL || "https://api.trongrid.io").replace(/\/+$/, "");
+}
 
-  return (
-    normalized.includes("status code 429") ||
-    normalized.includes("too many requests") ||
-    normalized.includes("out_of_energy") ||
-    normalized.includes("out of energy") ||
-    normalized.includes("server is busy") ||
-    normalized.includes("timeout") ||
-    normalized.includes("etimedout") ||
-    normalized.includes("econnreset") ||
-    normalized.includes("failed to fetch") ||
-    normalized.includes("temporary") ||
-    normalized.includes("node busy") ||
-    normalized.includes("bandwidth")
+function getTronHeaders(): Record<string, string> {
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json"
+  };
+
+  const apiKey = String(process.env.TRONGRID_API_KEY || "").trim();
+  if (apiKey) {
+    headers["TRON-PRO-API-KEY"] = apiKey;
+  }
+
+  return headers;
+}
+
+function getResourceAddressFromEnv(): string {
+  const candidates = [
+    process.env.TRON_RESOURCE_ADDRESS,
+    process.env.CONTROLLER_OWNER_WALLET,
+    process.env.CONTROLLER_WALLET,
+    process.env.OWNER_WALLET
+  ];
+
+  for (const candidate of candidates) {
+    const normalized = String(candidate || "").trim();
+    if (normalized) {
+      return normalized;
+    }
+  }
+
+  throw new Error(
+    "Resource wallet is not configured. Set TRON_RESOURCE_ADDRESS or CONTROLLER_OWNER_WALLET"
   );
 }
 
-function isAlreadyProcessedFailure(message: string): boolean {
-  const normalized = message.toLowerCase();
-
-  return (
-    normalized.includes("already processed") ||
-    normalized.includes("purchase already processed") ||
-    normalized.includes("already allocated") ||
-    normalized.includes("duplicate purchase")
-  );
+function getRequiredEnergyThreshold(): number {
+  const raw = Number(process.env.TRON_MIN_REQUIRED_ENERGY || "185000");
+  return Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : 185000;
 }
 
-function withRetryAfter(reason: string, retryAt: number): string {
-  return `[RETRY_AFTER=${retryAt}] ${reason}`;
+function getReserveEnergyThreshold(): number {
+  const raw = Number(process.env.TRON_RESERVE_ENERGY || "15000");
+  return Number.isFinite(raw) && raw >= 0 ? Math.floor(raw) : 15000;
+}
+
+async function getAvailableEnergy(addressBase58: string): Promise<number> {
+  const addressHex = TronWeb.address.toHex(addressBase58);
+  const url = `${getTronResourceApiUrl()}/wallet/getaccountresource`;
+
+  const response = await fetch(url, {
+    method: "POST",
+    headers: getTronHeaders(),
+    body: JSON.stringify({
+      address: addressHex,
+      visible: false
+    })
+  });
+
+  const text = await response.text();
+  let data: AccountResourceResponse = {};
+
+  try {
+    data = text ? JSON.parse(text) : {};
+  } catch {
+    throw new Error(`Invalid TRON resource response: ${text || "empty response"}`);
+  }
+
+  if (!response.ok) {
+    throw new Error(`TRON resource API HTTP ${response.status}`);
+  }
+
+  const energyLimit = Number(data.EnergyLimit || 0);
+  const energyUsed = Number(data.EnergyUsed || 0);
+  const available = Math.max(0, energyLimit - energyUsed);
+
+  return Number.isFinite(available) ? available : 0;
 }
 
 export class AllocationService {
@@ -141,7 +196,51 @@ export class AllocationService {
       };
     }
 
-    const ambassadorWallet = purchase.ambassadorWallet || null;
+    const resourceAddress = getResourceAddressFromEnv();
+    const minRequiredEnergy = getRequiredEnergyThreshold();
+    const reserveEnergy = getReserveEnergyThreshold();
+    const totalRequiredEnergy = minRequiredEnergy + reserveEnergy;
+    const availableEnergy = await getAvailableEnergy(resourceAddress);
+
+    if (availableEnergy < totalRequiredEnergy) {
+      const deferredPurchase = await this.store.update(purchase.purchaseId, {
+        status: "verified",
+        failureReason: `Awaiting energy: available=${availableEnergy}, required=${totalRequiredEnergy}`,
+        now
+      });
+
+      return {
+        status: "deferred-insufficient-energy",
+        purchase: deferredPurchase,
+        ambassadorWallet: deferredPurchase.ambassadorWallet,
+        txid: null,
+        reason: `Insufficient energy on ${resourceAddress}: available ${availableEnergy}, required ${totalRequiredEnergy}`
+      };
+    }
+
+    const onChainProcessed = await this.controllerClient.isPurchaseProcessed(purchase.purchaseId);
+
+    if (onChainProcessed) {
+      const ignoredPurchase = await this.store.markIgnored(
+        purchase.purchaseId,
+        "Purchase already processed on-chain",
+        now
+      );
+
+      return {
+        status: "already-processed-on-chain",
+        purchase: ignoredPurchase,
+        ambassadorWallet: ignoredPurchase.ambassadorWallet,
+        txid: null,
+        reason: "Purchase already processed on-chain"
+      };
+    }
+
+    const alreadyBoundAmbassador = await this.controllerClient.getBuyerAmbassador(
+      purchase.buyerWallet
+    );
+
+    const ambassadorWallet = alreadyBoundAmbassador || purchase.ambassadorWallet || null;
 
     if (!ambassadorWallet) {
       const failedPurchase = await this.store.markFailed(
@@ -160,12 +259,11 @@ export class AllocationService {
     }
 
     try {
-      const result = await this.controllerClient.recordVerifiedPurchase({
+      const txid = await this.controllerClient.allocatePurchase({
         purchaseId: purchase.purchaseId,
         buyerWallet: purchase.buyerWallet,
         ambassadorWallet,
-        purchaseAmountSun: purchase.purchaseAmountSun,
-        ownerShareSun: purchase.ownerShareSun,
+        amountSun: purchase.ownerShareSun,
         feeLimitSun: input.feeLimitSun
       });
 
@@ -178,43 +276,31 @@ export class AllocationService {
         status: "allocated",
         purchase: allocatedPurchase,
         ambassadorWallet,
-        txid: result.txid,
+        txid,
         reason: null
       };
     } catch (error) {
       const message = toErrorMessage(error);
 
-      if (isAlreadyProcessedFailure(message)) {
-        const ignoredPurchase = await this.store.markIgnored(
-          purchase.purchaseId,
-          "Purchase already processed on-chain",
+      const lowered = message.toLowerCase();
+      const looksLikeEnergyProblem =
+        lowered.includes("out_of_energy") ||
+        lowered.includes("insufficient energy") ||
+        lowered.includes("energy");
+
+      if (looksLikeEnergyProblem) {
+        const deferredPurchase = await this.store.update(purchase.purchaseId, {
+          status: "verified",
+          failureReason: message,
           now
-        );
+        });
 
         return {
-          status: "already-processed-on-chain",
-          purchase: ignoredPurchase,
+          status: "deferred-insufficient-energy",
+          purchase: deferredPurchase,
           ambassadorWallet,
           txid: null,
-          reason: "Purchase already processed on-chain"
-        };
-      }
-
-      if (isRetryableInfrastructureFailure(message)) {
-        const retryAt = now + RETRY_DELAY_MS;
-
-        const failedPurchase = await this.store.markFailed(
-          purchase.purchaseId,
-          withRetryAfter(message, retryAt),
-          now
-        );
-
-        return {
-          status: "failed",
-          purchase: failedPurchase,
-          ambassadorWallet,
-          txid: null,
-          reason: `Retry scheduled after ${new Date(retryAt).toISOString()}`
+          reason: message
         };
       }
 
@@ -239,8 +325,7 @@ export class AllocationService {
     feeLimitSun?: number,
     now?: number
   ): Promise<AllocationDecision> {
-    const normalizedPurchaseId = assertNonEmpty(purchaseId, "purchaseId");
-    const purchase = await this.store.getByPurchaseId(normalizedPurchaseId);
+    const purchase = await this.store.getByPurchaseId(assertNonEmpty(purchaseId, "purchaseId"));
 
     if (!purchase) {
       return {
@@ -249,16 +334,6 @@ export class AllocationService {
         ambassadorWallet: null,
         txid: null,
         reason: "Purchase not found in local store"
-      };
-    }
-
-    if (purchase.status !== "failed") {
-      return {
-        status: "invalid-purchase-status",
-        purchase,
-        ambassadorWallet: purchase.ambassadorWallet,
-        txid: null,
-        reason: `Replay is allowed only for failed purchases, got: ${purchase.status}`
       };
     }
 
