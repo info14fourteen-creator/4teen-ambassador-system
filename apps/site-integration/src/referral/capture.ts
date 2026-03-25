@@ -29,16 +29,22 @@ export function readReferralSlugFromSearch(search?: string): string | null {
   const params = new URLSearchParams(rawSearch);
   const rawSlug = params.get(REFERRAL_QUERY_PARAM);
 
-  if (!rawSlug) return null;
+  if (!rawSlug) {
+    return null;
+  }
 
   const normalized = normalizeSlug(rawSlug);
 
-  if (!isValidSlug(normalized)) return null;
+  if (!isValidSlug(normalized)) {
+    return null;
+  }
 
   return normalized;
 }
 
-export function captureReferralFromUrl(options: CaptureReferralOptions = {}): CaptureReferralResult {
+export function captureReferralFromUrl(
+  options: CaptureReferralOptions = {}
+): CaptureReferralResult {
   const now = options.now ?? Date.now();
   const ttlMs = options.ttlMs ?? REFERRAL_TTL_MS;
 
