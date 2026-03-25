@@ -1,6 +1,6 @@
 # AI BUNDLE — CORE
 
-Generated: 2026-03-25T10:00:07.223Z
+Generated: 2026-03-25T10:07:30.171Z
 
 ===== FILE: .github/workflows/build-ai-bundles.yml =====
 name: Build and Publish AI Bundles
