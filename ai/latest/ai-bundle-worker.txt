@@ -1,6 +1,6 @@
 # AI BUNDLE — WORKER
 
-Generated: 2026-03-25T10:30:16.706Z
+Generated: 2026-03-25T10:38:06.722Z
 
 ===== FILE: services/allocation-worker/.gitignore =====
 node_modules
@@ -2813,6 +2813,7 @@ export class BuyTokensScanner {
 
 ===== FILE: services/allocation-worker/src/server.ts =====
 import http from "node:http";
+import crypto from "node:crypto";
 import { URL } from "node:url";
 import TronWebModule from "tronweb";
 import { assertValidSlug, normalizeSlug } from "../../../shared/utils/slug";
@@ -2825,6 +2826,7 @@ import {
   isSlugTaken
 } from "./db/ambassadors";
 import { initPurchaseTables } from "./db/purchases";
+import { rentDailyEnergy } from "./jobs/rentEnergy";
 
 interface EnvConfig {
   port: number;
@@ -2834,12 +2836,25 @@ interface EnvConfig {
   tokenContractAddress?: string;
   scanPageSize: number;
   allowedOrigins: string[];
+  cronSecret?: string;
+  tronResourceAddress?: string;
+  tronResourceApiUrl: string;
+  tronApiKey?: string;
 }
 
 type TronWebConstructor = new (config: {
   fullHost: string;
   privateKey: string;
 }) => any;
+
+interface AccountResourceResponse {
+  freeNetLimit?: number;
+  freeNetUsed?: number;
+  NetLimit?: number;
+  NetUsed?: number;
+  EnergyLimit?: number;
+  EnergyUsed?: number;
+}
 
 function getTronWebConstructor(): TronWebConstructor {
   const candidate =
@@ -2911,17 +2926,33 @@ function parseAllowedOrigins(value: string | undefined): string[] {
   return parsed.length ? parsed : defaults;
 }
 
+function normalizeBaseUrl(value: string | undefined, fallback: string): string {
+  const normalized = String(value || fallback).trim();
+  return normalized.replace(/\/+$/, "");
+}
+
 function loadEnv(): EnvConfig {
   const config: EnvConfig = {
     port: parsePositiveInteger(process.env.PORT, 3000, "PORT"),
     tronFullHost: assertNonEmpty(process.env.TRON_FULL_HOST, "TRON_FULL_HOST"),
     tronPrivateKey: assertNonEmpty(process.env.TRON_PRIVATE_KEY, "TRON_PRIVATE_KEY"),
     scanPageSize: parsePositiveInteger(process.env.SCAN_PAGE_SIZE, 50, "SCAN_PAGE_SIZE"),
-    allowedOrigins: parseAllowedOrigins(process.env.ALLOWED_ORIGINS)
+    allowedOrigins: parseAllowedOrigins(process.env.ALLOWED_ORIGINS),
+    tronResourceApiUrl: normalizeBaseUrl(
+      process.env.TRON_RESOURCE_API_URL,
+      "https://api.trongrid.io"
+    )
   };
 
   const controllerContractAddress = process.env.FOURTEEN_CONTROLLER_CONTRACT?.trim();
   const tokenContractAddress = process.env.FOURTEEN_TOKEN_CONTRACT?.trim();
+  const cronSecret = process.env.CRON_SECRET?.trim();
+  const tronResourceAddress =
+    process.env.TRON_RESOURCE_ADDRESS?.trim() ||
+    process.env.CONTROLLER_OWNER_WALLET?.trim() ||
+    process.env.CONTROLLER_WALLET?.trim() ||
+    process.env.OWNER_WALLET?.trim();
+  const tronApiKey = process.env.TRONGRID_API_KEY?.trim();
 
   if (controllerContractAddress) {
     config.controllerContractAddress = controllerContractAddress;
@@ -2929,6 +2960,18 @@ function loadEnv(): EnvConfig {
 
   if (tokenContractAddress) {
     config.tokenContractAddress = tokenContractAddress;
+  }
+
+  if (cronSecret) {
+    config.cronSecret = cronSecret;
+  }
+
+  if (tronResourceAddress) {
+    config.tronResourceAddress = tronResourceAddress;
+  }
+
+  if (tronApiKey) {
+    config.tronApiKey = tronApiKey;
   }
 
   return config;
@@ -2952,7 +2995,7 @@ function setCorsHeaders(
   res.setHeader("Access-Control-Allow-Origin", getCorsOrigin(req, env));
   res.setHeader("Vary", "Origin");
   res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type, X-Cron-Secret");
 }
 
 function sendJson(
@@ -3040,6 +3083,104 @@ function buildReferralLink(slug: string): string {
   return `?r=${encodeURIComponent(slug)}`;
 }
 
+function safeEqual(a: string, b: string): boolean {
+  const aBuf = Buffer.from(a);
+  const bBuf = Buffer.from(b);
+
+  if (aBuf.length !== bBuf.length) {
+    return false;
+  }
+
+  return crypto.timingSafeEqual(aBuf, bBuf);
+}
+
+function requireCronSecret(req: http.IncomingMessage, env: EnvConfig): void {
+  if (!env.cronSecret) {
+    throw new Error("CRON_SECRET is not configured");
+  }
+
+  const provided =
+    (typeof req.headers["x-cron-secret"] === "string" && req.headers["x-cron-secret"].trim()) ||
+    "";
+
+  if (!provided || !safeEqual(provided, env.cronSecret)) {
+    throw new Error("Unauthorized cron request");
+  }
+}
+
+function getTronHeaders(env: EnvConfig): Record<string, string> {
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json"
+  };
+
+  if (env.tronApiKey) {
+    headers["TRON-PRO-API-KEY"] = env.tronApiKey;
+  }
+
+  return headers;
+}
+
+async function getAccountResources(env: EnvConfig, addressBase58: string) {
+  const TronWeb = getTronWebConstructor();
+  const tronWeb = new TronWeb({
+    fullHost: env.tronFullHost,
+    privateKey: env.tronPrivateKey
+  });
+
+  const addressHex = tronWeb.address.toHex(addressBase58);
+  const response = await fetch(`${env.tronResourceApiUrl}/wallet/getaccountresource`, {
+    method: "POST",
+    headers: getTronHeaders(env),
+    body: JSON.stringify({
+      address: addressHex,
+      visible: false
+    })
+  });
+
+  const text = await response.text();
+  let data: AccountResourceResponse = {};
+
+  try {
+    data = text ? JSON.parse(text) : {};
+  } catch {
+    throw new Error(`Invalid TRON resource response: ${text || "empty response"}`);
+  }
+
+  if (!response.ok) {
+    throw new Error(`TRON resource API HTTP ${response.status}`);
+  }
+
+  const energyLimit = Number(data.EnergyLimit || 0);
+  const energyUsed = Number(data.EnergyUsed || 0);
+  const freeNetLimit = Number(data.freeNetLimit || 0);
+  const freeNetUsed = Number(data.freeNetUsed || 0);
+  const netLimit = Number(data.NetLimit || 0);
+  const netUsed = Number(data.NetUsed || 0);
+
+  const availableEnergy = Math.max(0, energyLimit - energyUsed);
+  const availableFreeBandwidth = Math.max(0, freeNetLimit - freeNetUsed);
+  const availablePaidBandwidth = Math.max(0, netLimit - netUsed);
+  const availableBandwidth = availableFreeBandwidth + availablePaidBandwidth;
+
+  return {
+    address: addressBase58,
+    energy: {
+      limit: energyLimit,
+      used: energyUsed,
+      available: availableEnergy
+    },
+    bandwidth: {
+      freeLimit: freeNetLimit,
+      freeUsed: freeNetUsed,
+      paidLimit: netLimit,
+      paidUsed: netUsed,
+      availableFree: availableFreeBandwidth,
+      availablePaid: availablePaidBandwidth,
+      availableTotal: availableBandwidth
+    }
+  };
+}
+
 async function bootstrap() {
   const env = loadEnv();
   const TronWeb = getTronWebConstructor();
@@ -3084,6 +3225,26 @@ async function bootstrap() {
           ok: true,
           service: "allocation-worker",
           timestamp: Date.now()
+        });
+        return;
+      }
+
+      if (method === "GET" && pathname === "/resources") {
+        const address =
+          normalizeOptionalString(requestUrl.searchParams.get("address")) ||
+          env.tronResourceAddress;
+
+        if (!address) {
+          throw new Error(
+            "Resource address is not configured. Set TRON_RESOURCE_ADDRESS or pass ?address="
+          );
+        }
+
+        const result = await getAccountResources(env, address);
+
+        sendJson(req, res, env, 200, {
+          ok: true,
+          result
         });
         return;
       }
@@ -3229,14 +3390,54 @@ async function bootstrap() {
         return;
       }
 
+      if (method === "POST" && pathname === "/rent-energy") {
+        const result = await rentDailyEnergy();
+
+        sendJson(req, res, env, result.ok ? 200 : 400, {
+          ok: result.ok,
+          result
+        });
+        return;
+      }
+
+      if (method === "POST" && pathname === "/cron/daily-maintenance") {
+        requireCronSecret(req, env);
+
+        const rentResult = await rentDailyEnergy().catch((error) => ({
+          ok: false,
+          stage: "checked-balance" as const,
+          gasBalance: null,
+          tradeNo: null,
+          reason: toErrorMessage(error)
+        }));
+
+        const scanResult = await scanner.fetchEvents({}).catch((error) => ({
+          ok: false,
+          error: toErrorMessage(error)
+        }));
+
+        sendJson(req, res, env, 200, {
+          ok: true,
+          result: {
+            rentEnergy: rentResult,
+            scan: scanResult,
+            timestamp: Date.now()
+          }
+        });
+        return;
+      }
+
       sendJson(req, res, env, 404, {
         ok: false,
         error: "Not found"
       });
     } catch (error) {
-      sendJson(req, res, env, 500, {
+      const message = toErrorMessage(error);
+      const statusCode = message === "Unauthorized cron request" ? 401 : 500;
+
+      sendJson(req, res, env, statusCode, {
         ok: false,
-        error: toErrorMessage(error)
+        error: message
       });
     }
   });
@@ -3247,7 +3448,8 @@ async function bootstrap() {
         ok: true,
         message: "allocation-worker started",
         port: env.port,
-        allowedOrigins: env.allowedOrigins
+        allowedOrigins: env.allowedOrigins,
+        resourceAddress: env.tronResourceAddress || null
       })
     );
   });
