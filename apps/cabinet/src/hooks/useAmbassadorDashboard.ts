@@ -170,18 +170,29 @@ export function useAmbassadorDashboard(): UseAmbassadorDashboardResult {
     } catch (error) {
       const message = toErrorMessage(error);
 
-      setState((current) => ({
-        ...current,
-        wallet: "",
-        dashboard: null,
-        statusCards: EMPTY_STATUS_CARDS,
-        hasProcessingWithdrawal: false,
-        isConnected: false,
-        isRegistered: false,
-        isLoading: false,
-        isRefreshing: false,
-        error: message
-      }));
+      setState((current) => {
+        if (mode === "refresh") {
+          return {
+            ...current,
+            isLoading: false,
+            isRefreshing: false,
+            error: message
+          };
+        }
+
+        return {
+          ...current,
+          wallet: "",
+          dashboard: null,
+          statusCards: EMPTY_STATUS_CARDS,
+          hasProcessingWithdrawal: false,
+          isConnected: false,
+          isRegistered: false,
+          isLoading: false,
+          isRefreshing: false,
+          error: message
+        };
+      });
     }
   }, []);
 
