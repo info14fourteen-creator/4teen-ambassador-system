@@ -1,6 +1,6 @@
 # AI PROJECT MAP
 
-Generated: 2026-03-25T12:57:41.988Z
+Generated: 2026-03-25T12:59:51.820Z
 
 ## CORE
 
@@ -54,6 +54,7 @@ Generated: 2026-03-25T12:57:41.988Z
 - services/allocation-worker/src/services/gasStation.ts
 - services/allocation-worker/src/tron/controller.ts
 - services/allocation-worker/src/tron/hashing.ts
+- services/allocation-worker/src/tron/resources.ts
 - services/allocation-worker/tsconfig.json
 
 ## TELEGRAM
