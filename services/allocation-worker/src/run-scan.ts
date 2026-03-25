@@ -33,11 +33,13 @@ export type ScanProcessStatus =
   | "skipped-missing-slug"
   | "skipped-already-final"
   | "verification-blocked"
-  | "allocation-failed";
+  | "allocation-failed"
+  | "event-parse-failed"
+  | "event-processing-failed";
 
 export interface ScanProcessResult {
   status: ScanProcessStatus;
-  event: BuyTokensEvent;
+  event: BuyTokensEvent | null;
   purchaseId: string | null;
   reason: string | null;
   rawResult?: unknown;
@@ -116,32 +118,41 @@ function normalizeFingerprintFromEvent(event: any): string | null {
   return normalized || null;
 }
 
+function toTronBase58Address(rawAddress: string, tronWeb: any): string {
+  if (!tronWeb?.address?.fromHex) {
+    throw new Error("tronWeb.address.fromHex is required to normalize buyer wallet");
+  }
+
+  const raw = assertNonEmpty(rawAddress, "buyerWallet").trim();
+
+  if (/^T[1-9A-HJ-NP-Za-km-z]{33}$/.test(raw)) {
+    return raw;
+  }
+
+  if (/^41[0-9a-fA-F]{40}$/.test(raw)) {
+    return tronWeb.address.fromHex(raw);
+  }
+
+  if (/^0x[0-9a-fA-F]{40}$/.test(raw)) {
+    const hexBody = raw.slice(2);
+    return tronWeb.address.fromHex(`41${hexBody}`);
+  }
+
+  if (/^[0-9a-fA-F]{40}$/.test(raw)) {
+    return tronWeb.address.fromHex(`41${raw}`);
+  }
+
+  return raw;
+}
+
 function normalizeBuyerWalletFromEvent(event: any, tronWeb: any): string {
   const result = pickObjectValue(event, ["result"]);
   const buyer =
     pickObjectValue(result, ["buyer"]) ??
     pickObjectValue(event, ["buyer"]);
 
-  const rawBuyer = assertNonEmpty(String(buyer), "event.result.buyer").trim();
-
-  if (/^0x[0-9a-fA-F]{40}$/.test(rawBuyer)) {
-    if (!tronWeb?.address?.fromHex) {
-      throw new Error("tronWeb.address.fromHex is required to normalize buyer wallet");
-    }
-
-    const hex41 = `41${rawBuyer.slice(2)}`;
-    return tronWeb.address.fromHex(hex41);
-  }
-
-  if (/^[0-9a-fA-F]{40}$/.test(rawBuyer)) {
-    if (!tronWeb?.address?.fromHex) {
-      throw new Error("tronWeb.address.fromHex is required to normalize buyer wallet");
-    }
-
-    return tronWeb.address.fromHex(`41${rawBuyer}`);
-  }
-
-  return rawBuyer;
+  const rawBuyer = assertNonEmpty(String(buyer), "event.result.buyer");
+  return toTronBase58Address(rawBuyer, tronWeb);
 }
 
 function normalizePurchaseAmountSunFromEvent(event: any): string {
@@ -204,7 +215,7 @@ function mapBuyTokensEvent(event: any, tronWeb: any): BuyTokensEvent {
   };
 }
 
-function extractEventArray(rawEvents: any): any[] {
+function extractEventsArray(rawEvents: any): any[] {
   if (Array.isArray(rawEvents)) {
     return rawEvents;
   }
@@ -214,6 +225,48 @@ function extractEventArray(rawEvents: any): any[] {
   }
 
   return [];
+}
+
+function extractNextFingerprint(rawEvents: any, mappedEvents: BuyTokensEvent[]): string | null {
+  const metaFingerprint =
+    rawEvents &&
+    typeof rawEvents === "object" &&
+    rawEvents.meta &&
+    typeof rawEvents.meta === "object" &&
+    typeof rawEvents.meta.fingerprint === "string" &&
+    rawEvents.meta.fingerprint.trim()
+      ? rawEvents.meta.fingerprint.trim()
+      : null;
+
+  if (metaFingerprint) {
+    return metaFingerprint;
+  }
+
+  if (mappedEvents.length > 0) {
+    return mappedEvents[mappedEvents.length - 1]?.fingerprint ?? null;
+  }
+
+  return null;
+}
+
+function getErrorMessage(error: unknown): string {
+  if (typeof error === "string" && error.trim()) {
+    return error.trim();
+  }
+
+  if (
+    error &&
+    typeof error === "object" &&
+    "message" in error &&
+    typeof (error as { message?: unknown }).message === "string"
+  ) {
+    const message = (error as { message: string }).message.trim();
+    if (message) {
+      return message;
+    }
+  }
+
+  return "Unknown error";
 }
 
 export class BuyTokensScanner {
@@ -245,7 +298,7 @@ export class BuyTokensScanner {
       "tokenContractAddress"
     );
     this.eventName = assertNonEmpty(config.eventName ?? "BuyTokens", "eventName");
-    this.pageSize = normalizePositiveInteger(config.pageSize, 50);
+    this.pageSize = normalizePositiveInteger(config.pageSize, 20);
   }
 
   async fetchEvents(cursor: ScanCursor = {}): Promise<RunScanResult> {
@@ -253,11 +306,25 @@ export class BuyTokensScanner {
       throw new Error("tronWeb.getEventResult is required");
     }
 
-    const rawEvents = await this.tronWeb.getEventResult(this.tokenContractAddress, {
-      eventName: this.eventName,
-      size: this.pageSize,
-      fingerprint: cursor.fingerprint ?? undefined
-    });
+    let rawEvents: any;
+
+    try {
+      rawEvents = await this.tronWeb.getEventResult(this.tokenContractAddress, {
+        eventName: this.eventName,
+        size: this.pageSize,
+        fingerprint: cursor.fingerprint ?? undefined
+      });
+    } catch (error) {
+      const message = getErrorMessage(error);
+
+      if (message.includes("429")) {
+        throw new Error("TRON events API rate limit reached. Retry in 20-60 seconds.");
+      }
+
+      throw error;
+    }
+
+    const rawEventsArray = extractEventsArray(rawEvents);
 
     console.log(
       JSON.stringify({
@@ -267,29 +334,42 @@ export class BuyTokensScanner {
         pageSize: this.pageSize,
         fingerprint: cursor.fingerprint ?? null,
         rawEventsType: Array.isArray(rawEvents) ? "array" : typeof rawEvents,
-        rawEventsLength: Array.isArray(rawEvents)
-          ? rawEvents.length
-          : Array.isArray(rawEvents?.data)
-            ? rawEvents.data.length
-            : null,
-        rawEventsPreview: Array.isArray(rawEvents)
-          ? rawEvents.slice(0, 2)
-          : rawEvents
+        rawEventsLength: rawEventsArray.length,
+        rawEventsPreview: rawEvents
       })
     );
 
-    const rawEventList = extractEventArray(rawEvents);
-
-    const events = rawEventList.map((event) => mapBuyTokensEvent(event, this.tronWeb));
-
-    const nextFingerprint =
-      events.length > 0 ? events[events.length - 1]?.fingerprint ?? null : null;
-
+    const events: BuyTokensEvent[] = [];
     const processed: ScanProcessResult[] = [];
 
-    for (const event of events) {
-      processed.push(await this.processEvent(event));
+    for (const rawEvent of rawEventsArray) {
+      try {
+        const mappedEvent = mapBuyTokensEvent(rawEvent, this.tronWeb);
+        events.push(mappedEvent);
+
+        try {
+          processed.push(await this.processEvent(mappedEvent));
+        } catch (error) {
+          processed.push({
+            status: "event-processing-failed",
+            event: mappedEvent,
+            purchaseId: null,
+            reason: getErrorMessage(error),
+            rawResult: error
+          });
+        }
+      } catch (error) {
+        processed.push({
+          status: "event-parse-failed",
+          event: null,
+          purchaseId: null,
+          reason: getErrorMessage(error),
+          rawResult: rawEvent
+        });
+      }
     }
+
+    const nextFingerprint = extractNextFingerprint(rawEvents, events);
 
     return {
       events,
