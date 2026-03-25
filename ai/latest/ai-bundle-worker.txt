@@ -1,6 +1,6 @@
 # AI BUNDLE — WORKER
 
-Generated: 2026-03-25T01:14:55.477Z
+Generated: 2026-03-25T01:21:36.006Z
 
 ===== FILE: services/allocation-worker/.gitignore =====
 node_modules
@@ -833,15 +833,17 @@ function rowToPurchaseRecord(row: any): PurchaseRecord {
 }
 
 function mapPgConflict(error: unknown): Error {
-  if (
-    error &&
+  const isPgUniqueViolation =
+    !!error &&
     typeof error === "object" &&
     "code" in error &&
-    (error as { code?: unknown }).code === "23505"
-  ) {
+    (error as { code?: unknown }).code === "23505";
+
+  if (isPgUniqueViolation) {
     const constraint =
-      typeof (error as { constraint?: unknown }).constraint === "string"
-        ? (error as { constraint: string }).constraint
+      "constraint" in (error as Record<string, unknown>) &&
+      typeof (error as Record<string, unknown>).constraint === "string"
+        ? String((error as Record<string, unknown>).constraint)
         : "";
 
     if (constraint.includes("purchase_id")) {
