@@ -1,6 +1,6 @@
 # AI BUNDLE — SITE INTEGRATION
 
-Generated: 2026-03-25T00:12:34.616Z
+Generated: 2026-03-25T00:12:52.738Z
 
 ===== FILE: apps/site-integration/src/ambassador/autoMount.ts =====
 import { mountAmbassadorWidget } from "./widget";
@@ -769,7 +769,7 @@ import {
   getStoredReferral,
   saveReferral
 } from "./storage";
-import { assertValidSlug } from "../../../../shared/utils/slug";
+import { assertValidSlug, normalizeSlug } from "../../../../shared/utils/slug";
 
 export interface ApplyFirstTouchInput {
   slug: string;
@@ -782,10 +782,12 @@ export interface ApplyFirstTouchResult {
   record: StoredReferralRecord;
 }
 
-export function applyFirstTouch(input: ApplyFirstTouchInput): ApplyFirstTouchResult {
+export function applyFirstTouch(
+  input: ApplyFirstTouchInput
+): ApplyFirstTouchResult {
   const now = input.now ?? Date.now();
   const ttlMs = input.ttlMs ?? REFERRAL_TTL_MS;
-  const incomingSlug = assertValidSlug(input.slug);
+  const incomingSlug = assertValidSlug(normalizeSlug(input.slug));
 
   const existing = getStoredReferral(now);
 
