@@ -51,11 +51,25 @@ export interface AmbassadorLevelProgress {
   remainingToNextLevel: number;
 }
 
+export interface AmbassadorWithdrawalQueue {
+  availableOnChainSun: string;
+  availableOnChainTrx: string;
+  pendingBackendSyncSun: string;
+  pendingBackendSyncTrx: string;
+  requestedForProcessingSun: string;
+  requestedForProcessingTrx: string;
+  availableOnChainCount: number;
+  pendingBackendSyncCount: number;
+  requestedForProcessingCount: number;
+  hasProcessingWithdrawal: boolean;
+}
+
 export interface AmbassadorDashboard {
   identity: AmbassadorIdentity;
   stats: AmbassadorStats;
   rewards: RewardSummary;
   progress: AmbassadorLevelProgress;
+  withdrawalQueue: AmbassadorWithdrawalQueue;
 }
 
 export interface WithdrawResult {
@@ -114,6 +128,10 @@ function pickTupleValue(source: any, index: number, key?: string): any {
   if (source && typeof source === "object") {
     if (key && key in source) {
       return source[key];
+    }
+
+    if (String(index) in source) {
+      return source[String(index)];
     }
 
     const values = Object.values(source);
@@ -243,10 +261,62 @@ function mapRewards(payoutRaw: any): RewardSummary {
 
 function mapProgress(progressRaw: any): AmbassadorLevelProgress {
   return {
-    currentLevel: safeNumber(pickTupleValue(progressRaw, 0)),
-    buyersCount: safeNumber(pickTupleValue(progressRaw, 1)),
-    nextThreshold: safeNumber(pickTupleValue(progressRaw, 2)),
-    remainingToNextLevel: safeNumber(pickTupleValue(progressRaw, 3))
+    currentLevel: safeNumber(pickTupleValue(progressRaw, 0, "currentLevel")),
+    buyersCount: safeNumber(pickTupleValue(progressRaw, 1, "buyersCount")),
+    nextThreshold: safeNumber(pickTupleValue(progressRaw, 2, "nextThreshold")),
+    remainingToNextLevel: safeNumber(pickTupleValue(progressRaw, 3, "remainingToNextLevel"))
+  };
+}
+
+function mapWithdrawalQueue(raw: any): AmbassadorWithdrawalQueue {
+  const availableOnChainSun = safeString(
+    pickTupleValue(raw, 0, "availableOnChainSun")
+  );
+  const pendingBackendSyncSun = safeString(
+    pickTupleValue(raw, 1, "pendingBackendSyncSun")
+  );
+  const requestedForProcessingSun = safeString(
+    pickTupleValue(raw, 2, "requestedForProcessingSun")
+  );
+  const availableOnChainCount = safeNumber(
+    pickTupleValue(raw, 3, "availableOnChainCount")
+  );
+  const pendingBackendSyncCount = safeNumber(
+    pickTupleValue(raw, 4, "pendingBackendSyncCount")
+  );
+  const requestedForProcessingCount = safeNumber(
+    pickTupleValue(raw, 5, "requestedForProcessingCount")
+  );
+  const hasProcessingWithdrawal = safeBoolean(
+    pickTupleValue(raw, 6, "hasProcessingWithdrawal")
+  );
+
+  return {
+    availableOnChainSun,
+    availableOnChainTrx: sunToTrxString(availableOnChainSun),
+    pendingBackendSyncSun,
+    pendingBackendSyncTrx: sunToTrxString(pendingBackendSyncSun),
+    requestedForProcessingSun,
+    requestedForProcessingTrx: sunToTrxString(requestedForProcessingSun),
+    availableOnChainCount,
+    pendingBackendSyncCount,
+    requestedForProcessingCount,
+    hasProcessingWithdrawal
+  };
+}
+
+function buildFallbackWithdrawalQueue(rewards: RewardSummary): AmbassadorWithdrawalQueue {
+  return {
+    availableOnChainSun: rewards.availableSun,
+    availableOnChainTrx: rewards.availableTrx,
+    pendingBackendSyncSun: "0",
+    pendingBackendSyncTrx: "0",
+    requestedForProcessingSun: "0",
+    requestedForProcessingTrx: "0",
+    availableOnChainCount: 0,
+    pendingBackendSyncCount: 0,
+    requestedForProcessingCount: 0,
+    hasProcessingWithdrawal: false
   };
 }
 
@@ -300,6 +370,29 @@ export async function readAmbassadorLevelProgress(
   return mapProgress(raw);
 }
 
+export async function readAmbassadorWithdrawalQueue(
+  wallet?: string
+): Promise<AmbassadorWithdrawalQueue> {
+  const resolvedWallet = wallet
+    ? assertNonEmpty(wallet, "wallet")
+    : await getConnectedWalletAddress();
+
+  const contract = await getControllerContractInstance();
+
+  if (typeof contract.getAmbassadorWithdrawalQueue === "function") {
+    const raw = await contract.getAmbassadorWithdrawalQueue(resolvedWallet).call();
+    return mapWithdrawalQueue(raw);
+  }
+
+  if (typeof contract.getDashboardWithdrawalQueue === "function") {
+    const raw = await contract.getDashboardWithdrawalQueue(resolvedWallet).call();
+    return mapWithdrawalQueue(raw);
+  }
+
+  const rewards = await readRewardSummary(resolvedWallet);
+  return buildFallbackWithdrawalQueue(rewards);
+}
+
 export async function withdrawRewards(): Promise<WithdrawResult> {
   const contract = await getControllerContractInstance();
   const txid = await contract.withdrawRewards().send();
@@ -314,17 +407,19 @@ export async function readAmbassadorDashboard(wallet?: string): Promise<Ambassad
     ? assertNonEmpty(wallet, "wallet")
     : await getConnectedWalletAddress();
 
-  const [identity, stats, rewards, progress] = await Promise.all([
+  const [identity, stats, rewards, progress, withdrawalQueue] = await Promise.all([
     readAmbassadorIdentity(resolvedWallet),
     readAmbassadorStats(resolvedWallet),
     readRewardSummary(resolvedWallet),
-    readAmbassadorLevelProgress(resolvedWallet)
+    readAmbassadorLevelProgress(resolvedWallet),
+    readAmbassadorWithdrawalQueue(resolvedWallet)
   ]);
 
   return {
     identity,
     stats,
     rewards,
-    progress
+    progress,
+    withdrawalQueue
   };
 }
