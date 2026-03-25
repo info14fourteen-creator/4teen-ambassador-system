@@ -1,6 +1,6 @@
 # AI BUNDLE — SITE INTEGRATION
 
-Generated: 2026-03-25T00:12:52.738Z
+Generated: 2026-03-25T00:13:57.030Z
 
 ===== FILE: apps/site-integration/src/ambassador/autoMount.ts =====
 import { mountAmbassadorWidget } from "./widget";
@@ -837,7 +837,9 @@ function isBrowser(): boolean {
 }
 
 function safeParseRecord(raw: string | null): StoredReferralRecord | null {
-  if (!raw) return null;
+  if (!raw) {
+    return null;
+  }
 
   try {
     const parsed = JSON.parse(raw) as Partial<StoredReferralRecord>;
@@ -863,20 +865,27 @@ function safeParseRecord(raw: string | null): StoredReferralRecord | null {
 }
 
 export function getStoredReferralRaw(): StoredReferralRecord | null {
-  if (!isBrowser()) return null;
+  if (!isBrowser()) {
+    return null;
+  }
 
   const raw = window.localStorage.getItem(REFERRAL_STORAGE_KEY);
   return safeParseRecord(raw);
 }
 
-export function isReferralExpired(record: StoredReferralRecord, now = Date.now()): boolean {
+export function isReferralExpired(
+  record: StoredReferralRecord,
+  now = Date.now()
+): boolean {
   return record.expiresAt <= now;
 }
 
 export function getStoredReferral(now = Date.now()): StoredReferralRecord | null {
   const record = getStoredReferralRaw();
 
-  if (!record) return null;
+  if (!record) {
+    return null;
+  }
 
   if (isReferralExpired(record, now)) {
     clearStoredReferral();
@@ -893,7 +902,7 @@ export function saveReferral(input: SaveReferralInput): StoredReferralRecord {
 
   const now = input.now ?? Date.now();
   const ttlMs = input.ttlMs ?? REFERRAL_TTL_MS;
-  const slug = assertValidSlug(input.slug);
+  const slug = assertValidSlug(normalizeSlug(input.slug));
 
   if (ttlMs <= 0) {
     throw new Error("Referral TTL must be greater than zero");
@@ -912,7 +921,10 @@ export function saveReferral(input: SaveReferralInput): StoredReferralRecord {
 }
 
 export function clearStoredReferral(): void {
-  if (!isBrowser()) return;
+  if (!isBrowser()) {
+    return;
+  }
+
   window.localStorage.removeItem(REFERRAL_STORAGE_KEY);
 }
 
