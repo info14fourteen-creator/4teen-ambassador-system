@@ -4,7 +4,7 @@ import {
   getStoredReferral,
   saveReferral
 } from "./storage";
-import { assertValidSlug } from "../../../../shared/utils/slug";
+import { assertValidSlug, normalizeSlug } from "../../../../shared/utils/slug";
 
 export interface ApplyFirstTouchInput {
   slug: string;
@@ -17,10 +17,12 @@ export interface ApplyFirstTouchResult {
   record: StoredReferralRecord;
 }
 
-export function applyFirstTouch(input: ApplyFirstTouchInput): ApplyFirstTouchResult {
+export function applyFirstTouch(
+  input: ApplyFirstTouchInput
+): ApplyFirstTouchResult {
   const now = input.now ?? Date.now();
   const ttlMs = input.ttlMs ?? REFERRAL_TTL_MS;
-  const incomingSlug = assertValidSlug(input.slug);
+  const incomingSlug = assertValidSlug(normalizeSlug(input.slug));
 
   const existing = getStoredReferral(now);
 
