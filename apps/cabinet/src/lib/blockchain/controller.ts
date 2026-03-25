@@ -142,7 +142,7 @@ function pickTupleValue(source: any, index: number, key?: string): any {
   return undefined;
 }
 
-function sunToTrxString(value: any): string {
+export function sunToTrxString(value: any): string {
   const raw = safeString(value);
 
   if (!raw || raw === "0") {
@@ -178,7 +178,7 @@ export async function getConnectedWalletAddress(): Promise<string> {
 
 async function getControllerContractInstance(): Promise<any> {
   const tronWeb = await getTronWeb();
-  return tronWeb.contract().at(FOURTEEN_CONTROLLER_CONTRACT);
+  return await tronWeb.contract().at(FOURTEEN_CONTROLLER_CONTRACT);
 }
 
 export function levelToLabel(level: number): string {
