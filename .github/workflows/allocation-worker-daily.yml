@@ -2,18 +2,74 @@ name: allocation-worker-daily
 
 on:
   schedule:
-    - cron: "15 0 * * *"
+    - cron: "10 0 * * *"
   workflow_dispatch:
 
 jobs:
   daily-maintenance:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
 
     steps:
-      - name: Trigger daily maintenance endpoint
+      - name: Health check
+        env:
+          ALLOCATION_WORKER_BASE_URL: ${{ secrets.ALLOCATION_WORKER_BASE_URL }}
         run: |
-          curl -X POST "${{ secrets.ALLOCATION_WORKER_BASE_URL }}/cron/daily-maintenance" \
-            -H "X-Cron-Secret: ${{ secrets.ALLOCATION_WORKER_CRON_SECRET }}" \
-            --fail \
-            --show-error \
-            --silent
+          set -euo pipefail
+
+          if [ -z "${ALLOCATION_WORKER_BASE_URL:-}" ]; then
+            echo "ALLOCATION_WORKER_BASE_URL secret is required"
+            exit 1
+          fi
+
+          echo "Checking health: ${ALLOCATION_WORKER_BASE_URL}/health"
+          curl --fail --silent --show-error \
+            "${ALLOCATION_WORKER_BASE_URL}/health"
+
+      - name: Run daily maintenance
+        env:
+          ALLOCATION_WORKER_BASE_URL: ${{ secrets.ALLOCATION_WORKER_BASE_URL }}
+          ALLOCATION_WORKER_CRON_SECRET: ${{ secrets.ALLOCATION_WORKER_CRON_SECRET }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "${ALLOCATION_WORKER_BASE_URL:-}" ]; then
+            echo "ALLOCATION_WORKER_BASE_URL secret is required"
+            exit 1
+          fi
+
+          if [ -z "${ALLOCATION_WORKER_CRON_SECRET:-}" ]; then
+            echo "ALLOCATION_WORKER_CRON_SECRET secret is required"
+            exit 1
+          fi
+
+          echo "Running daily maintenance: ${ALLOCATION_WORKER_BASE_URL}/jobs/daily-maintenance"
+
+          HTTP_CODE=$(
+            curl --silent --show-error \
+              --output response.json \
+              --write-out "%{http_code}" \
+              --request POST \
+              "${ALLOCATION_WORKER_BASE_URL}/jobs/daily-maintenance" \
+              --header "Content-Type: application/json" \
+              --header "x-cron-secret: ${ALLOCATION_WORKER_CRON_SECRET}" \
+              --data '{}'
+          )
+
+          echo "HTTP status: ${HTTP_CODE}"
+          cat response.json
+
+          if [ "${HTTP_CODE}" -lt 200 ] || [ "${HTTP_CODE}" -ge 300 ]; then
+            echo "Daily maintenance request failed"
+            exit 1
+          fi
+
+      - name: Check failures after maintenance
+        env:
+          ALLOCATION_WORKER_BASE_URL: ${{ secrets.ALLOCATION_WORKER_BASE_URL }}
+        run: |
+          set -euo pipefail
+
+          echo "Checking failures: ${ALLOCATION_WORKER_BASE_URL}/failures"
+          curl --fail --silent --show-error \
+            "${ALLOCATION_WORKER_BASE_URL}/failures"
