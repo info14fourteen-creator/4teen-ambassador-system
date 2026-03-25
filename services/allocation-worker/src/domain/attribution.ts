@@ -1,11 +1,7 @@
 import { assertValidSlug, normalizeSlug } from "../../../../shared/utils/slug";
-import {
-  PurchaseRecord,
-  PurchaseStore
-} from "../db/purchases";
-import {
-  ControllerClient
-} from "../tron/controller";
+import { query } from "../db/postgres";
+import { PurchaseRecord, PurchaseStore } from "../db/purchases";
+import { ControllerClient } from "../tron/controller";
 
 export interface FrontendAttributionInput {
   txHash: string;
@@ -91,6 +87,25 @@ function normalizeIncomingSlug(value: string): string {
   return assertValidSlug(normalizeSlug(value));
 }
 
+async function getLocalAmbassadorWalletBySlug(slug: string): Promise<string | null> {
+  const normalizedSlug = normalizeIncomingSlug(slug);
+
+  const result = await query<{ wallet: string }>(
+    `
+      SELECT i.wallet
+      FROM ambassador_public_profiles p
+      INNER JOIN ambassador_private_identities i
+        ON i.ambassador_id = p.id
+      WHERE p.slug = $1
+      LIMIT 1
+    `,
+    [normalizedSlug]
+  );
+
+  const wallet = String(result.rows[0]?.wallet || "").trim();
+  return wallet || null;
+}
+
 export class AttributionService {
   private readonly store: PurchaseStore;
   private readonly controllerClient: ControllerClient;
@@ -153,9 +168,9 @@ export class AttributionService {
       };
     }
 
-    const onChainProcessed = await this.controllerClient.isPurchaseProcessed(purchaseId);
+    const ambassadorWallet = await getLocalAmbassadorWalletBySlug(slug);
 
-    if (onChainProcessed) {
+    if (!ambassadorWallet) {
       const ignoredPurchase = await this.store.create({
         purchaseId,
         txHash,
@@ -166,34 +181,7 @@ export class AttributionService {
         ownerShareSun: "0",
         source: "frontend-attribution",
         status: "ignored",
-        failureReason: "Purchase already processed on-chain",
-        now
-      });
-
-      return {
-        status: "already-processed-on-chain",
-        purchase: ignoredPurchase,
-        slug,
-        slugHash,
-        ambassadorWallet: null,
-        reason: "Purchase already processed on-chain"
-      };
-    }
-
-    const resolved = await this.controllerClient.getAmbassadorBySlugHash(slugHash);
-
-    if (!resolved.ambassadorWallet) {
-      const ignoredPurchase = await this.store.create({
-        purchaseId,
-        txHash,
-        buyerWallet,
-        ambassadorSlug: slug,
-        ambassadorWallet: null,
-        purchaseAmountSun: "0",
-        ownerShareSun: "0",
-        source: "frontend-attribution",
-        status: "ignored",
-        failureReason: "Ambassador not found for slug hash",
+        failureReason: "Ambassador wallet not found in local registry",
         now
       });
 
@@ -203,7 +191,7 @@ export class AttributionService {
         slug,
         slugHash,
         ambassadorWallet: null,
-        reason: "Ambassador not found for slug hash"
+        reason: "Ambassador wallet not found in local registry"
       };
     }
 
@@ -212,7 +200,7 @@ export class AttributionService {
       txHash,
       buyerWallet,
       ambassadorSlug: slug,
-      ambassadorWallet: resolved.ambassadorWallet,
+      ambassadorWallet,
       purchaseAmountSun: "0",
       ownerShareSun: "0",
       source: "frontend-attribution",
@@ -226,7 +214,7 @@ export class AttributionService {
       purchase,
       slug,
       slugHash,
-      ambassadorWallet: resolved.ambassadorWallet,
+      ambassadorWallet,
       reason: null
     };
   }
@@ -257,32 +245,13 @@ export class AttributionService {
       throw new Error("Purchase buyerWallet does not match existing record");
     }
 
-    const onChainProcessed = await this.controllerClient.isPurchaseProcessed(purchaseId);
+    const ambassadorWallet =
+      existing.ambassadorWallet || (await getLocalAmbassadorWalletBySlug(slug));
 
-    if (onChainProcessed) {
-      const purchase = await this.store.markIgnored(
+    if (!ambassadorWallet) {
+      const purchase = await this.store.markFailed(
         purchaseId,
-        "Purchase already processed on-chain",
-        now
-      );
-
-      return {
-        status: "already-processed-on-chain",
-        purchase,
-        slug,
-        slugHash,
-        ambassadorWallet: purchase.ambassadorWallet,
-        reason: "Purchase already processed on-chain",
-        canAllocate: false
-      };
-    }
-
-    const resolved = await this.controllerClient.getAmbassadorBySlugHash(slugHash);
-
-    if (!resolved.ambassadorWallet) {
-      const purchase = await this.store.markIgnored(
-        purchaseId,
-        "Ambassador not found for slug hash",
+        "Ambassador wallet not found in local registry",
         now
       );
 
@@ -292,42 +261,25 @@ export class AttributionService {
         slug,
         slugHash,
         ambassadorWallet: null,
-        reason: "Ambassador not found for slug hash",
+        reason: "Ambassador wallet not found in local registry",
         canAllocate: false
       };
     }
-
-    const canBind = await this.controllerClient.canBindBuyerToAmbassador(
-      buyerWallet,
-      resolved.ambassadorWallet
-    );
 
     const purchase = await this.store.markVerified(purchaseId, {
       purchaseAmountSun,
       ownerShareSun,
       ambassadorSlug: slug,
-      ambassadorWallet: resolved.ambassadorWallet,
+      ambassadorWallet,
       now
     });
-
-    if (!canBind) {
-      return {
-        status: "binding-not-allowed",
-        purchase,
-        slug,
-        slugHash,
-        ambassadorWallet: resolved.ambassadorWallet,
-        reason: "Buyer cannot be freshly bound to this ambassador",
-        canAllocate: false
-      };
-    }
 
     return {
       status: "ready-for-allocation",
       purchase,
       slug,
       slugHash,
-      ambassadorWallet: resolved.ambassadorWallet,
+      ambassadorWallet,
       reason: null,
       canAllocate: true
     };
