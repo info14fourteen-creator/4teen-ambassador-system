@@ -1,5 +1,6 @@
 import {
   InMemoryPurchaseStore,
+  PostgresPurchaseStore,
   PurchaseStore
 } from "./db/purchases";
 import {
@@ -36,6 +37,7 @@ export interface CreateAllocationWorkerOptions {
   store?: PurchaseStore;
   controllerClient?: ControllerClient;
   hashing?: AttributionHashing;
+  useInMemoryStore?: boolean;
 }
 
 export function createAllocationWorker(
@@ -47,7 +49,9 @@ export function createAllocationWorker(
 
   const store =
     options.store ??
-    new InMemoryPurchaseStore();
+    (options.useInMemoryStore
+      ? new InMemoryPurchaseStore()
+      : new PostgresPurchaseStore());
 
   const hashing =
     options.hashing ??
@@ -86,7 +90,7 @@ export function createAllocationWorker(
   };
 }
 
-export { InMemoryPurchaseStore } from "./db/purchases";
+export { InMemoryPurchaseStore, PostgresPurchaseStore } from "./db/purchases";
 export type {
   PurchaseProcessingStatus,
   PurchaseRecord,
