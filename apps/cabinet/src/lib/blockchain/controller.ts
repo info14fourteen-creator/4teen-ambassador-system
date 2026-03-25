@@ -102,15 +102,15 @@ function safeNumber(value: any): number {
     return value;
   }
 
+  if (typeof value === "bigint") {
+    return Number(value);
+  }
+
   if (typeof value === "string" && value.trim()) {
     const parsed = Number(value);
     if (Number.isFinite(parsed)) {
       return parsed;
     }
-  }
-
-  if (typeof value === "bigint") {
-    return Number(value);
   }
 
   return 0;
@@ -130,8 +130,9 @@ function pickTupleValue(source: any, index: number, key?: string): any {
       return source[key];
     }
 
-    if (String(index) in source) {
-      return source[String(index)];
+    const numericKey = String(index);
+    if (numericKey in source) {
+      return source[numericKey];
     }
 
     const values = Object.values(source);
@@ -144,7 +145,9 @@ function pickTupleValue(source: any, index: number, key?: string): any {
 function sunToTrxString(value: any): string {
   const raw = safeString(value);
 
-  if (!raw || raw === "0") return "0";
+  if (!raw || raw === "0") {
+    return "0";
+  }
 
   const negative = raw.startsWith("-");
   const digits = negative ? raw.slice(1) : raw;
