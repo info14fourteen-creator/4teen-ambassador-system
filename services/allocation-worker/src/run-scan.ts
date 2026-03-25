@@ -97,33 +97,6 @@ function pickObjectValue(source: any, keys: string[]): unknown {
   return undefined;
 }
 
-function isHexAddressLike(value: string): boolean {
-  const normalized = value.trim().toLowerCase();
-  return /^41[0-9a-f]{40}$/.test(normalized) || /^0x41[0-9a-f]{40}$/.test(normalized);
-}
-
-function normalizeHexAddress(value: string): string {
-  const normalized = value.trim();
-  return normalized.startsWith("0x") ? normalized.slice(2) : normalized;
-}
-
-function toBase58IfNeeded(tronWeb: any, value: unknown): string {
-  const raw = assertNonEmpty(String(value ?? ""), "address");
-
-  if (!isHexAddressLike(raw)) {
-    return raw;
-  }
-
-  try {
-    const hex = normalizeHexAddress(raw);
-    if (tronWeb?.address?.fromHex) {
-      return tronWeb.address.fromHex(hex);
-    }
-  } catch (_) {}
-
-  return raw;
-}
-
 function normalizeTxHashFromEvent(event: any): string {
   const value =
     pickObjectValue(event, ["transaction_id", "transactionId", "txHash", "txid"]) ??
@@ -146,17 +119,35 @@ function normalizeFingerprintFromEvent(event: any): string | null {
 function normalizeBuyerWalletFromEvent(event: any, tronWeb: any): string {
   const result = pickObjectValue(event, ["result"]);
   const buyer =
-    pickObjectValue(result, ["buyer", "_buyer", "user"]) ??
-    pickObjectValue(event, ["buyer", "_buyer", "user"]);
+    pickObjectValue(result, ["buyer"]) ??
+    pickObjectValue(event, ["buyer"]);
 
-  return toBase58IfNeeded(tronWeb, buyer);
+  const rawBuyer = assertNonEmpty(String(buyer), "event.result.buyer").trim();
+
+  if (/^0x[0-9a-fA-F]{40}$/.test(rawBuyer)) {
+    if (!tronWeb?.address?.fromHex) {
+      throw new Error("tronWeb.address.fromHex is required to normalize buyer wallet");
+    }
+
+    return tronWeb.address.fromHex(rawBuyer);
+  }
+
+  if (/^[0-9a-fA-F]{40}$/.test(rawBuyer)) {
+    if (!tronWeb?.address?.fromHex) {
+      throw new Error("tronWeb.address.fromHex is required to normalize buyer wallet");
+    }
+
+    return tronWeb.address.fromHex(`41${rawBuyer}`);
+  }
+
+  return rawBuyer;
 }
 
 function normalizePurchaseAmountSunFromEvent(event: any): string {
   const result = pickObjectValue(event, ["result"]);
   const amountTRX =
-    pickObjectValue(result, ["amountTRX", "amountTrx", "trxAmount", "_amountTRX"]) ??
-    pickObjectValue(event, ["amountTRX", "amountTrx", "trxAmount", "_amountTRX"]);
+    pickObjectValue(result, ["amountTRX"]) ??
+    pickObjectValue(event, ["amountTRX"]);
 
   return normalizeSunAmount(amountTRX, "event.result.amountTRX");
 }
@@ -164,8 +155,8 @@ function normalizePurchaseAmountSunFromEvent(event: any): string {
 function normalizeAmountTokensFromEvent(event: any): string {
   const result = pickObjectValue(event, ["result"]);
   const amountTokens =
-    pickObjectValue(result, ["amountTokens", "_amountTokens", "tokenAmount"]) ??
-    pickObjectValue(event, ["amountTokens", "_amountTokens", "tokenAmount"]) ??
+    pickObjectValue(result, ["amountTokens"]) ??
+    pickObjectValue(event, ["amountTokens"]) ??
     "0";
 
   return normalizeSunAmount(amountTokens, "event.result.amountTokens");
@@ -212,45 +203,6 @@ function mapBuyTokensEvent(event: any, tronWeb: any): BuyTokensEvent {
   };
 }
 
-function getTronGridBaseUrl(tronWeb: any): string {
-  const candidates = [
-    tronWeb?.fullNode?.host,
-    tronWeb?.eventServer?.host,
-    tronWeb?.solidityNode?.host
-  ].filter(Boolean);
-
-  for (const value of candidates) {
-    const host = String(value).trim().replace(/\/+$/, "");
-    if (!host) continue;
-
-    if (host.includes("trongrid")) {
-      return host;
-    }
-  }
-
-  return "https://api.trongrid.io";
-}
-
-function buildHttpEventsUrl(
-  baseUrl: string,
-  contractAddress: string,
-  eventName: string,
-  pageSize: number,
-  fingerprint?: string | null
-): string {
-  const url = new URL(`${baseUrl.replace(/\/+$/, "")}/v1/contracts/${contractAddress}/events`);
-  url.searchParams.set("event_name", eventName);
-  url.searchParams.set("only_confirmed", "true");
-  url.searchParams.set("order_by", "block_timestamp,desc");
-  url.searchParams.set("limit", String(pageSize));
-
-  if (fingerprint) {
-    url.searchParams.set("fingerprint", fingerprint);
-  }
-
-  return url.toString();
-}
-
 export class BuyTokensScanner {
   private readonly tronWeb: any;
   private readonly processor: AttributionProcessor;
@@ -258,7 +210,6 @@ export class BuyTokensScanner {
   private readonly tokenContractAddress: string;
   private readonly eventName: string;
   private readonly pageSize: number;
-  private readonly tronGridBaseUrl: string;
 
   constructor(config: RunScanConfig) {
     if (!config?.tronWeb) {
@@ -282,74 +233,18 @@ export class BuyTokensScanner {
     );
     this.eventName = assertNonEmpty(config.eventName ?? "BuyTokens", "eventName");
     this.pageSize = normalizePositiveInteger(config.pageSize, 50);
-    this.tronGridBaseUrl = getTronGridBaseUrl(config.tronWeb);
   }
-
-  private async fetchEventsViaTronWeb(cursor: ScanCursor): Promise<any[]> {
-    if (typeof this.tronWeb.getEventResult !== "function") {
-      return [];
-    }
-
-    try {
-      const rawEvents = await this.tronWeb.getEventResult(this.tokenContractAddress, {
-        eventName: this.eventName,
-        limit: this.pageSize,
-        onlyConfirmed: true,
-        fingerprint: cursor.fingerprint ?? undefined
-      });
-
-      return Array.isArray(rawEvents) ? rawEvents : [];
-    } catch (error) {
-      console.error("[scan] tronWeb.getEventResult failed:", error);
-      return [];
-    }
-  }
-
-  private async fetchEventsViaHttp(cursor: ScanCursor): Promise<any[]> {
-  const url = buildHttpEventsUrl(
-    this.tronGridBaseUrl,
-    this.tokenContractAddress,
-    this.eventName,
-    this.pageSize,
-    cursor.fingerprint
-  );
-
-  try {
-    const response = await fetch(url, {
-      method: "GET",
-      headers: {
-        Accept: "application/json"
-      }
-    });
-
-    if (!response.ok) {
-      throw new Error(`HTTP events request failed with status ${response.status}`);
-    }
-
-    const payload: unknown = await response.json();
-
-    if (
-      payload &&
-      typeof payload === "object" &&
-      "data" in payload &&
-      Array.isArray((payload as { data: unknown }).data)
-    ) {
-      return (payload as { data: any[] }).data;
-    }
-
-    return [];
-  } catch (error) {
-    console.error("[scan] HTTP fallback failed:", error);
-    return [];
-  }
-}
 
   async fetchEvents(cursor: ScanCursor = {}): Promise<RunScanResult> {
-    let rawEvents = await this.fetchEventsViaTronWeb(cursor);
-
-    if (!rawEvents.length) {
-      rawEvents = await this.fetchEventsViaHttp(cursor);
+    if (typeof this.tronWeb.getEventResult !== "function") {
+      throw new Error("tronWeb.getEventResult is required");
     }
+
+    const rawEvents = await this.tronWeb.getEventResult(this.tokenContractAddress, {
+      eventName: this.eventName,
+      limit: this.pageSize,
+      fingerprint: cursor.fingerprint ?? undefined
+    });
 
     const events = Array.isArray(rawEvents)
       ? rawEvents.map((event) => mapBuyTokensEvent(event, this.tronWeb))
