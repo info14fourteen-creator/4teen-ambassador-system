@@ -1,0 +1,19 @@
+name: allocation-worker-daily
+
+on:
+  schedule:
+    - cron: "15 0 * * *"
+  workflow_dispatch:
+
+jobs:
+  daily-maintenance:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Trigger daily maintenance endpoint
+        run: |
+          curl -X POST "${{ secrets.ALLOCATION_WORKER_BASE_URL }}/cron/daily-maintenance" \
+            -H "X-Cron-Secret: ${{ secrets.ALLOCATION_WORKER_CRON_SECRET }}" \
+            --fail \
+            --show-error \
+            --silent
