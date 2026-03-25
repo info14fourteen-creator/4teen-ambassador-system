@@ -1,6 +1,6 @@
 # AI BUNDLE — WORKER
 
-Generated: 2026-03-25T09:54:16.412Z
+Generated: 2026-03-25T09:56:59.053Z
 
 ===== FILE: services/allocation-worker/.gitignore =====
 node_modules
@@ -1419,6 +1419,8 @@ export interface AllocationServiceConfig {
   controllerClient: ControllerClient;
 }
 
+const RETRY_DELAY_MS = 60 * 60 * 1000;
+
 function assertNonEmpty(value: string, fieldName: string): string {
   const normalized = String(value || "").trim();
 
@@ -1429,17 +1431,8 @@ function assertNonEmpty(value: string, fieldName: string): string {
   return normalized;
 }
 
-function normalizeOptionalWallet(value: string | null | undefined): string | null {
-  if (value == null) {
-    return null;
-  }
-
-  const normalized = String(value).trim();
-  return normalized || null;
-}
-
 function isAllocatableStatus(status: PurchaseRecord["status"]): boolean {
-  return status === "verified" || status === "received";
+  return status === "verified" || status === "received" || status === "failed";
 }
 
 function toErrorMessage(error: unknown): string {
@@ -1454,7 +1447,6 @@ function toErrorMessage(error: unknown): string {
     typeof (error as { message?: unknown }).message === "string"
   ) {
     const message = (error as { message: string }).message.trim();
-
     if (message) {
       return message;
     }
@@ -1463,95 +1455,38 @@ function toErrorMessage(error: unknown): string {
   return "Allocation failed";
 }
 
-function readResultStatus(value: unknown): string {
-  if (!value || typeof value !== "object") {
-    return "";
-  }
+function isRetryableInfrastructureFailure(message: string): boolean {
+  const normalized = message.toLowerCase();
 
-  if ("status" in value && typeof (value as { status?: unknown }).status === "string") {
-    return String((value as { status: string }).status).trim();
-  }
-
-  return "";
+  return (
+    normalized.includes("status code 429") ||
+    normalized.includes("too many requests") ||
+    normalized.includes("out_of_energy") ||
+    normalized.includes("out of energy") ||
+    normalized.includes("server is busy") ||
+    normalized.includes("timeout") ||
+    normalized.includes("etimedout") ||
+    normalized.includes("econnreset") ||
+    normalized.includes("failed to fetch") ||
+    normalized.includes("temporary") ||
+    normalized.includes("node busy") ||
+    normalized.includes("bandwidth")
+  );
 }
 
-function readResultReason(value: unknown): string | null {
-  if (!value || typeof value !== "object") {
-    return null;
-  }
+function isAlreadyProcessedFailure(message: string): boolean {
+  const normalized = message.toLowerCase();
 
-  if ("reason" in value && typeof (value as { reason?: unknown }).reason === "string") {
-    const reason = String((value as { reason: string }).reason).trim();
-    return reason || null;
-  }
-
-  if ("message" in value && typeof (value as { message?: unknown }).message === "string") {
-    const message = String((value as { message: string }).message).trim();
-    return message || null;
-  }
-
-  return null;
+  return (
+    normalized.includes("already processed") ||
+    normalized.includes("purchase already processed") ||
+    normalized.includes("already allocated") ||
+    normalized.includes("duplicate purchase")
+  );
 }
 
-function readResultTxid(value: unknown): string | null {
-  if (!value || typeof value !== "object") {
-    return null;
-  }
-
-  const candidateKeys = ["txid", "txId", "transactionId", "hash"];
-
-  for (const key of candidateKeys) {
-    if (key in value && typeof (value as Record<string, unknown>)[key] === "string") {
-      const normalized = String((value as Record<string, unknown>)[key]).trim();
-
-      if (normalized) {
-        return normalized;
-      }
-    }
-  }
-
-  return null;
-}
-
-function readAmbassadorWalletFromLookup(value: unknown): string | null {
-  if (!value || typeof value !== "object") {
-    return null;
-  }
-
-  const candidateKeys = [
-    "ambassadorWallet",
-    "wallet",
-    "boundAmbassadorWallet",
-    "address"
-  ];
-
-  for (const key of candidateKeys) {
-    if (key in value && typeof (value as Record<string, unknown>)[key] === "string") {
-      const normalized = String((value as Record<string, unknown>)[key]).trim();
-
-      if (normalized) {
-        return normalized;
-      }
-    }
-  }
-
-  return null;
-}
-
-function isLookupMissing(value: unknown): boolean {
-  const status = readResultStatus(value).toLowerCase();
-
-  if (
-    status === "not-found" ||
-    status === "missing" ||
-    status === "unbound" ||
-    status === "none"
-  ) {
-    return true;
-  }
-
-  const wallet = readAmbassadorWalletFromLookup(value);
-  return !wallet;
+function withRetryAfter(reason: string, retryAt: number): string {
+  return `[RETRY_AFTER=${retryAt}] ${reason}`;
 }
 
 export class AllocationService {
@@ -1571,9 +1506,7 @@ export class AllocationService {
     this.controllerClient = config.controllerClient;
   }
 
-  async executeAllocation(
-    input: ExecuteAllocationInput
-  ): Promise<AllocationDecision> {
+  async executeAllocation(input: ExecuteAllocationInput): Promise<AllocationDecision> {
     const purchaseId = assertNonEmpty(input.purchaseId, "purchaseId");
     const now = input.now ?? Date.now();
 
@@ -1585,7 +1518,7 @@ export class AllocationService {
         purchase: null,
         ambassadorWallet: null,
         txid: null,
-        reason: "Purchase record not found"
+        reason: "Purchase not found in local store"
       };
     }
 
@@ -1599,132 +1532,95 @@ export class AllocationService {
       };
     }
 
-    let ambassadorWallet = normalizeOptionalWallet(purchase.ambassadorWallet);
-
-    /**
-     * Primary source of truth for allocation is the verified local purchase record.
-     * We only hit the controller read endpoint if the local record still has no
-     * ambassador wallet. This avoids unnecessary TronGrid constant-call traffic
-     * and prevents 429 failures during scan replay.
-     */
-    if (!ambassadorWallet) {
-      try {
-        const lookupResult = await (this.controllerClient as any).getBuyerAmbassador(
-          purchase.buyerWallet
-        );
-
-        if (!isLookupMissing(lookupResult)) {
-          ambassadorWallet = readAmbassadorWalletFromLookup(lookupResult);
-        }
-      } catch (error) {
-        const reason = toErrorMessage(error);
-
-        await this.store.markFailed(purchase.purchaseId, reason, now);
-
-        return {
-          status: "failed",
-          purchase: await this.store.getByPurchaseId(purchase.purchaseId),
-          ambassadorWallet: null,
-          txid: null,
-          reason
-        };
-      }
-    }
+    const ambassadorWallet = purchase.ambassadorWallet || null;
 
     if (!ambassadorWallet) {
-      await this.store.markFailed(
+      const failedPurchase = await this.store.markFailed(
         purchase.purchaseId,
-        "Ambassador wallet is missing for verified purchase",
+        "Ambassador wallet is missing for allocation",
         now
       );
 
       return {
         status: "missing-ambassador",
-        purchase: await this.store.getByPurchaseId(purchase.purchaseId),
+        purchase: failedPurchase,
         ambassadorWallet: null,
         txid: null,
-        reason: "Ambassador wallet is missing for verified purchase"
+        reason: "Ambassador wallet is missing for allocation"
       };
-    }
-
-    if (purchase.ambassadorWallet !== ambassadorWallet) {
-      await this.store.update(purchase.purchaseId, {
-        ambassadorWallet,
-        now
-      });
     }
 
     try {
-      const recordInput: any = {
+      const result = await this.controllerClient.recordVerifiedPurchase({
         purchaseId: purchase.purchaseId,
-        txHash: purchase.txHash,
         buyerWallet: purchase.buyerWallet,
+        ambassadorWallet,
         purchaseAmountSun: purchase.purchaseAmountSun,
         ownerShareSun: purchase.ownerShareSun,
-        ambassadorWallet
-      };
+        feeLimitSun: input.feeLimitSun
+      });
 
-      if (input.feeLimitSun !== undefined) {
-        recordInput.feeLimitSun = input.feeLimitSun;
-      }
-
-      const result = await (this.controllerClient as any).recordVerifiedPurchase(recordInput);
-      const resultStatus = readResultStatus(result).toLowerCase();
-      const txid = readResultTxid(result);
-      const reason = readResultReason(result);
-
-      if (resultStatus === "already-processed-on-chain") {
-        await this.store.markAllocated(purchase.purchaseId, {
-          ambassadorWallet,
-          now
-        });
-
-        return {
-          status: "already-processed-on-chain",
-          purchase: await this.store.getByPurchaseId(purchase.purchaseId),
-          ambassadorWallet,
-          txid,
-          reason: reason ?? "Purchase was already processed on-chain"
-        };
-      }
-
-      if (resultStatus && resultStatus !== "allocated" && resultStatus !== "success") {
-        const failureReason = reason ?? `Unexpected controller result status: ${resultStatus}`;
-
-        await this.store.markFailed(purchase.purchaseId, failureReason, now);
-
-        return {
-          status: "failed",
-          purchase: await this.store.getByPurchaseId(purchase.purchaseId),
-          ambassadorWallet,
-          txid,
-          reason: failureReason
-        };
-      }
-
-      await this.store.markAllocated(purchase.purchaseId, {
+      const allocatedPurchase = await this.store.markAllocated(purchase.purchaseId, {
         ambassadorWallet,
         now
       });
 
       return {
         status: "allocated",
-        purchase: await this.store.getByPurchaseId(purchase.purchaseId),
+        purchase: allocatedPurchase,
         ambassadorWallet,
-        txid,
+        txid: result.txid,
         reason: null
       };
     } catch (error) {
-      const reason = toErrorMessage(error);
+      const message = toErrorMessage(error);
 
-      await this.store.markFailed(purchase.purchaseId, reason, now);
+      if (isAlreadyProcessedFailure(message)) {
+        const ignoredPurchase = await this.store.markIgnored(
+          purchase.purchaseId,
+          "Purchase already processed on-chain",
+          now
+        );
+
+        return {
+          status: "already-processed-on-chain",
+          purchase: ignoredPurchase,
+          ambassadorWallet,
+          txid: null,
+          reason: "Purchase already processed on-chain"
+        };
+      }
+
+      if (isRetryableInfrastructureFailure(message)) {
+        const retryAt = now + RETRY_DELAY_MS;
+
+        const failedPurchase = await this.store.markFailed(
+          purchase.purchaseId,
+          withRetryAfter(message, retryAt),
+          now
+        );
+
+        return {
+          status: "failed",
+          purchase: failedPurchase,
+          ambassadorWallet,
+          txid: null,
+          reason: `Retry scheduled after ${new Date(retryAt).toISOString()}`
+        };
+      }
+
+      const failedPurchase = await this.store.markFailed(
+        purchase.purchaseId,
+        message,
+        now
+      );
 
       return {
         status: "failed",
-        purchase: await this.store.getByPurchaseId(purchase.purchaseId),
+        purchase: failedPurchase,
         ambassadorWallet,
         txid: null,
-        reason
+        reason: message
       };
     }
   }
@@ -1743,7 +1639,17 @@ export class AllocationService {
         purchase: null,
         ambassadorWallet: null,
         txid: null,
-        reason: "Purchase record not found"
+        reason: "Purchase not found in local store"
+      };
+    }
+
+    if (purchase.status !== "failed") {
+      return {
+        status: "invalid-purchase-status",
+        purchase,
+        ambassadorWallet: purchase.ambassadorWallet,
+        txid: null,
+        reason: `Replay is allowed only for failed purchases, got: ${purchase.status}`
       };
     }
 
