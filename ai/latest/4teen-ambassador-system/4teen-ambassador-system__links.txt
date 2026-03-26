@@ -1,0 +1,13 @@
+4teen-ambassador-system AI LINKS
+
+Snapshot dir: https://raw.githubusercontent.com/info14fourteen-creator/4teen-ambassador-system/main/ai/latest/4teen-ambassador-system/
+Zip archive: https://raw.githubusercontent.com/info14fourteen-creator/4teen-ambassador-system/main/ai/latest/4teen-ambassador-system.zip
+Working rules: https://raw.githubusercontent.com/info14fourteen-creator/4teen-ambassador-system/main/ai/WORKING_RULES.md
+
+- https://raw.githubusercontent.com/info14fourteen-creator/4teen-ambassador-system/main/ai/latest/4teen-ambassador-system/4teen-ambassador-system__01_CORE_OVERVIEW.md
+- https://raw.githubusercontent.com/info14fourteen-creator/4teen-ambassador-system/main/ai/latest/4teen-ambassador-system/4teen-ambassador-system__02_BUILD_AND_WORKFLOWS.md
+- https://raw.githubusercontent.com/info14fourteen-creator/4teen-ambassador-system/main/ai/latest/4teen-ambassador-system/4teen-ambassador-system__03_WORKER.md
+- https://raw.githubusercontent.com/info14fourteen-creator/4teen-ambassador-system/main/ai/latest/4teen-ambassador-system/4teen-ambassador-system__04_CABINET.md
+- https://raw.githubusercontent.com/info14fourteen-creator/4teen-ambassador-system/main/ai/latest/4teen-ambassador-system/4teen-ambassador-system__05_SITE_INTEGRATION.md
+- https://raw.githubusercontent.com/info14fourteen-creator/4teen-ambassador-system/main/ai/latest/4teen-ambassador-system/4teen-ambassador-system__06_TELEGRAM.md
+- https://raw.githubusercontent.com/info14fourteen-creator/4teen-ambassador-system/main/ai/latest/4teen-ambassador-system/4teen-ambassador-system__07_REMAINING_CRITICAL_FILES.md

@@ -1,0 +1,102 @@
+# 4teen-ambassador-system — AI PROJECT MAP
+
+Generated: 2026-03-26T07:01:52.891Z
+Repository: info14fourteen-creator/4teen-ambassador-system
+Branch: main
+
+## Links
+
+- Snapshot dir: https://raw.githubusercontent.com/info14fourteen-creator/4teen-ambassador-system/main/ai/latest/4teen-ambassador-system/
+- Zip archive: https://raw.githubusercontent.com/info14fourteen-creator/4teen-ambassador-system/main/ai/latest/4teen-ambassador-system.zip
+- Working rules: https://raw.githubusercontent.com/info14fourteen-creator/4teen-ambassador-system/main/ai/WORKING_RULES.md
+
+## Snapshot files
+
+- 4teen-ambassador-system__01_CORE_OVERVIEW.md
+- 4teen-ambassador-system__02_BUILD_AND_WORKFLOWS.md
+- 4teen-ambassador-system__03_WORKER.md
+- 4teen-ambassador-system__04_CABINET.md
+- 4teen-ambassador-system__05_SITE_INTEGRATION.md
+- 4teen-ambassador-system__06_TELEGRAM.md
+- 4teen-ambassador-system__07_REMAINING_CRITICAL_FILES.md
+
+## Curated project tree
+
+```txt
+- .github/
+  - workflows/
+    - allocation-worker-daily.yml
+    - build-ai-bundles.yml
+- ai/
+  - MASTER_PLAN.md
+  - WORKING_RULES.md
+- apps/
+  - cabinet/
+    - src/
+      - app/
+        - ambassador/
+          - page.tsx
+      - hooks/
+        - useAmbassadorDashboard.ts
+      - lib/
+        - blockchain/
+          - controller.ts
+        - referral/
+          - storage.ts
+        - telegram/
+          - link.ts
+  - site-integration/
+    - src/
+      - ambassador/
+        - autoMount.ts
+        - hash.ts
+        - register.ts
+        - widget.ts
+      - purchase/
+        - afterBuy.ts
+        - submitAttribution.ts
+      - referral/
+        - capture.ts
+        - firstTouch.ts
+        - storage.ts
+- scripts/
+  - build-ai-bundles.mjs
+- services/
+  - allocation-worker/
+    - src/
+      - app/
+        - processAttribution.ts
+      - db/
+        - ambassadors.ts
+        - postgres.ts
+        - purchases.ts
+      - domain/
+        - allocation.ts
+        - attribution.ts
+      - jobs/
+        - allocatePurchase.ts
+        - dailyMaintenance.ts
+        - prepareAmbassadorWithdrawal.ts
+        - processAmbassadorPendingQueue.ts
+        - rentEnergy.ts
+        - replayDeferredPurchases.ts
+      - services/
+        - gasStation.ts
+      - tron/
+        - controller.ts
+        - hashing.ts
+        - resources.ts
+      - index.ts
+      - run-scan.ts
+      - server.ts
+    - package.json
+    - tsconfig.json
+- shared/
+  - config/
+    - contracts.ts
+    - referral.ts
+  - utils/
+    - slug.ts
+- package.json
+- README.md
+```

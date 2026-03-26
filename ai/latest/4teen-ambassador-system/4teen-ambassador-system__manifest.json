@@ -1,0 +1,143 @@
+{
+  "generatedAt": "2026-03-26T07:01:52.891Z",
+  "repository": "info14fourteen-creator/4teen-ambassador-system",
+  "branch": "main",
+  "repoName": "4teen-ambassador-system",
+  "outputDir": "https://raw.githubusercontent.com/info14fourteen-creator/4teen-ambassador-system/main/ai/latest/4teen-ambassador-system/",
+  "zipUrl": "https://raw.githubusercontent.com/info14fourteen-creator/4teen-ambassador-system/main/ai/latest/4teen-ambassador-system.zip",
+  "sourceFilesIncluded": [
+    "ai/WORKING_RULES.md",
+    "package.json",
+    "README.md",
+    "shared/config/contracts.ts",
+    "shared/config/referral.ts",
+    "shared/utils/slug.ts",
+    ".github/workflows/allocation-worker-daily.yml",
+    ".github/workflows/build-ai-bundles.yml",
+    "scripts/build-ai-bundles.mjs",
+    "services/allocation-worker/package.json",
+    "services/allocation-worker/src/app/processAttribution.ts",
+    "services/allocation-worker/src/db/ambassadors.ts",
+    "services/allocation-worker/src/db/postgres.ts",
+    "services/allocation-worker/src/db/purchases.ts",
+    "services/allocation-worker/src/domain/allocation.ts",
+    "services/allocation-worker/src/domain/attribution.ts",
+    "services/allocation-worker/src/index.ts",
+    "services/allocation-worker/src/jobs/allocatePurchase.ts",
+    "services/allocation-worker/src/jobs/dailyMaintenance.ts",
+    "services/allocation-worker/src/jobs/prepareAmbassadorWithdrawal.ts",
+    "services/allocation-worker/src/jobs/processAmbassadorPendingQueue.ts",
+    "services/allocation-worker/src/jobs/rentEnergy.ts",
+    "services/allocation-worker/src/jobs/replayDeferredPurchases.ts",
+    "services/allocation-worker/src/run-scan.ts",
+    "services/allocation-worker/src/server.ts",
+    "services/allocation-worker/src/services/gasStation.ts",
+    "services/allocation-worker/src/tron/controller.ts",
+    "services/allocation-worker/src/tron/hashing.ts",
+    "services/allocation-worker/src/tron/resources.ts",
+    "services/allocation-worker/tsconfig.json",
+    "apps/cabinet/src/app/ambassador/page.tsx",
+    "apps/cabinet/src/hooks/useAmbassadorDashboard.ts",
+    "apps/cabinet/src/lib/blockchain/controller.ts",
+    "apps/cabinet/src/lib/referral/storage.ts",
+    "apps/cabinet/src/lib/telegram/link.ts",
+    "apps/site-integration/src/ambassador/autoMount.ts",
+    "apps/site-integration/src/ambassador/hash.ts",
+    "apps/site-integration/src/ambassador/register.ts",
+    "apps/site-integration/src/ambassador/widget.ts",
+    "apps/site-integration/src/purchase/afterBuy.ts",
+    "apps/site-integration/src/purchase/submitAttribution.ts",
+    "apps/site-integration/src/referral/capture.ts",
+    "apps/site-integration/src/referral/firstTouch.ts",
+    "apps/site-integration/src/referral/storage.ts",
+    "ai/MASTER_PLAN.md"
+  ],
+  "snapshotFiles": [
+    {
+      "name": "4teen-ambassador-system__01_CORE_OVERVIEW.md",
+      "title": "CORE OVERVIEW",
+      "files": [
+        "ai/WORKING_RULES.md",
+        "package.json",
+        "README.md",
+        "shared/config/contracts.ts",
+        "shared/config/referral.ts",
+        "shared/utils/slug.ts"
+      ]
+    },
+    {
+      "name": "4teen-ambassador-system__02_BUILD_AND_WORKFLOWS.md",
+      "title": "BUILD AND WORKFLOWS",
+      "files": [
+        ".github/workflows/allocation-worker-daily.yml",
+        ".github/workflows/build-ai-bundles.yml",
+        "scripts/build-ai-bundles.mjs"
+      ]
+    },
+    {
+      "name": "4teen-ambassador-system__03_WORKER.md",
+      "title": "ALLOCATION WORKER",
+      "files": [
+        "services/allocation-worker/package.json",
+        "services/allocation-worker/src/app/processAttribution.ts",
+        "services/allocation-worker/src/db/ambassadors.ts",
+        "services/allocation-worker/src/db/postgres.ts",
+        "services/allocation-worker/src/db/purchases.ts",
+        "services/allocation-worker/src/domain/allocation.ts",
+        "services/allocation-worker/src/domain/attribution.ts",
+        "services/allocation-worker/src/index.ts",
+        "services/allocation-worker/src/jobs/allocatePurchase.ts",
+        "services/allocation-worker/src/jobs/dailyMaintenance.ts",
+        "services/allocation-worker/src/jobs/prepareAmbassadorWithdrawal.ts",
+        "services/allocation-worker/src/jobs/processAmbassadorPendingQueue.ts",
+        "services/allocation-worker/src/jobs/rentEnergy.ts",
+        "services/allocation-worker/src/jobs/replayDeferredPurchases.ts",
+        "services/allocation-worker/src/run-scan.ts",
+        "services/allocation-worker/src/server.ts",
+        "services/allocation-worker/src/services/gasStation.ts",
+        "services/allocation-worker/src/tron/controller.ts",
+        "services/allocation-worker/src/tron/hashing.ts",
+        "services/allocation-worker/src/tron/resources.ts",
+        "services/allocation-worker/tsconfig.json"
+      ]
+    },
+    {
+      "name": "4teen-ambassador-system__04_CABINET.md",
+      "title": "CABINET",
+      "files": [
+        "apps/cabinet/src/app/ambassador/page.tsx",
+        "apps/cabinet/src/hooks/useAmbassadorDashboard.ts",
+        "apps/cabinet/src/lib/blockchain/controller.ts",
+        "apps/cabinet/src/lib/referral/storage.ts",
+        "apps/cabinet/src/lib/telegram/link.ts"
+      ]
+    },
+    {
+      "name": "4teen-ambassador-system__05_SITE_INTEGRATION.md",
+      "title": "SITE INTEGRATION",
+      "files": [
+        "apps/site-integration/src/ambassador/autoMount.ts",
+        "apps/site-integration/src/ambassador/hash.ts",
+        "apps/site-integration/src/ambassador/register.ts",
+        "apps/site-integration/src/ambassador/widget.ts",
+        "apps/site-integration/src/purchase/afterBuy.ts",
+        "apps/site-integration/src/purchase/submitAttribution.ts",
+        "apps/site-integration/src/referral/capture.ts",
+        "apps/site-integration/src/referral/firstTouch.ts",
+        "apps/site-integration/src/referral/storage.ts"
+      ]
+    },
+    {
+      "name": "4teen-ambassador-system__06_TELEGRAM.md",
+      "title": "TELEGRAM",
+      "files": []
+    },
+    {
+      "name": "4teen-ambassador-system__07_REMAINING_CRITICAL_FILES.md",
+      "title": "REMAINING CRITICAL FILES",
+      "files": [
+        "ai/MASTER_PLAN.md"
+      ]
+    }
+  ]
+}
