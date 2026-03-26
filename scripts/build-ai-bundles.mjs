@@ -161,8 +161,13 @@ function toPosix(value) {
 function shouldIgnore(relPath) {
   const rel = toPosix(relPath);
 
-  if (IGNORE_FILES.has(path.basename(rel))) return true;
-  if (rel.startsWith("ai/latest/")) return true;
+  if (IGNORE_FILES.has(path.basename(rel))) {
+    return true;
+  }
+
+  if (rel.startsWith("ai/latest/")) {
+    return true;
+  }
 
   for (const name of IGNORE_DIRS) {
     if (rel === name || rel.startsWith(`${name}/`) || rel.includes(`/${name}/`)) {
@@ -189,14 +194,19 @@ function walk(absDir, out = []) {
     const abs = path.join(absDir, entry.name);
     const rel = toPosix(path.relative(ROOT, abs));
 
-    if (shouldIgnore(rel)) continue;
+    if (shouldIgnore(rel)) {
+      continue;
+    }
 
     if (entry.isDirectory()) {
       walk(abs, out);
       continue;
     }
 
-    if (!isAllowedExtension(entry.name)) continue;
+    if (!isAllowedExtension(entry.name)) {
+      continue;
+    }
+
     out.push(rel);
   }
 
@@ -212,7 +222,8 @@ function readUtf8(relPath) {
 }
 
 function getRepositoryInfo() {
-  const repository = process.env.GITHUB_REPOSITORY || `info14fourteen-creator/${REPO_NAME}`;
+  const repository =
+    process.env.GITHUB_REPOSITORY || `info14fourteen-creator/${REPO_NAME}`;
   const branch = process.env.GITHUB_REF_NAME || "main";
 
   return {
@@ -227,17 +238,15 @@ function matchesInclude(relPath, includeRule) {
   const rel = toPosix(relPath);
   const rule = toPosix(includeRule);
 
-  if (!rule) return false;
+  if (!rule) {
+    return false;
+  }
 
   if (rule.endsWith("/")) {
     return rel.startsWith(rule);
   }
 
-  return (
-    rel === rule ||
-    rel.startsWith(`${rule}/`) ||
-    rel.startsWith(`${rule}.`)
-  );
+  return rel === rule || rel.startsWith(`${rule}/`) || rel.startsWith(`${rule}.`);
 }
 
 function groupFiles(files) {
@@ -245,7 +254,9 @@ function groupFiles(files) {
   const groups = [];
 
   for (const section of SECTION_CONFIG) {
-    if (section.file === "09_REMAINING_FILES.md") continue;
+    if (section.file === "09_REMAINING_FILES.md") {
+      continue;
+    }
 
     const sectionFiles = files.filter((file) =>
       section.includes.some((rule) => matchesInclude(file, rule))
@@ -297,7 +308,10 @@ function buildTree(files) {
       const aDir = node[a] !== null;
       const bDir = node[b] !== null;
 
-      if (aDir !== bDir) return aDir ? -1 : 1;
+      if (aDir !== bDir) {
+        return aDir ? -1 : 1;
+      }
+
       return a.localeCompare(b);
     });
 
@@ -342,6 +356,10 @@ function detectLanguage(relPath) {
   return map[ext] || "text";
 }
 
+function withRepoFileName(fileName) {
+  return `${REPO_NAME}__${fileName}`;
+}
+
 function buildMapFile(files, repoInfo, groups) {
   const lines = [];
 
@@ -359,7 +377,9 @@ function buildMapFile(files, repoInfo, groups) {
   lines.push("");
 
   for (const group of groups) {
-    lines.push(`- ${group.file} — ${group.title} (${group.files.length} files)`);
+    lines.push(
+      `- ${withRepoFileName(group.file)} — ${group.title} (${group.files.length} files)`
+    );
   }
 
   lines.push("");
@@ -394,7 +414,7 @@ function buildSectionFile(sectionTitle, files, repoInfo) {
   }
 
   lines.push("");
-  lines.push(`## REPOSITORY LINK BASE`);
+  lines.push("## REPOSITORY LINK BASE");
   lines.push("");
   lines.push(`- ${repoInfo.outputBaseUrl}`);
   lines.push("");
@@ -434,85 +454,22 @@ function buildSnapshotInfo(files, groups, repoInfo) {
   lines.push("- Every snapshot file contains real file contents.");
   lines.push("- Files are grouped for easier AI reading.");
   lines.push("- Repository name is embedded in every snapshot file.");
+  lines.push("- Snapshot file names are prefixed with repository name.");
   lines.push("- Working rules remain in ai/WORKING_RULES.md.");
   lines.push("");
 
   if (fs.existsSync(RULES_FILE)) {
     lines.push("## WORKING RULES");
     lines.push("");
-    lines.push(readUtf8("ai/WORKING_RULES.md").trim());
+    lines.push(readUtf8("ai/WORKING_RULES.md").trimEnd());
     lines.push("");
   }
 
   return lines.join("\n");
 }
 
-function writeManifest(files, groups, repoInfo) {
-  const manifest = {
-    generatedAt: new Date().toISOString(),
-    repoName: REPO_NAME,
-    repository: repoInfo.repository,
-    branch: repoInfo.branch,
-    totalFiles: files.length,
-    outputDir: `ai/latest/${REPO_NAME}`,
-    zipPath: `ai/latest/${REPO_NAME}.zip`,
-    groups: groups.map((group) => ({
-      file: group.file,
-      title: group.title,
-      totalFiles: group.files.length,
-      files: group.files
-    }))
-  };
-
-  fs.writeFileSync(
-    path.join(REPO_OUTPUT_DIR, "manifest.json"),
-    JSON.stringify(manifest, null, 2),
-    "utf8"
-  );
-}
-
-function writeCompatibilityFiles(repoInfo, groups) {
-  const projectMapText = [
-    `AI snapshot folder: ai/latest/${REPO_NAME}`,
-    `Zip archive: ai/latest/${REPO_NAME}.zip`,
-    `Repository: ${repoInfo.repository}`,
-    `Branch: ${repoInfo.branch}`,
-    "",
-    "Snapshot files:",
-    ...groups.map((group) => `- ${REPO_NAME}/${group.file}`)
-  ].join("\n");
-
-  fs.writeFileSync(path.join(LATEST_DIR, "ai-project-map.txt"), projectMapText, "utf8");
-
-  const corePointer = [
-    `Use ai/latest/${REPO_NAME}/01_PROJECT_OVERVIEW.md`,
-    `Use ai/latest/${REPO_NAME}/02_CORE_SHARED_AND_TOOLING.md`
-  ].join("\n");
-
-  const cabinetPointer = [
-    `Use ai/latest/${REPO_NAME}/03_APPS_CABINET.md`
-  ].join("\n");
-
-  const sitePointer = [
-    `Use ai/latest/${REPO_NAME}/04_APPS_SITE_INTEGRATION.md`
-  ].join("\n");
-
-  const workerPointer = [
-    `Use ai/latest/${REPO_NAME}/05_WORKER_DOMAIN_DB_SERVER.md`,
-    `Use ai/latest/${REPO_NAME}/06_WORKER_TRON_AND_JOBS.md`
-  ].join("\n");
-
-  const telegramPointer = [
-    `Use ai/latest/${REPO_NAME}/07_TELEGRAM_BOT.md`
-  ].join("\n");
-
-  fs.writeFileSync(path.join(LATEST_DIR, "ai-bundle-core.txt"), corePointer, "utf8");
-  fs.writeFileSync(path.join(LATEST_DIR, "ai-bundle-cabinet.txt"), cabinetPointer, "utf8");
-  fs.writeFileSync(path.join(LATEST_DIR, "ai-bundle-site.txt"), sitePointer, "utf8");
-  fs.writeFileSync(path.join(LATEST_DIR, "ai-bundle-worker.txt"), workerPointer, "utf8");
-  fs.writeFileSync(path.join(LATEST_DIR, "ai-bundle-telegram.txt"), telegramPointer, "utf8");
-
-  const links = [
+function buildLinksFile(repoInfo) {
+  return [
     "AI SNAPSHOT LINKS",
     "",
     `Folder base: ${repoInfo.outputBaseUrl}`,
@@ -521,52 +478,97 @@ function writeCompatibilityFiles(repoInfo, groups) {
     `Working rules: ${repoInfo.rulesUrl}`,
     ""
   ].join("\n");
-
-  fs.writeFileSync(path.join(REPO_OUTPUT_DIR, "links.txt"), links, "utf8");
 }
 
-function createZipArchive() {
-  const zipTarget = path.join(LATEST_DIR, `${REPO_NAME}.zip`);
+function buildManifest(files, groups, repoInfo) {
+  return {
+    generatedAt: new Date().toISOString(),
+    repoName: REPO_NAME,
+    repository: repoInfo.repository,
+    branch: repoInfo.branch,
+    totalFiles: files.length,
+    outputDir: `ai/latest/${REPO_NAME}`,
+    zipPath: `ai/latest/${REPO_NAME}.zip`,
+    groups: groups.map((group) => ({
+      file: withRepoFileName(group.file),
+      title: group.title,
+      totalFiles: group.files.length,
+      files: group.files
+    }))
+  };
+}
 
-  if (fs.existsSync(zipTarget)) {
-    fs.rmSync(zipTarget, { force: true });
-  }
+function writeCompatibilityFiles(repoInfo, groups) {
+  const pointerPath = path.join(LATEST_DIR, "ai-project-bundle.txt");
+  const mapPointerPath = path.join(LATEST_DIR, "ai-project-map.txt");
 
-  const result = spawnSync(
-    "zip",
-    ["-r", zipTarget, REPO_NAME],
-    {
-      cwd: LATEST_DIR,
-      stdio: "inherit"
-    }
-  );
+  const bundlePointer = [
+    `AI snapshot moved to ai/latest/${REPO_NAME}/`,
+    "",
+    `Repository: ${repoInfo.repository}`,
+    `Branch: ${repoInfo.branch}`,
+    "",
+    `Map file: ai/latest/${REPO_NAME}/00_AI_MAP.md`,
+    `Info file: ai/latest/${REPO_NAME}/99_SNAPSHOT_INFO.md`,
+    "",
+    "Snapshot files:",
+    ...groups.map(
+      (group) => `- ai/latest/${REPO_NAME}/${withRepoFileName(group.file)}`
+    ),
+    "",
+    `Zip archive: ai/latest/${REPO_NAME}.zip`,
+    ""
+  ].join("\n");
+
+  const mapPointer = [
+    `AI map moved to ai/latest/${REPO_NAME}/00_AI_MAP.md`,
+    "",
+    `Repository folder: ai/latest/${REPO_NAME}/`,
+    `Zip archive: ai/latest/${REPO_NAME}.zip`,
+    ""
+  ].join("\n");
+
+  fs.writeFileSync(pointerPath, bundlePointer, "utf8");
+  fs.writeFileSync(mapPointerPath, mapPointer, "utf8");
+}
+
+function createZipArchive(sourceDir, zipFilePath) {
+  const parentDir = path.dirname(sourceDir);
+  const dirName = path.basename(sourceDir);
+
+  try {
+    fs.rmSync(zipFilePath, { force: true });
+  } catch {}
+
+  const result = spawnSync("zip", ["-r", zipFilePath, dirName], {
+    cwd: parentDir,
+    stdio: "inherit"
+  });
 
   if (result.status !== 0) {
-    console.warn(`zip command failed for ${REPO_NAME}. Snapshot folder was still created.`);
+    throw new Error(`Failed to create zip archive: ${zipFilePath}`);
   }
 }
 
 function main() {
+  ensureDir(LATEST_DIR);
   ensureDir(REPO_OUTPUT_DIR);
 
-  const topLevelEntries = fs
-    .readdirSync(ROOT, { withFileTypes: true })
+  const rootEntries = fs.readdirSync(ROOT, { withFileTypes: true });
+  const allowedTopLevel = rootEntries
     .map((entry) => entry.name)
     .filter((name) => isAllowedRootEntry(name));
 
   const files = [];
 
-  for (const name of topLevelEntries) {
+  for (const name of allowedTopLevel) {
     const abs = path.join(ROOT, name);
     const stat = fs.statSync(abs);
 
     if (stat.isDirectory()) {
       walk(abs, files);
-    } else {
-      const rel = toPosix(name);
-      if (!shouldIgnore(rel) && isAllowedExtension(name)) {
-        files.push(rel);
-      }
+    } else if (!shouldIgnore(name) && isAllowedExtension(name)) {
+      files.push(toPosix(name));
     }
   }
 
@@ -583,7 +585,7 @@ function main() {
 
   for (const group of groups) {
     fs.writeFileSync(
-      path.join(REPO_OUTPUT_DIR, group.file),
+      path.join(REPO_OUTPUT_DIR, withRepoFileName(group.file)),
       buildSectionFile(group.title, group.files, repoInfo),
       "utf8"
     );
@@ -595,12 +597,25 @@ function main() {
     "utf8"
   );
 
-  writeManifest(files, groups, repoInfo);
-  writeCompatibilityFiles(repoInfo, groups);
-  createZipArchive();
+  fs.writeFileSync(
+    path.join(REPO_OUTPUT_DIR, "links.txt"),
+    buildLinksFile(repoInfo),
+    "utf8"
+  );
 
-  console.log(`Snapshot folder created: ai/latest/${REPO_NAME}/`);
-  console.log(`Zip archive created: ai/latest/${REPO_NAME}.zip`);
+  fs.writeFileSync(
+    path.join(REPO_OUTPUT_DIR, "manifest.json"),
+    JSON.stringify(buildManifest(files, groups, repoInfo), null, 2),
+    "utf8"
+  );
+
+  writeCompatibilityFiles(repoInfo, groups);
+
+  const zipFilePath = path.join(LATEST_DIR, `${REPO_NAME}.zip`);
+  createZipArchive(REPO_OUTPUT_DIR, zipFilePath);
+
+  console.log(`AI snapshot generated in: ai/latest/${REPO_NAME}/`);
+  console.log(`AI zip archive created: ai/latest/${REPO_NAME}.zip`);
 }
 
 main();
