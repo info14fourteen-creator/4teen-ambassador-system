@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-03-25T17:12:48.373Z",
+  "generatedAt": "2026-03-26T06:50:47.721Z",
   "repoName": "4teen-ambassador-system",
   "repository": "info14fourteen-creator/4teen-ambassador-system",
   "branch": "main",
@@ -8,7 +8,7 @@
   "zipPath": "ai/latest/4teen-ambassador-system.zip",
   "groups": [
     {
-      "file": "01_PROJECT_OVERVIEW.md",
+      "file": "4teen-ambassador-system__01_PROJECT_OVERVIEW.md",
       "title": "PROJECT OVERVIEW",
       "totalFiles": 3,
       "files": [
@@ -18,7 +18,7 @@
       ]
     },
     {
-      "file": "02_CORE_SHARED_AND_TOOLING.md",
+      "file": "4teen-ambassador-system__02_CORE_SHARED_AND_TOOLING.md",
       "title": "CORE SHARED AND TOOLING",
       "totalFiles": 6,
       "files": [
@@ -31,7 +31,7 @@
       ]
     },
     {
-      "file": "03_APPS_CABINET.md",
+      "file": "4teen-ambassador-system__03_APPS_CABINET.md",
       "title": "APPS CABINET",
       "totalFiles": 5,
       "files": [
@@ -43,7 +43,7 @@
       ]
     },
     {
-      "file": "04_APPS_SITE_INTEGRATION.md",
+      "file": "4teen-ambassador-system__04_APPS_SITE_INTEGRATION.md",
       "title": "APPS SITE INTEGRATION",
       "totalFiles": 9,
       "files": [
@@ -59,7 +59,7 @@
       ]
     },
     {
-      "file": "05_WORKER_DOMAIN_DB_SERVER.md",
+      "file": "4teen-ambassador-system__05_WORKER_DOMAIN_DB_SERVER.md",
       "title": "WORKER DOMAIN DB SERVER",
       "totalFiles": 9,
       "files": [
@@ -75,7 +75,7 @@
       ]
     },
     {
-      "file": "06_WORKER_TRON_AND_JOBS.md",
+      "file": "4teen-ambassador-system__06_WORKER_TRON_AND_JOBS.md",
       "title": "WORKER TRON AND JOBS",
       "totalFiles": 9,
       "files": [
@@ -91,13 +91,13 @@
       ]
     },
     {
-      "file": "07_TELEGRAM_BOT.md",
+      "file": "4teen-ambassador-system__07_TELEGRAM_BOT.md",
       "title": "TELEGRAM BOT",
       "totalFiles": 0,
       "files": []
     },
     {
-      "file": "08_INFRA_AND_WORKFLOWS.md",
+      "file": "4teen-ambassador-system__08_INFRA_AND_WORKFLOWS.md",
       "title": "INFRA AND WORKFLOWS",
       "totalFiles": 2,
       "files": [
@@ -106,7 +106,7 @@
       ]
     },
     {
-      "file": "09_REMAINING_FILES.md",
+      "file": "4teen-ambassador-system__09_REMAINING_FILES.md",
       "title": "REMAINING FILES",
       "totalFiles": 5,
       "files": [

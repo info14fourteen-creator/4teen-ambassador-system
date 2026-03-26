@@ -1,22 +1,31 @@
-# SNAPSHOT INFO — 4teen-ambassador-system
+# REPOSITORY: 4teen-ambassador-system
+# SECTION: PROJECT OVERVIEW
+# GENERATED_AT: 2026-03-26T06:50:47.718Z
 
-- Generated: 2026-03-26T06:50:47.720Z
-- Repository: info14fourteen-creator/4teen-ambassador-system
-- Branch: main
-- Files captured: 46
-- Snapshot documents: 11
-- Zip archive: ai/latest/4teen-ambassador-system.zip
+## INCLUDED FILES
 
-## Notes
+- README.md
+- ai/WORKING_RULES.md
+- package.json
 
-- Every snapshot file contains real file contents.
-- Files are grouped for easier AI reading.
-- Repository name is embedded in every snapshot file.
-- Snapshot file names are prefixed with repository name.
-- Working rules remain in ai/WORKING_RULES.md.
+## REPOSITORY LINK BASE
 
-## WORKING RULES
+- https://raw.githubusercontent.com/info14fourteen-creator/4teen-ambassador-system/main/ai/latest/4teen-ambassador-system
 
+---
+
+## FILE: README.md
+
+```md
+# 4teen-ambassador-system
+Full-stack ambassador and referral system for the 4TEEN token:  first-touch attribution, on-chain reward distribution, dashboard, and real-time Telegram notifications.
+```
+
+---
+
+## FILE: ai/WORKING_RULES.md
+
+```md
 # 4TEEN AMBASSADOR SYSTEM — WORKING RULES (GOLD STANDARD)
 
 ## Purpose
@@ -228,3 +237,23 @@ Everything must work step-by-step.
 ---
 
 ## END
+```
+
+---
+
+## FILE: package.json
+
+```json
+{
+  "name": "fourteen-heroku-worker-root",
+  "private": true,
+  "scripts": {
+    "build": "npm run build:worker",
+    "build:worker": "npm --prefix services/allocation-worker install --include=dev && npm --prefix services/allocation-worker run build",
+    "start": "npm run start:worker",
+    "start:worker": "npm --prefix services/allocation-worker run start",
+    "build:ai": "node scripts/build-ai-bundles.mjs",
+    "heroku-postbuild": "npm run build:worker"
+  }
+}
+```

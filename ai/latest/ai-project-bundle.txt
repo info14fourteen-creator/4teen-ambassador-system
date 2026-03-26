@@ -1,0 +1,20 @@
+AI snapshot moved to ai/latest/4teen-ambassador-system/
+
+Repository: info14fourteen-creator/4teen-ambassador-system
+Branch: main
+
+Map file: ai/latest/4teen-ambassador-system/00_AI_MAP.md
+Info file: ai/latest/4teen-ambassador-system/99_SNAPSHOT_INFO.md
+
+Snapshot files:
+- ai/latest/4teen-ambassador-system/4teen-ambassador-system__01_PROJECT_OVERVIEW.md
+- ai/latest/4teen-ambassador-system/4teen-ambassador-system__02_CORE_SHARED_AND_TOOLING.md
+- ai/latest/4teen-ambassador-system/4teen-ambassador-system__03_APPS_CABINET.md
+- ai/latest/4teen-ambassador-system/4teen-ambassador-system__04_APPS_SITE_INTEGRATION.md
+- ai/latest/4teen-ambassador-system/4teen-ambassador-system__05_WORKER_DOMAIN_DB_SERVER.md
+- ai/latest/4teen-ambassador-system/4teen-ambassador-system__06_WORKER_TRON_AND_JOBS.md
+- ai/latest/4teen-ambassador-system/4teen-ambassador-system__07_TELEGRAM_BOT.md
+- ai/latest/4teen-ambassador-system/4teen-ambassador-system__08_INFRA_AND_WORKFLOWS.md
+- ai/latest/4teen-ambassador-system/4teen-ambassador-system__09_REMAINING_FILES.md
+
+Zip archive: ai/latest/4teen-ambassador-system.zip
