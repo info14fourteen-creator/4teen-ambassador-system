@@ -1,6 +1,6 @@
 # 4teen-ambassador-system — ALLOCATION WORKER
 
-Generated: 2026-03-27T09:35:40.709Z
+Generated: 2026-03-27T09:40:53.586Z
 Repository: info14fourteen-creator/4teen-ambassador-system
 Branch: main
 
@@ -211,11 +211,25 @@ export class AttributionProcessor {
     feeLimitSun?: number,
     now?: number
   ): Promise<AllocationDecision> {
-    return this.allocationService.replayFailedAllocation(
+    const replayResult = await this.allocationService.replayFailedAllocation(
       assertNonEmpty(purchaseId, "purchaseId"),
       feeLimitSun,
       now
     );
+
+    return {
+      status:
+        replayResult.status === "allocated"
+          ? "allocated"
+          : replayResult.status === "skipped"
+            ? "skipped-already-final"
+            : "retryable-failed",
+      purchase: replayResult.purchase,
+      txid: replayResult.txid,
+      reason: replayResult.reason,
+      errorCode: replayResult.errorCode,
+      errorMessage: replayResult.errorMessage
+    };
   }
 }
 ```
