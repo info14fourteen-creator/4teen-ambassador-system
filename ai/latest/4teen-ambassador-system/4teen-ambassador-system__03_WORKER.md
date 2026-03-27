@@ -1,6 +1,6 @@
 # 4teen-ambassador-system — ALLOCATION WORKER
 
-Generated: 2026-03-27T23:06:44.209Z
+Generated: 2026-03-27T23:08:16.266Z
 Repository: info14fourteen-creator/4teen-ambassador-system
 Branch: main
 
@@ -6299,10 +6299,11 @@ async function bootstrap() {
   });
 
   const cabinetService = createCabinetService({
-    store: worker.store,
-    tronWeb,
-    controllerContractAddress: resolvedControllerContractAddress
-  });
+  store: worker.store,
+  tronWeb,
+  controllerContractAddress: resolvedControllerContractAddress,
+  processor: worker.processor
+});
 
   const scanner = new BuyTokensScanner({
     tronWeb,
