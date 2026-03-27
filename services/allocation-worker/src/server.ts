@@ -261,7 +261,10 @@ async function bootstrap() {
   });
 
   const cabinetService = createCabinetService({
-    store: worker.store
+    store: worker.store,
+    tronWeb,
+    controllerContractAddress:
+      env.controllerContractAddress || "TF8yhohRfMxsdVRr7fFrYLh5fxK8sAFkeZ"
   });
 
   const scanner = new BuyTokensScanner({
