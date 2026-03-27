@@ -1,6 +1,6 @@
 # 4teen-ambassador-system — ALLOCATION WORKER
 
-Generated: 2026-03-27T17:13:21.805Z
+Generated: 2026-03-27T17:45:44.226Z
 Repository: info14fourteen-creator/4teen-ambassador-system
 Branch: main
 
@@ -6570,6 +6570,8 @@ import type { CabinetStatsRecord, PurchaseStore } from "../db/purchases";
 
 export interface CabinetServiceDependencies {
   store: PurchaseStore;
+  tronWeb: any;
+  controllerContractAddress: string;
 }
 
 export interface CabinetProfileIdentity {
@@ -6645,6 +6647,35 @@ function assertNonEmpty(value: string, fieldName: string): string {
   return normalized;
 }
 
+function safeString(value: unknown, fallback = "0"): string {
+  if (value == null) return fallback;
+  const normalized = String(value).trim();
+  return normalized || fallback;
+}
+
+function safeNumber(value: unknown, fallback = 0): number {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value;
+  }
+
+  if (typeof value === "bigint") {
+    return Number(value);
+  }
+
+  if (typeof value === "string" && value.trim()) {
+    const parsed = Number(value);
+    if (Number.isFinite(parsed)) {
+      return parsed;
+    }
+  }
+
+  return fallback;
+}
+
+function safeBoolean(value: unknown): boolean {
+  return Boolean(value);
+}
+
 function sunToTrxString(value: string | number | bigint | null | undefined): string {
   const raw = String(value ?? "0").trim();
 
@@ -6679,72 +6710,45 @@ function buildReferralLink(slug: string): string {
   return `https://4teen.me/?r=${encodeURIComponent(slug)}`;
 }
 
-/**
- * Строго по контракту:
- * Bronze   < 10 buyers
- * Silver   >= 10 buyers
- * Gold     >= 100 buyers
- * Platinum >= 1000 buyers
- */
-function inferLevel(totalBuyers: number): number {
-  if (totalBuyers >= 1000) return 3;
-  if (totalBuyers >= 100) return 2;
-  if (totalBuyers >= 10) return 1;
-  return 0;
+function normalizeHex32(value: unknown): string {
+  const raw = String(value ?? "").trim();
+  return raw || "0x0000000000000000000000000000000000000000000000000000000000000000";
 }
 
-/**
- * Строго по контракту _getRewardPercentByLevel:
- * Bronze   = 10
- * Silver   = 25
- * Gold     = 50
- * Platinum = 75
- *
- * Это процент от ownerShareSun, а не от полной покупки.
- */
-function inferRewardPercent(level: number): number {
-  if (level === 3) return 75;
-  if (level === 2) return 50;
-  if (level === 1) return 25;
-  return 10;
+function normalizeMetaHash(value: unknown): string | null {
+  const raw = String(value ?? "").trim().toLowerCase();
+
+  if (!raw) {
+    return null;
+  }
+
+  if (raw === "0x0000000000000000000000000000000000000000000000000000000000000000") {
+    return null;
+  }
+
+  return raw;
 }
 
-function buildProgress(totalBuyers: number): CabinetProfileProgress {
-  const currentLevel = inferLevel(totalBuyers);
-
-  if (currentLevel === 0) {
-    return {
-      currentLevel,
-      buyersCount: totalBuyers,
-      nextThreshold: 10,
-      remainingToNextLevel: Math.max(0, 10 - totalBuyers)
-    };
+function pickTupleValue(source: any, index: number, key?: string): unknown {
+  if (Array.isArray(source)) {
+    return source[index];
   }
 
-  if (currentLevel === 1) {
-    return {
-      currentLevel,
-      buyersCount: totalBuyers,
-      nextThreshold: 100,
-      remainingToNextLevel: Math.max(0, 100 - totalBuyers)
-    };
+  if (source && typeof source === "object") {
+    if (key && key in source) {
+      return source[key];
+    }
+
+    const numericKey = String(index);
+    if (numericKey in source) {
+      return source[numericKey];
+    }
+
+    const values = Object.values(source);
+    return values[index];
   }
 
-  if (currentLevel === 2) {
-    return {
-      currentLevel,
-      buyersCount: totalBuyers,
-      nextThreshold: 1000,
-      remainingToNextLevel: Math.max(0, 1000 - totalBuyers)
-    };
-  }
-
-  return {
-    currentLevel: 3,
-    buyersCount: totalBuyers,
-    nextThreshold: 1000,
-    remainingToNextLevel: 0
-  };
+  return undefined;
 }
 
 function mapStats(stats: CabinetStatsRecord): {
@@ -6780,13 +6784,83 @@ function mapStats(stats: CabinetStatsRecord): {
 
 export class CabinetService {
   private readonly store: PurchaseStore;
+  private readonly tronWeb: any;
+  private readonly controllerContractAddress: string;
+  private contractInstance: any | null = null;
 
   constructor(deps: CabinetServiceDependencies) {
     if (!deps?.store) {
       throw new Error("store is required");
     }
 
+    if (!deps?.tronWeb) {
+      throw new Error("tronWeb is required");
+    }
+
     this.store = deps.store;
+    this.tronWeb = deps.tronWeb;
+    this.controllerContractAddress = assertNonEmpty(
+      deps.controllerContractAddress,
+      "controllerContractAddress"
+    );
+  }
+
+  private async contract(): Promise<any> {
+    if (!this.contractInstance) {
+      this.contractInstance = await this.tronWeb.contract().at(this.controllerContractAddress);
+    }
+
+    return this.contractInstance;
+  }
+
+  private async readOnChainDashboard(wallet: string): Promise<{
+    identity: CabinetProfileIdentity;
+    progress: CabinetProfileProgress;
+  }> {
+    const contract = await this.contract();
+
+    const [
+      coreRaw,
+      profileRaw,
+      progressRaw
+    ] = await Promise.all([
+      contract.getDashboardCore(wallet).call(),
+      contract.getDashboardProfile(wallet).call(),
+      contract.getAmbassadorLevelProgress(wallet).call()
+    ]);
+
+    const active = safeBoolean(pickTupleValue(coreRaw, 1, "active"));
+    const effectiveLevel = safeNumber(pickTupleValue(coreRaw, 2, "effectiveLevel"));
+    const rewardPercent = safeNumber(pickTupleValue(coreRaw, 3, "rewardPercent"));
+    const createdAt = safeNumber(pickTupleValue(coreRaw, 4, "createdAt"));
+
+    const currentLevel = safeNumber(pickTupleValue(profileRaw, 3, "currentLevel"));
+    const slugHash = normalizeHex32(pickTupleValue(profileRaw, 5, "slugHash"));
+    const metaHash = normalizeMetaHash(pickTupleValue(profileRaw, 6, "metaHash"));
+
+    const buyersCount = safeNumber(pickTupleValue(progressRaw, 1, "buyersCount"));
+    const nextThreshold = safeNumber(pickTupleValue(progressRaw, 2, "nextThreshold"));
+    const remainingToNextLevel = safeNumber(
+      pickTupleValue(progressRaw, 3, "remainingToNextLevel")
+    );
+
+    return {
+      identity: {
+        active,
+        level: effectiveLevel,
+        levelLabel: levelToLabel(effectiveLevel),
+        rewardPercent,
+        createdAt,
+        slugHash,
+        metaHash
+      },
+      progress: {
+        currentLevel,
+        buyersCount,
+        nextThreshold,
+        remainingToNextLevel
+      }
+    };
   }
 
   async getProfileByWallet(wallet: string): Promise<CabinetProfileResult> {
@@ -6803,11 +6877,7 @@ export class CabinetService {
     const registryWallet = record.privateIdentity.wallet;
     const statsRecord = await this.store.getCabinetStatsByAmbassadorWallet(registryWallet);
     const mapped = mapStats(statsRecord);
-
-    const active = record.publicProfile.status === "active";
-    const level = inferLevel(statsRecord.totalBuyers);
-    const rewardPercent = inferRewardPercent(level);
-    const progress = buildProgress(statsRecord.totalBuyers);
+    const onChain = await this.readOnChainDashboard(registryWallet);
 
     return {
       registered: true,
@@ -6815,18 +6885,10 @@ export class CabinetService {
       slug: record.publicProfile.slug,
       status: record.publicProfile.status,
       referralLink: buildReferralLink(record.publicProfile.slug),
-      identity: {
-        active,
-        level,
-        levelLabel: levelToLabel(level),
-        rewardPercent,
-        createdAt: record.publicProfile.createdAt,
-        slugHash: record.publicProfile.slugHash,
-        metaHash: null
-      },
+      identity: onChain.identity,
       stats: mapped.stats,
       withdrawalQueue: mapped.withdrawalQueue,
-      progress
+      progress: onChain.progress
     };
   }
 }
