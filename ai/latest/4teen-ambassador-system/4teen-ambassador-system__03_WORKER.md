@@ -1,6 +1,6 @@
 # 4teen-ambassador-system — ALLOCATION WORKER
 
-Generated: 2026-03-27T08:15:11.788Z
+Generated: 2026-03-27T09:14:22.022Z
 Repository: info14fourteen-creator/4teen-ambassador-system
 Branch: main
 
@@ -5391,6 +5391,7 @@ import { BuyTokensScanner } from "./run-scan";
 import {
   completeAmbassadorRegistration,
   getAmbassadorPublicProfileBySlug,
+  getAmbassadorRegistryRecordByWallet,
   initAmbassadorRegistryTables,
   isSlugTaken
 } from "./db/ambassadors";
@@ -5606,6 +5607,10 @@ function normalizeSlugHash(value: unknown): string {
   return raw;
 }
 
+function normalizeIncomingWallet(value: unknown): string {
+  return assertNonEmpty(normalizeOptionalString(value), "wallet");
+}
+
 function buildReferralLink(slug: string): string {
   return `?r=${encodeURIComponent(slug)}`;
 }
@@ -5681,12 +5686,39 @@ async function bootstrap() {
         return;
       }
 
+      if (method === "GET" && pathname === "/ambassador/by-wallet") {
+        const wallet = normalizeIncomingWallet(requestUrl.searchParams.get("wallet"));
+        const record = await getAmbassadorRegistryRecordByWallet(wallet);
+
+        if (!record) {
+          sendJson(req, res, env, 404, {
+            ok: true,
+            registered: false,
+            result: null
+          });
+          return;
+        }
+
+        sendJson(req, res, env, 200, {
+          ok: true,
+          registered: true,
+          result: {
+            slug: record.publicProfile.slug,
+            slugHash: record.publicProfile.slugHash,
+            status: record.publicProfile.status,
+            wallet: record.privateIdentity.wallet,
+            referralLink: buildReferralLink(record.publicProfile.slug)
+          }
+        });
+        return;
+      }
+
       if (method === "POST" && pathname === "/ambassador/register-complete") {
         const body = await readJsonBody(req);
 
         const slug = normalizeIncomingSlug(body.slug);
         const slugHash = normalizeSlugHash(body.slugHash);
-        const wallet = assertNonEmpty(normalizeOptionalString(body.wallet), "wallet");
+        const wallet = normalizeIncomingWallet(body.wallet);
 
         const created = await completeAmbassadorRegistration({
           slug,
