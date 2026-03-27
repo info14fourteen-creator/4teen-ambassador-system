@@ -1,6 +1,6 @@
 # 4teen-ambassador-system — ALLOCATION WORKER
 
-Generated: 2026-03-27T16:08:33.146Z
+Generated: 2026-03-27T16:34:20.192Z
 Repository: info14fourteen-creator/4teen-ambassador-system
 Branch: main
 
@@ -6637,7 +6637,7 @@ function assertNonEmpty(value: string, fieldName: string): string {
   return normalized;
 }
 
-function sunToTrxString(value: string | number | bigint | null | undefined): string {
+function normalizeSunString(value: string | number | bigint | null | undefined): string {
   const raw = String(value ?? "0").trim();
 
   if (!raw || raw === "0") {
@@ -6651,6 +6651,19 @@ function sunToTrxString(value: string | number | bigint | null | undefined): str
     return "0";
   }
 
+  const normalizedDigits = digits.replace(/^0+/, "") || "0";
+  return negative ? `-${normalizedDigits}` : normalizedDigits;
+}
+
+function sunToTrxString(value: string | number | bigint | null | undefined): string {
+  const raw = normalizeSunString(value);
+
+  if (raw === "0") {
+    return "0";
+  }
+
+  const negative = raw.startsWith("-");
+  const digits = negative ? raw.slice(1) : raw;
   const padded = digits.padStart(7, "0");
   const whole = padded.slice(0, -6) || "0";
   const fraction = padded.slice(-6).replace(/0+$/, "");
@@ -6689,29 +6702,38 @@ function mapStats(stats: CabinetStatsRecord): {
   stats: CabinetProfileStats;
   withdrawalQueue: CabinetProfileWithdrawalQueue;
 } {
+  const trackedVolumeSun = normalizeSunString(stats.trackedVolumeSun);
+  const claimableRewardsSun = normalizeSunString(stats.claimableRewardsSun);
+  const lifetimeRewardsSun = normalizeSunString(stats.lifetimeRewardsSun);
+  const withdrawnRewardsSun = normalizeSunString(stats.withdrawnRewardsSun);
+
+  const availableOnChainSun = normalizeSunString(stats.availableOnChainSun);
+  const pendingBackendSyncSun = normalizeSunString(stats.pendingBackendSyncSun);
+  const requestedForProcessingSun = normalizeSunString(stats.requestedForProcessingSun);
+
   return {
     stats: {
-      totalBuyers: stats.totalBuyers,
-      trackedVolumeSun: stats.trackedVolumeSun,
-      trackedVolumeTrx: sunToTrxString(stats.trackedVolumeSun),
-      claimableRewardsSun: stats.claimableRewardsSun,
-      claimableRewardsTrx: sunToTrxString(stats.claimableRewardsSun),
-      lifetimeRewardsSun: stats.lifetimeRewardsSun,
-      lifetimeRewardsTrx: sunToTrxString(stats.lifetimeRewardsSun),
-      withdrawnRewardsSun: stats.withdrawnRewardsSun,
-      withdrawnRewardsTrx: sunToTrxString(stats.withdrawnRewardsSun)
+      totalBuyers: Number(stats.totalBuyers || 0),
+      trackedVolumeSun,
+      trackedVolumeTrx: sunToTrxString(trackedVolumeSun),
+      claimableRewardsSun,
+      claimableRewardsTrx: sunToTrxString(claimableRewardsSun),
+      lifetimeRewardsSun,
+      lifetimeRewardsTrx: sunToTrxString(lifetimeRewardsSun),
+      withdrawnRewardsSun,
+      withdrawnRewardsTrx: sunToTrxString(withdrawnRewardsSun)
     },
     withdrawalQueue: {
-      availableOnChainSun: stats.availableOnChainSun,
-      availableOnChainTrx: sunToTrxString(stats.availableOnChainSun),
-      pendingBackendSyncSun: stats.pendingBackendSyncSun,
-      pendingBackendSyncTrx: sunToTrxString(stats.pendingBackendSyncSun),
-      requestedForProcessingSun: stats.requestedForProcessingSun,
-      requestedForProcessingTrx: sunToTrxString(stats.requestedForProcessingSun),
-      availableOnChainCount: stats.availableOnChainCount,
-      pendingBackendSyncCount: stats.pendingBackendSyncCount,
-      requestedForProcessingCount: stats.requestedForProcessingCount,
-      hasProcessingWithdrawal: stats.hasProcessingWithdrawal
+      availableOnChainSun,
+      availableOnChainTrx: sunToTrxString(availableOnChainSun),
+      pendingBackendSyncSun,
+      pendingBackendSyncTrx: sunToTrxString(pendingBackendSyncSun),
+      requestedForProcessingSun,
+      requestedForProcessingTrx: sunToTrxString(requestedForProcessingSun),
+      availableOnChainCount: Number(stats.availableOnChainCount || 0),
+      pendingBackendSyncCount: Number(stats.pendingBackendSyncCount || 0),
+      requestedForProcessingCount: Number(stats.requestedForProcessingCount || 0),
+      hasProcessingWithdrawal: Boolean(stats.hasProcessingWithdrawal)
     }
   };
 }
@@ -6743,7 +6765,7 @@ export class CabinetService {
     const mapped = mapStats(statsRecord);
 
     const active = record.publicProfile.status === "active";
-    const level = inferLevel(statsRecord.totalBuyers);
+    const level = inferLevel(mapped.stats.totalBuyers);
     const rewardPercent = inferRewardPercent(level);
 
     return {
