@@ -1,6 +1,6 @@
 # 4teen-ambassador-system — CORE OVERVIEW
 
-Generated: 2026-03-27T09:40:53.584Z
+Generated: 2026-03-27T12:14:54.550Z
 Repository: info14fourteen-creator/4teen-ambassador-system
 Branch: main
 
@@ -65,6 +65,7 @@ Branch: main
         - rentEnergy.ts
         - replayDeferredPurchases.ts
       - services/
+        - cabinet.ts
         - gasStation.ts
       - tron/
         - controller.ts
