@@ -146,10 +146,24 @@ export class AttributionProcessor {
     feeLimitSun?: number,
     now?: number
   ): Promise<AllocationDecision> {
-    return this.allocationService.replayFailedAllocation(
+    const replayResult = await this.allocationService.replayFailedAllocation(
       assertNonEmpty(purchaseId, "purchaseId"),
       feeLimitSun,
       now
     );
+
+    return {
+      status:
+        replayResult.status === "allocated"
+          ? "allocated"
+          : replayResult.status === "skipped"
+            ? "skipped-already-final"
+            : "retryable-failed",
+      purchase: replayResult.purchase,
+      txid: replayResult.txid,
+      reason: replayResult.reason,
+      errorCode: replayResult.errorCode,
+      errorMessage: replayResult.errorMessage
+    };
   }
 }
