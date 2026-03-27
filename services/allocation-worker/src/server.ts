@@ -416,6 +416,19 @@ async function bootstrap() {
         return;
       }
 
+      if (method === "POST" && pathname === "/cabinet/replay-pending") {
+        const body = await readJsonBody(req);
+        const wallet = normalizeIncomingWallet(body.wallet);
+
+        const result = await cabinetService.replayPendingByWallet(wallet, Date.now());
+
+        sendJson(req, res, env, 200, {
+          ok: true,
+          result
+        });
+        return;
+      }
+
       if (method === "GET" && pathname === "/ambassador/profile") {
         const slug = normalizeIncomingSlug(requestUrl.searchParams.get("slug"));
         const profile = await getAmbassadorPublicProfileBySlug(slug);
