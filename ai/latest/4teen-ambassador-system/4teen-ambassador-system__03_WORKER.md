@@ -1,6 +1,6 @@
 # 4teen-ambassador-system — ALLOCATION WORKER
 
-Generated: 2026-03-27T09:29:09.926Z
+Generated: 2026-03-27T09:29:32.879Z
 Repository: info14fourteen-creator/4teen-ambassador-system
 Branch: main
 
@@ -4141,29 +4141,11 @@ export async function dailyMaintenance(
         error: toErrorMessage(error),
         startedAt: result.startedAt,
         finishedAt: result.finishedAt,
-        durationMs: result.finishedAt - result.startedAt,
-        replayDeferredPurchases: result.replayDeferredPurchases
-          ? {
-              scanned: result.replayDeferredPurchases.scanned,
-              allocated: result.replayDeferredPurchases.allocated,
-              deferred: result.replayDeferredPurchases.deferred,
-              skipped: result.replayDeferredPurchases.skipped,
-              failed: result.replayDeferredPurchases.failed
-            }
-          : null,
-        processAmbassadorPendingQueue: result.processAmbassadorPendingQueue
-          ? {
-              scanned: result.processAmbassadorPendingQueue.scanned,
-              allocated: result.processAmbassadorPendingQueue.allocated,
-              deferred: result.processAmbassadorPendingQueue.deferred,
-              skipped: result.processAmbassadorPendingQueue.skipped,
-              failed: result.processAmbassadorPendingQueue.failed
-            }
-          : null
+        durationMs: result.finishedAt - result.startedAt
       })
     );
 
-    throw error;
+    return result;
   }
 }
 ```
