@@ -1,6 +1,6 @@
 # 4teen-ambassador-system — ALLOCATION WORKER
 
-Generated: 2026-03-27T21:59:37.744Z
+Generated: 2026-03-27T22:47:20.162Z
 Repository: info14fourteen-creator/4teen-ambassador-system
 Branch: main
 
@@ -6445,6 +6445,19 @@ async function bootstrap() {
         sendJson(req, res, env, 400, {
           ok: false,
           error: "wallet or slug is required"
+        });
+        return;
+      }
+
+      if (method === "POST" && pathname === "/cabinet/replay-pending") {
+        const body = await readJsonBody(req);
+        const wallet = normalizeIncomingWallet(body.wallet);
+
+        const result = await cabinetService.replayPendingByWallet(wallet, Date.now());
+
+        sendJson(req, res, env, 200, {
+          ok: true,
+          result
         });
         return;
       }
