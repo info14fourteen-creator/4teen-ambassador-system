@@ -1,6 +1,6 @@
 # 4teen-ambassador-system — ALLOCATION WORKER
 
-Generated: 2026-03-27T21:48:16.528Z
+Generated: 2026-03-27T21:59:37.744Z
 Repository: info14fourteen-creator/4teen-ambassador-system
 Branch: main
 
@@ -6062,6 +6062,8 @@ type TronWebConstructor = new (config: {
   privateKey: string;
 }) => any;
 
+const DEFAULT_CONTROLLER_CONTRACT = "TF8yhohRfMxsdVRr7fFrYLh5fxK8sAFkeZ";
+
 function getTronWebConstructor(): TronWebConstructor {
   const candidate =
     (TronWebModule as any)?.TronWeb ??
@@ -6277,9 +6279,12 @@ async function bootstrap() {
     privateKey: env.tronPrivateKey
   });
 
+  const resolvedControllerContractAddress =
+    env.controllerContractAddress || DEFAULT_CONTROLLER_CONTRACT;
+
   const worker = createAllocationWorker({
     tronWeb,
-    controllerContractAddress: env.controllerContractAddress,
+    controllerContractAddress: resolvedControllerContractAddress,
     logger: {
       info(payload) {
         console.log(JSON.stringify({ level: "info", ...payload }));
@@ -6296,8 +6301,7 @@ async function bootstrap() {
   const cabinetService = createCabinetService({
     store: worker.store,
     tronWeb,
-    controllerContractAddress:
-      env.controllerContractAddress || "TF8yhohRfMxsdVRr7fFrYLh5fxK8sAFkeZ"
+    controllerContractAddress: resolvedControllerContractAddress
   });
 
   const scanner = new BuyTokensScanner({
@@ -6326,7 +6330,8 @@ async function bootstrap() {
         sendJson(req, res, env, 200, {
           ok: true,
           service: "allocation-worker",
-          timestamp: Date.now()
+          timestamp: Date.now(),
+          controllerContractAddress: resolvedControllerContractAddress
         });
         return;
       }
@@ -6576,7 +6581,8 @@ async function bootstrap() {
         ok: true,
         message: "allocation-worker started",
         port: env.port,
-        allowedOrigins: env.allowedOrigins
+        allowedOrigins: env.allowedOrigins,
+        controllerContractAddress: resolvedControllerContractAddress
       })
     );
   });
