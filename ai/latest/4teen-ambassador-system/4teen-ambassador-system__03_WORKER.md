@@ -1,6 +1,6 @@
 # 4teen-ambassador-system — ALLOCATION WORKER
 
-Generated: 2026-03-27T09:24:22.979Z
+Generated: 2026-03-27T09:25:18.317Z
 Repository: info14fourteen-creator/4teen-ambassador-system
 Branch: main
 
@@ -2060,6 +2060,8 @@ export interface AllocationAttemptResult {
   errorMessage: string | null;
 }
 
+export type AllocationDecision = AllocationAttemptResult;
+
 export interface ReplayFailedAllocationResult {
   status: "allocated" | "failed" | "skipped";
   purchase: PurchaseRecord;
@@ -2275,6 +2277,17 @@ export class AllocationService {
     this.executor = deps.executor;
     this.now = deps.now ?? (() => Date.now());
     this.logger = deps.logger;
+  }
+
+  async executeAllocation(input: {
+    purchaseId: string;
+    feeLimitSun?: number;
+    allocationMode?: AllocationMode;
+  }): Promise<AllocationDecision> {
+    return this.tryAllocateVerifiedPurchase(input.purchaseId, {
+      feeLimitSun: input.feeLimitSun,
+      allocationMode: input.allocationMode
+    });
   }
 
   async tryAllocateVerifiedPurchase(
