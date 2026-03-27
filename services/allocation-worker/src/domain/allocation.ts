@@ -57,6 +57,8 @@ export interface ReplayFailedAllocationResult {
   ambassadorWallet: string | null;
   txid: string | null;
   reason: string | null;
+  errorCode: string | null;
+  errorMessage: string | null;
 }
 
 export interface PrepareWithdrawBatchInput {
@@ -272,10 +274,18 @@ export class AllocationService {
     purchaseId: string;
     feeLimitSun?: number;
     allocationMode?: AllocationMode;
+    now?: number;
   }): Promise<AllocationDecision> {
-    return this.tryAllocateVerifiedPurchase(input.purchaseId, {
+    const purchase = await this.store.getByPurchaseId(input.purchaseId);
+
+    if (!purchase) {
+      throw new Error(`Purchase not found: ${input.purchaseId}`);
+    }
+
+    return this.tryAllocatePurchaseRecord(purchase, {
       feeLimitSun: input.feeLimitSun,
-      allocationMode: input.allocationMode
+      allocationMode: input.allocationMode,
+      nowOverride: input.now
     });
   }
 
@@ -315,7 +325,9 @@ export class AllocationService {
         purchase,
         ambassadorWallet: purchase.ambassadorWallet,
         txid: null,
-        reason: `Purchase already finalized with status: ${purchase.status}`
+        reason: `Purchase already finalized with status: ${purchase.status}`,
+        errorCode: null,
+        errorMessage: null
       };
     }
 
@@ -336,7 +348,9 @@ export class AllocationService {
       purchase: result.purchase,
       ambassadorWallet: result.purchase.ambassadorWallet,
       txid: result.txid,
-      reason: result.reason
+      reason: result.reason,
+      errorCode: result.errorCode,
+      errorMessage: result.errorMessage
     };
   }
 
