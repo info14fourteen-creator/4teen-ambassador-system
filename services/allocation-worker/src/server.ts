@@ -266,10 +266,11 @@ async function bootstrap() {
   });
 
   const cabinetService = createCabinetService({
-    store: worker.store,
-    tronWeb,
-    controllerContractAddress: resolvedControllerContractAddress
-  });
+  store: worker.store,
+  tronWeb,
+  controllerContractAddress: resolvedControllerContractAddress,
+  processor: worker.processor
+});
 
   const scanner = new BuyTokensScanner({
     tronWeb,
