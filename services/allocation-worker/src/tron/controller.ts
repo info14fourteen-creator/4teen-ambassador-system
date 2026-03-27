@@ -1,8 +1,18 @@
 import { FOURTEEN_CONTROLLER_CONTRACT } from "../../../../shared/config/contracts";
+import type {
+  AllocationExecutor,
+  AllocationExecutorInput,
+  AllocationExecutorResult
+} from "../domain/allocation";
 
 export interface ControllerClientConfig {
   tronWeb: any;
   contractAddress?: string;
+}
+
+export interface TronControllerAllocationExecutorConfig {
+  tronWeb: any;
+  controllerContractAddress?: string;
 }
 
 export interface ResolveAmbassadorBySlugHashResult {
@@ -225,5 +235,35 @@ export class TronControllerClient implements ControllerClient {
     return {
       txid: assertNonEmpty(txid, "txid")
     };
+  }
+}
+
+export class TronControllerAllocationExecutor implements AllocationExecutor {
+  private readonly client: TronControllerClient;
+
+  constructor(config: TronControllerAllocationExecutorConfig) {
+    this.client = new TronControllerClient({
+      tronWeb: config.tronWeb,
+      contractAddress: config.controllerContractAddress
+    });
+  }
+
+  async allocate(
+    input: AllocationExecutorInput
+  ): Promise<AllocationExecutorResult> {
+    const purchase = input.purchase;
+
+    if (!purchase.ambassadorWallet) {
+      throw new Error("Ambassador wallet is required for allocation");
+    }
+
+    return this.client.recordVerifiedPurchase({
+      purchaseId: purchase.purchaseId,
+      buyerWallet: purchase.buyerWallet,
+      ambassadorWallet: purchase.ambassadorWallet,
+      purchaseAmountSun: purchase.purchaseAmountSun,
+      ownerShareSun: purchase.ownerShareSun,
+      feeLimitSun: input.feeLimitSun
+    });
   }
 }
