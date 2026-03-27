@@ -1,6 +1,6 @@
 # 4teen-ambassador-system — ALLOCATION WORKER
 
-Generated: 2026-03-27T09:14:22.022Z
+Generated: 2026-03-27T09:24:22.979Z
 Repository: info14fourteen-creator/4teen-ambassador-system
 Branch: main
 
@@ -2897,8 +2897,7 @@ export class AttributionService {
 ## FILE: 4teen-ambassador-system :: services/allocation-worker/src/index.ts
 
 ```ts
-import type TronWeb from "tronweb";
-import { AllocationService } from "./domain/allocation";
+import { AllocationService, type AllocationDecision } from "./domain/allocation";
 import {
   createPurchaseStore,
   type AllocationMode,
@@ -2911,7 +2910,7 @@ import {
 } from "./tron/controller";
 
 export interface CreateAllocationWorkerOptions {
-  tronWeb: TronWeb;
+  tronWeb: any;
   controllerContractAddress?: string;
   logger?: WorkerLogger;
 }
@@ -3024,7 +3023,29 @@ export interface ProcessChainEventResult {
   };
 }
 
+export interface ProcessVerifiedPurchaseAndAllocateInput {
+  txHash: string;
+  buyerWallet: string;
+  slug?: string;
+  purchaseAmountSun: string;
+  ownerShareSun: string;
+  feeLimitSun?: number;
+  now?: number;
+  allocationMode?: AllocationMode;
+}
+
+export interface ProcessVerifiedPurchaseAndAllocateResult {
+  stage: "verified-purchase";
+  purchaseId: string | null;
+  attribution: ProcessChainEventResult["attribution"] | null;
+  verification: ProcessChainEventResult["verification"];
+  allocation: AllocationDecision | null;
+}
+
 export interface AllocationWorkerProcessor {
+  attributionService: any;
+  allocationService: AllocationService;
+
   processFrontendAttribution(
     input: FrontendAttributionInput
   ): Promise<FrontendAttributionResult>;
@@ -3032,6 +3053,10 @@ export interface AllocationWorkerProcessor {
   processVerifiedChainEvent(
     input: ProcessChainEventInput
   ): Promise<ProcessChainEventResult>;
+
+  processVerifiedPurchaseAndAllocate(
+    input: ProcessVerifiedPurchaseAndAllocateInput
+  ): Promise<ProcessVerifiedPurchaseAndAllocateResult>;
 
   replayFailedAllocation(
     purchaseId: string,
@@ -3143,6 +3168,9 @@ function mapAllocationAttemptToApiResult(
 }
 
 class AllocationWorkerProcessorImpl implements AllocationWorkerProcessor {
+  public readonly attributionService: any = null;
+  public readonly allocationService: AllocationService;
+
   private readonly store: PurchaseStore;
   private readonly allocation: AllocationService;
   private readonly logger?: WorkerLogger;
@@ -3154,6 +3182,7 @@ class AllocationWorkerProcessorImpl implements AllocationWorkerProcessor {
   }) {
     this.store = options.store;
     this.allocation = options.allocation;
+    this.allocationService = options.allocation;
     this.logger = options.logger;
   }
 
@@ -3164,7 +3193,6 @@ class AllocationWorkerProcessorImpl implements AllocationWorkerProcessor {
     const buyerWallet = normalizeWallet(input.buyerWallet, "buyerWallet");
     const slug = assertNonEmpty(input.slug, "slug");
     const now = input.now;
-    const allocationMode = input.allocationMode ?? "eager";
 
     const ambassador = await this.store.getAmbassadorBySlug(slug);
 
@@ -3437,6 +3465,45 @@ class AllocationWorkerProcessorImpl implements AllocationWorkerProcessor {
         canAllocate: true
       },
       allocation: mapAllocationAttemptToApiResult(allocationResult)
+    };
+  }
+
+  async processVerifiedPurchaseAndAllocate(
+    input: ProcessVerifiedPurchaseAndAllocateInput
+  ): Promise<ProcessVerifiedPurchaseAndAllocateResult> {
+    const result = await this.processVerifiedChainEvent({
+      txHash: input.txHash,
+      buyerWallet: input.buyerWallet,
+      purchaseAmountSun: input.purchaseAmountSun,
+      ownerShareSun: input.ownerShareSun,
+      blockTimestamp: input.now ?? Date.now(),
+      allocationMode: input.allocationMode ?? "eager",
+      feeLimitSun: input.feeLimitSun
+    });
+
+    return {
+      stage: "verified-purchase",
+      purchaseId: result.purchaseId,
+      attribution: result.attribution,
+      verification: result.verification,
+      allocation:
+        result.allocation == null
+          ? null
+          : ({
+              status:
+                result.allocation.status === "allocated"
+                  ? "allocated"
+                  : result.allocation.status === "deferred"
+                    ? "deferred"
+                    : result.allocation.status === "skipped"
+                      ? "skipped-no-ambassador-wallet"
+                      : "retryable-failed",
+              purchase: result.allocation.purchase,
+              txid: result.allocation.txid,
+              reason: result.allocation.reason,
+              errorCode: null,
+              errorMessage: result.allocation.reason
+            } satisfies AllocationDecision)
     };
   }
 
