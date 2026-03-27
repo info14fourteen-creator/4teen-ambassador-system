@@ -55,6 +55,21 @@ export interface AmbassadorStoreRecord {
   ambassadorId: string | null;
 }
 
+export interface CabinetStatsRecord {
+  totalBuyers: number;
+  trackedVolumeSun: string;
+  claimableRewardsSun: string;
+  lifetimeRewardsSun: string;
+  withdrawnRewardsSun: string;
+  availableOnChainSun: string;
+  pendingBackendSyncSun: string;
+  requestedForProcessingSun: string;
+  availableOnChainCount: number;
+  pendingBackendSyncCount: number;
+  requestedForProcessingCount: number;
+  hasProcessingWithdrawal: boolean;
+}
+
 export interface CreateOrGetReceivedPurchaseInput {
   txHash: string;
   buyerWallet: string;
@@ -243,6 +258,10 @@ export interface PurchaseStore {
     input: PendingPurchaseQuery
   ): Promise<PurchaseRecord[]>;
 
+  getCabinetStatsByAmbassadorWallet(
+    ambassadorWallet: string
+  ): Promise<CabinetStatsRecord>;
+
   hasProcessedPurchase(purchaseId: string): Promise<boolean>;
 }
 
@@ -368,6 +387,27 @@ function buildPurchaseIdFromTxHash(txHash: string): string {
   }
 
   return normalized;
+}
+
+function sumSunStrings(left: string, right: string): string {
+  return (BigInt(left || "0") + BigInt(right || "0")).toString();
+}
+
+function emptyCabinetStatsRecord(): CabinetStatsRecord {
+  return {
+    totalBuyers: 0,
+    trackedVolumeSun: "0",
+    claimableRewardsSun: "0",
+    lifetimeRewardsSun: "0",
+    withdrawnRewardsSun: "0",
+    availableOnChainSun: "0",
+    pendingBackendSyncSun: "0",
+    requestedForProcessingSun: "0",
+    availableOnChainCount: 0,
+    pendingBackendSyncCount: 0,
+    requestedForProcessingCount: 0,
+    hasProcessingWithdrawal: false
+  };
 }
 
 function createRecord(input: CreatePurchaseRecordInput): PurchaseRecord {
@@ -508,6 +548,25 @@ function rowToPurchaseRecord(row: any): PurchaseRecord {
     createdAt: Number(row.created_at_ms),
     updatedAt: Number(row.updated_at_ms),
     allocatedAt: row.allocated_at_ms == null ? null : Number(row.allocated_at_ms)
+  };
+}
+
+function rowToCabinetStatsRecord(row: any): CabinetStatsRecord {
+  const requestedCount = Number(row.requested_for_processing_count || 0);
+
+  return {
+    totalBuyers: Number(row.total_buyers || 0),
+    trackedVolumeSun: String(row.tracked_volume_sun || "0"),
+    claimableRewardsSun: String(row.claimable_rewards_sun || "0"),
+    lifetimeRewardsSun: String(row.lifetime_rewards_sun || "0"),
+    withdrawnRewardsSun: String(row.withdrawn_rewards_sun || "0"),
+    availableOnChainSun: String(row.available_on_chain_sun || "0"),
+    pendingBackendSyncSun: String(row.pending_backend_sync_sun || "0"),
+    requestedForProcessingSun: String(row.requested_for_processing_sun || "0"),
+    availableOnChainCount: Number(row.available_on_chain_count || 0),
+    pendingBackendSyncCount: Number(row.pending_backend_sync_count || 0),
+    requestedForProcessingCount: requestedCount,
+    hasProcessingWithdrawal: requestedCount > 0
   };
 }
 
@@ -1238,6 +1297,102 @@ export class PostgresPurchaseStore implements PurchaseStore {
     return result.rows.map(rowToPurchaseRecord);
   }
 
+  async getCabinetStatsByAmbassadorWallet(
+    ambassadorWallet: string
+  ): Promise<CabinetStatsRecord> {
+    const normalizedAmbassadorWallet = assertNonEmpty(
+      ambassadorWallet,
+      "ambassadorWallet"
+    );
+
+    const result = await query(
+      `
+        SELECT
+          COUNT(DISTINCT CASE
+            WHEN status <> 'received' AND buyer_wallet <> '' THEN buyer_wallet
+            ELSE NULL
+          END) AS total_buyers,
+
+          COALESCE(SUM(CASE
+            WHEN status IN (
+              'verified',
+              'deferred',
+              'allocation_in_progress',
+              'allocated',
+              'allocation_failed_retryable',
+              'allocation_failed_final'
+            ) THEN purchase_amount_sun::numeric
+            ELSE 0
+          END)::text, '0') AS tracked_volume_sun,
+
+          COALESCE(SUM(CASE
+            WHEN status = 'allocated' AND withdraw_session_id IS NULL THEN owner_share_sun::numeric
+            ELSE 0
+          END)::text, '0') AS claimable_rewards_sun,
+
+          COALESCE(SUM(CASE
+            WHEN status IN (
+              'verified',
+              'deferred',
+              'allocation_in_progress',
+              'allocated',
+              'allocation_failed_retryable',
+              'allocation_failed_final'
+            ) THEN owner_share_sun::numeric
+            ELSE 0
+          END)::text, '0') AS lifetime_rewards_sun,
+
+          COALESCE(SUM(CASE
+            WHEN withdraw_session_id IS NOT NULL THEN owner_share_sun::numeric
+            ELSE 0
+          END)::text, '0') AS withdrawn_rewards_sun,
+
+          COALESCE(SUM(CASE
+            WHEN status = 'allocated' AND withdraw_session_id IS NULL THEN owner_share_sun::numeric
+            ELSE 0
+          END)::text, '0') AS available_on_chain_sun,
+
+          COALESCE(SUM(CASE
+            WHEN status IN (
+              'verified',
+              'deferred',
+              'allocation_in_progress',
+              'allocation_failed_retryable'
+            ) AND withdraw_session_id IS NULL THEN owner_share_sun::numeric
+            ELSE 0
+          END)::text, '0') AS pending_backend_sync_sun,
+
+          COALESCE(SUM(CASE
+            WHEN withdraw_session_id IS NOT NULL THEN owner_share_sun::numeric
+            ELSE 0
+          END)::text, '0') AS requested_for_processing_sun,
+
+          COUNT(*) FILTER (
+            WHERE status = 'allocated' AND withdraw_session_id IS NULL
+          ) AS available_on_chain_count,
+
+          COUNT(*) FILTER (
+            WHERE status IN (
+              'verified',
+              'deferred',
+              'allocation_in_progress',
+              'allocation_failed_retryable'
+            ) AND withdraw_session_id IS NULL
+          ) AS pending_backend_sync_count,
+
+          COUNT(*) FILTER (
+            WHERE withdraw_session_id IS NOT NULL
+          ) AS requested_for_processing_count
+        FROM purchases
+        WHERE ambassador_wallet = $1
+      `,
+      [normalizedAmbassadorWallet]
+    );
+
+    const row = result.rows[0];
+    return row ? rowToCabinetStatsRecord(row) : emptyCabinetStatsRecord();
+  }
+
   async hasProcessedPurchase(purchaseId: string): Promise<boolean> {
     const record = await this.getByPurchaseId(purchaseId);
 
@@ -1608,6 +1763,97 @@ export class InMemoryPurchaseStore implements PurchaseStore {
     }
 
     return rows;
+  }
+
+  async getCabinetStatsByAmbassadorWallet(
+    ambassadorWallet: string
+  ): Promise<CabinetStatsRecord> {
+    const normalizedAmbassadorWallet = assertNonEmpty(
+      ambassadorWallet,
+      "ambassadorWallet"
+    );
+
+    const rows = Array.from(this.byPurchaseId.values()).filter(
+      (record) => record.ambassadorWallet === normalizedAmbassadorWallet
+    );
+
+    const buyers = new Set<string>();
+
+    let trackedVolumeSun = "0";
+    let claimableRewardsSun = "0";
+    let lifetimeRewardsSun = "0";
+    let withdrawnRewardsSun = "0";
+    let availableOnChainSun = "0";
+    let pendingBackendSyncSun = "0";
+    let requestedForProcessingSun = "0";
+
+    let availableOnChainCount = 0;
+    let pendingBackendSyncCount = 0;
+    let requestedForProcessingCount = 0;
+
+    for (const row of rows) {
+      if (row.status !== "received" && row.buyerWallet) {
+        buyers.add(row.buyerWallet);
+      }
+
+      const contributesVolume =
+        row.status === "verified" ||
+        row.status === "deferred" ||
+        row.status === "allocation_in_progress" ||
+        row.status === "allocated" ||
+        row.status === "allocation_failed_retryable" ||
+        row.status === "allocation_failed_final";
+
+      if (contributesVolume) {
+        trackedVolumeSun = sumSunStrings(trackedVolumeSun, row.purchaseAmountSun);
+        lifetimeRewardsSun = sumSunStrings(lifetimeRewardsSun, row.ownerShareSun);
+      }
+
+      const isAvailableOnChain =
+        row.status === "allocated" && !row.withdrawSessionId;
+
+      if (isAvailableOnChain) {
+        claimableRewardsSun = sumSunStrings(claimableRewardsSun, row.ownerShareSun);
+        availableOnChainSun = sumSunStrings(availableOnChainSun, row.ownerShareSun);
+        availableOnChainCount += 1;
+      }
+
+      const isPendingBackendSync =
+        (row.status === "verified" ||
+          row.status === "deferred" ||
+          row.status === "allocation_in_progress" ||
+          row.status === "allocation_failed_retryable") &&
+        !row.withdrawSessionId;
+
+      if (isPendingBackendSync) {
+        pendingBackendSyncSun = sumSunStrings(pendingBackendSyncSun, row.ownerShareSun);
+        pendingBackendSyncCount += 1;
+      }
+
+      if (row.withdrawSessionId) {
+        withdrawnRewardsSun = sumSunStrings(withdrawnRewardsSun, row.ownerShareSun);
+        requestedForProcessingSun = sumSunStrings(
+          requestedForProcessingSun,
+          row.ownerShareSun
+        );
+        requestedForProcessingCount += 1;
+      }
+    }
+
+    return {
+      totalBuyers: buyers.size,
+      trackedVolumeSun,
+      claimableRewardsSun,
+      lifetimeRewardsSun,
+      withdrawnRewardsSun,
+      availableOnChainSun,
+      pendingBackendSyncSun,
+      requestedForProcessingSun,
+      availableOnChainCount,
+      pendingBackendSyncCount,
+      requestedForProcessingCount,
+      hasProcessingWithdrawal: requestedForProcessingCount > 0
+    };
   }
 
   async hasProcessedPurchase(purchaseId: string): Promise<boolean> {
