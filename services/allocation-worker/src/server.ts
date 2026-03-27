@@ -4,6 +4,7 @@ import TronWebModule from "tronweb";
 import { assertValidSlug, normalizeSlug } from "../../../shared/utils/slug";
 import { createAllocationWorker } from "./index";
 import { BuyTokensScanner } from "./run-scan";
+import { createCabinetService } from "./services/cabinet";
 import {
   completeAmbassadorRegistration,
   getAmbassadorPublicProfileBySlug,
@@ -259,6 +260,10 @@ async function bootstrap() {
     }
   });
 
+  const cabinetService = createCabinetService({
+    store: worker.store
+  });
+
   const scanner = new BuyTokensScanner({
     tronWeb,
     processor: worker.processor as any,
@@ -351,6 +356,54 @@ async function bootstrap() {
             status: created.publicProfile.status,
             referralLink: buildReferralLink(created.publicProfile.slug)
           }
+        });
+        return;
+      }
+
+      if (method === "GET" && pathname === "/cabinet/profile") {
+        const walletParam = normalizeOptionalString(requestUrl.searchParams.get("wallet"));
+        const slugParam = normalizeOptionalString(requestUrl.searchParams.get("slug"));
+
+        if (walletParam) {
+          const wallet = normalizeIncomingWallet(walletParam);
+          const profile = await cabinetService.getProfileByWallet(wallet);
+
+          sendJson(req, res, env, 200, {
+            ok: true,
+            registered: profile.registered,
+            result: profile.registered ? profile : null,
+            wallet: profile.wallet
+          });
+          return;
+        }
+
+        if (slugParam) {
+          const slug = normalizeIncomingSlug(slugParam);
+          const profile = await getAmbassadorPublicProfileBySlug(slug);
+
+          if (!profile) {
+            sendJson(req, res, env, 404, {
+              ok: false,
+              error: "Ambassador profile not found"
+            });
+            return;
+          }
+
+          sendJson(req, res, env, 200, {
+            ok: true,
+            result: {
+              slug: profile.slug,
+              slugHash: profile.slugHash,
+              status: profile.status,
+              referralLink: buildReferralLink(profile.slug)
+            }
+          });
+          return;
+        }
+
+        sendJson(req, res, env, 400, {
+          ok: false,
+          error: "wallet or slug is required"
         });
         return;
       }
