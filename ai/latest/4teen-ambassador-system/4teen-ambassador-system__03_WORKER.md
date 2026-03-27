@@ -1,6 +1,6 @@
 # 4teen-ambassador-system — ALLOCATION WORKER
 
-Generated: 2026-03-27T09:28:49.276Z
+Generated: 2026-03-27T09:29:09.926Z
 Repository: info14fourteen-creator/4teen-ambassador-system
 Branch: main
 
@@ -5087,6 +5087,7 @@ export interface ReplayDeferredPurchasesJobOptions {
   limit?: number;
   stopOnFirstFailure?: boolean;
   now?: number;
+  feeLimitSun?: number;
   logger?: Pick<Console, "info" | "warn" | "error">;
 }
 
@@ -5102,6 +5103,7 @@ export interface ReplayDeferredPurchasesJobResult {
   scanned: number;
   attempted: number;
   allocated: number;
+  deferred: number;
   skipped: number;
   failed: number;
   items: ReplayDeferredPurchaseJobItemResult[];
@@ -5156,6 +5158,7 @@ export async function replayDeferredPurchases(
     scanned: failures.length,
     attempted: 0,
     allocated: 0,
+    deferred: 0,
     skipped: 0,
     failed: 0,
     items: [],
@@ -5192,7 +5195,7 @@ export async function replayDeferredPurchases(
     try {
       const replayResult = await worker.processor.replayFailedAllocation(
         purchase.purchaseId,
-        undefined,
+        options.feeLimitSun,
         now
       );
 
@@ -5218,11 +5221,7 @@ export async function replayDeferredPurchases(
         continue;
       }
 
-      if (
-        replayResult.status === "skipped-resource-check-failed" ||
-        replayResult.status === "not-ready" ||
-        replayResult.status === "failed"
-      ) {
+      if (replayResult.status === "skipped") {
         result.skipped += 1;
         result.items.push({
           purchaseId: purchase.purchaseId,
@@ -5244,23 +5243,28 @@ export async function replayDeferredPurchases(
         continue;
       }
 
-      result.skipped += 1;
+      result.failed += 1;
       result.items.push({
         purchaseId: purchase.purchaseId,
-        status: "skipped",
-        reason: replayResult.reason ?? `Unexpected replay status: ${replayResult.status}`,
+        status: "failed",
+        reason: replayResult.reason ?? "Replay failed",
         txid: replayResult.txid ?? null
       });
 
       logger.warn?.(
         JSON.stringify({
-          ok: true,
+          ok: false,
           job: "replayDeferredPurchases",
           purchaseId: purchase.purchaseId,
-          status: "skipped",
-          reason: replayResult.reason ?? `Unexpected replay status: ${replayResult.status}`
+          status: "failed",
+          reason: replayResult.reason ?? "Replay failed"
         })
       );
+
+      if (stopOnFirstFailure) {
+        result.ok = false;
+        break;
+      }
     } catch (error) {
       const message = toErrorMessage(error);
 
@@ -5295,10 +5299,11 @@ export async function replayDeferredPurchases(
     JSON.stringify({
       ok: result.ok,
       job: "replayDeferredPurchases",
-      message: "Replay finished",
+      stage: "finished",
       scanned: result.scanned,
       attempted: result.attempted,
       allocated: result.allocated,
+      deferred: result.deferred,
       skipped: result.skipped,
       failed: result.failed,
       durationMs: result.finishedAt - result.startedAt
