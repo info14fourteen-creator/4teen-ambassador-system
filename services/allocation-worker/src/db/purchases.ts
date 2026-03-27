@@ -47,6 +47,44 @@ export interface PurchaseRecord {
   allocatedAt: number | null;
 }
 
+export interface AmbassadorStoreRecord {
+  slug: string;
+  slugHash: string;
+  status: "pending" | "active" | "disabled";
+  wallet: string | null;
+  ambassadorId: string | null;
+}
+
+export interface CreateOrGetReceivedPurchaseInput {
+  txHash: string;
+  buyerWallet: string;
+  ambassadorSlug?: string | null;
+  now?: number;
+}
+
+export interface CreateOrGetReceivedPurchaseResult {
+  created: boolean;
+  purchase: PurchaseRecord;
+}
+
+export interface AttachAmbassadorToPurchaseInput {
+  purchaseId: string;
+  ambassadorSlug: string;
+  ambassadorWallet: string;
+  purchaseAmountSun?: string;
+  ownerShareSun?: string;
+  now?: number;
+}
+
+export interface MarkVerifiedPurchaseInput {
+  purchaseId: string;
+  txHash: string;
+  buyerWallet: string;
+  purchaseAmountSun: string;
+  ownerShareSun: string;
+  now?: number;
+}
+
 export interface CreatePurchaseRecordInput {
   purchaseId: string;
   txHash: string;
@@ -99,6 +137,20 @@ export interface PurchaseStore {
   getByTxHash(txHash: string): Promise<PurchaseRecord | null>;
   create(input: CreatePurchaseRecordInput): Promise<PurchaseRecord>;
   update(purchaseId: string, input: UpdatePurchaseRecordInput): Promise<PurchaseRecord>;
+
+  getAmbassadorBySlug(slug: string): Promise<AmbassadorStoreRecord | null>;
+
+  createOrGetReceivedPurchase(
+    input: CreateOrGetReceivedPurchaseInput
+  ): Promise<CreateOrGetReceivedPurchaseResult>;
+
+  attachAmbassadorToPurchase(
+    input: AttachAmbassadorToPurchaseInput
+  ): Promise<PurchaseRecord>;
+
+  markVerifiedPurchase(
+    input: MarkVerifiedPurchaseInput
+  ): Promise<PurchaseRecord>;
 
   markVerified(
     purchaseId: string,
@@ -185,7 +237,7 @@ export interface PurchaseStore {
     now?: number
   ): Promise<PurchaseRecord>;
 
-  listReplayableFailures(): Promise<PurchaseRecord[]>;
+  listReplayableFailures(limit?: number): Promise<PurchaseRecord[]>;
 
   listPendingByAmbassador(
     input: PendingPurchaseQuery
@@ -245,8 +297,28 @@ function normalizeSource(value?: PurchaseSource): PurchaseSource {
   return value ?? "frontend-attribution";
 }
 
-function normalizeAllocationMode(value?: AllocationMode): AllocationMode {
-  return value ?? null;
+function normalizeAllocationMode(value?: AllocationMode | string | null): AllocationMode {
+  if (value == null) {
+    return null;
+  }
+
+  const normalized = String(value).trim();
+
+  if (!normalized) {
+    return null;
+  }
+
+  if (
+    normalized === "eager" ||
+    normalized === "deferred" ||
+    normalized === "claim-first" ||
+    normalized === "maintenance-replay" ||
+    normalized === "manual-replay"
+  ) {
+    return normalized;
+  }
+
+  return null;
 }
 
 function normalizeCount(value: number | undefined, fieldName: string): number {
@@ -280,6 +352,24 @@ function normalizePendingStatuses(
   return [...new Set(value)];
 }
 
+function normalizeTxHash(value: string): string {
+  return assertNonEmpty(value, "txHash").toLowerCase();
+}
+
+function buildPurchaseIdFromTxHash(txHash: string): string {
+  const normalized = normalizeTxHash(txHash);
+
+  if (/^0x[0-9a-f]{64}$/.test(normalized)) {
+    return normalized;
+  }
+
+  if (/^[0-9a-f]{64}$/.test(normalized)) {
+    return `0x${normalized}`;
+  }
+
+  return normalized;
+}
+
 function createRecord(input: CreatePurchaseRecordInput): PurchaseRecord {
   const now = input.now ?? Date.now();
   const status = normalizeStatus(input.status);
@@ -292,7 +382,7 @@ function createRecord(input: CreatePurchaseRecordInput): PurchaseRecord {
 
   return {
     purchaseId: assertNonEmpty(input.purchaseId, "purchaseId"),
-    txHash: assertNonEmpty(input.txHash, "txHash").toLowerCase(),
+    txHash: normalizeTxHash(input.txHash),
     buyerWallet: assertNonEmpty(input.buyerWallet, "buyerWallet"),
     ambassadorSlug: normalizeOptionalString(input.ambassadorSlug),
     ambassadorWallet: normalizeWallet(input.ambassadorWallet),
@@ -403,9 +493,7 @@ function rowToPurchaseRecord(row: any): PurchaseRecord {
     status: String(row.status) as PurchaseProcessingStatus,
     failureReason: normalizeOptionalString(row.failure_reason),
     source: String(row.source) as PurchaseSource,
-    allocationMode: normalizeAllocationMode(
-      normalizeOptionalString(row.allocation_mode)
-    ),
+    allocationMode: normalizeAllocationMode(row.allocation_mode),
     allocationAttempts: Number(row.allocation_attempts || 0),
     lastAllocationAttemptAt:
       row.last_allocation_attempt_at_ms == null
@@ -586,6 +674,41 @@ export async function initPurchaseTables(): Promise<void> {
   `);
 }
 
+async function getAmbassadorBySlugFromDb(slug: string): Promise<AmbassadorStoreRecord | null> {
+  const normalizedSlug = assertNonEmpty(slug, "slug").toLowerCase();
+
+  const result = await query(
+    `
+      SELECT
+        p.id,
+        p.slug,
+        p.slug_hash,
+        p.status,
+        i.wallet
+      FROM ambassador_public_profiles p
+      LEFT JOIN ambassador_private_identities i
+        ON i.ambassador_id = p.id
+      WHERE p.slug = $1
+      LIMIT 1
+    `,
+    [normalizedSlug]
+  );
+
+  const row = result.rows[0];
+
+  if (!row) {
+    return null;
+  }
+
+  return {
+    slug: String(row.slug),
+    slugHash: String(row.slug_hash),
+    status: String(row.status) as AmbassadorStoreRecord["status"],
+    wallet: normalizeWallet(row.wallet),
+    ambassadorId: row.id == null ? null : String(row.id)
+  };
+}
+
 export class PostgresPurchaseStore implements PurchaseStore {
   async getByPurchaseId(purchaseId: string): Promise<PurchaseRecord | null> {
     const normalizedPurchaseId = assertNonEmpty(purchaseId, "purchaseId");
@@ -604,7 +727,7 @@ export class PostgresPurchaseStore implements PurchaseStore {
   }
 
   async getByTxHash(txHash: string): Promise<PurchaseRecord | null> {
-    const normalizedTxHash = assertNonEmpty(txHash, "txHash").toLowerCase();
+    const normalizedTxHash = normalizeTxHash(txHash);
 
     const result = await query(
       `
@@ -617,6 +740,85 @@ export class PostgresPurchaseStore implements PurchaseStore {
 
     const row = result.rows[0];
     return row ? rowToPurchaseRecord(row) : null;
+  }
+
+  async getAmbassadorBySlug(slug: string): Promise<AmbassadorStoreRecord | null> {
+    return getAmbassadorBySlugFromDb(slug);
+  }
+
+  async createOrGetReceivedPurchase(
+    input: CreateOrGetReceivedPurchaseInput
+  ): Promise<CreateOrGetReceivedPurchaseResult> {
+    const txHash = normalizeTxHash(input.txHash);
+    const existing = await this.getByTxHash(txHash);
+
+    if (existing) {
+      return {
+        created: false,
+        purchase: existing
+      };
+    }
+
+    try {
+      const created = await this.create({
+        purchaseId: buildPurchaseIdFromTxHash(txHash),
+        txHash,
+        buyerWallet: assertNonEmpty(input.buyerWallet, "buyerWallet"),
+        ambassadorSlug: normalizeOptionalString(input.ambassadorSlug),
+        purchaseAmountSun: "0",
+        ownerShareSun: "0",
+        source: "frontend-attribution",
+        status: "received",
+        now: input.now
+      });
+
+      return {
+        created: true,
+        purchase: created
+      };
+    } catch (error) {
+      const fallback = await this.getByTxHash(txHash);
+
+      if (fallback) {
+        return {
+          created: false,
+          purchase: fallback
+        };
+      }
+
+      throw error;
+    }
+  }
+
+  async attachAmbassadorToPurchase(
+    input: AttachAmbassadorToPurchaseInput
+  ): Promise<PurchaseRecord> {
+    return this.update(input.purchaseId, {
+      ambassadorSlug: input.ambassadorSlug,
+      ambassadorWallet: input.ambassadorWallet,
+      purchaseAmountSun: input.purchaseAmountSun ?? "0",
+      ownerShareSun: input.ownerShareSun ?? "0",
+      now: input.now
+    });
+  }
+
+  async markVerifiedPurchase(
+    input: MarkVerifiedPurchaseInput
+  ): Promise<PurchaseRecord> {
+    const current = await this.getByPurchaseId(input.purchaseId);
+
+    if (!current) {
+      throw new Error(`Purchase not found: ${input.purchaseId}`);
+    }
+
+    return this.markVerified(input.purchaseId, {
+      purchaseAmountSun: input.purchaseAmountSun,
+      ownerShareSun: input.ownerShareSun,
+      ambassadorSlug: current.ambassadorSlug,
+      ambassadorWallet: current.ambassadorWallet,
+      allocationMode: current.allocationMode,
+      now: input.now
+    });
   }
 
   async create(input: CreatePurchaseRecordInput): Promise<PurchaseRecord> {
@@ -992,15 +1194,20 @@ export class PostgresPurchaseStore implements PurchaseStore {
     });
   }
 
-  async listReplayableFailures(): Promise<PurchaseRecord[]> {
-    const result = await query(
-      `
-        ${buildSelectSql()}
-        WHERE status IN ('deferred', 'allocation_failed_retryable')
-        ORDER BY created_at ASC
-      `
-    );
+  async listReplayableFailures(limit?: number): Promise<PurchaseRecord[]> {
+    const params: unknown[] = [];
+    let sql = `
+      ${buildSelectSql()}
+      WHERE status IN ('deferred', 'allocation_failed_retryable')
+      ORDER BY created_at ASC
+    `;
 
+    if (limit && limit > 0) {
+      params.push(Math.floor(limit));
+      sql += ` LIMIT $1`;
+    }
+
+    const result = await query(sql, params);
     return result.rows.map(rowToPurchaseRecord);
   }
 
@@ -1049,6 +1256,7 @@ export class PostgresPurchaseStore implements PurchaseStore {
 export class InMemoryPurchaseStore implements PurchaseStore {
   private readonly byPurchaseId = new Map<string, PurchaseRecord>();
   private readonly purchaseIdByTxHash = new Map<string, string>();
+  private readonly ambassadorsBySlug = new Map<string, AmbassadorStoreRecord>();
 
   async getByPurchaseId(purchaseId: string): Promise<PurchaseRecord | null> {
     const normalizedPurchaseId = assertNonEmpty(purchaseId, "purchaseId");
@@ -1056,7 +1264,7 @@ export class InMemoryPurchaseStore implements PurchaseStore {
   }
 
   async getByTxHash(txHash: string): Promise<PurchaseRecord | null> {
-    const normalizedTxHash = assertNonEmpty(txHash, "txHash").toLowerCase();
+    const normalizedTxHash = normalizeTxHash(txHash);
     const purchaseId = this.purchaseIdByTxHash.get(normalizedTxHash);
 
     if (!purchaseId) {
@@ -1064,6 +1272,73 @@ export class InMemoryPurchaseStore implements PurchaseStore {
     }
 
     return this.byPurchaseId.get(purchaseId) ?? null;
+  }
+
+  async getAmbassadorBySlug(slug: string): Promise<AmbassadorStoreRecord | null> {
+    const normalizedSlug = assertNonEmpty(slug, "slug").toLowerCase();
+    return this.ambassadorsBySlug.get(normalizedSlug) ?? null;
+  }
+
+  async createOrGetReceivedPurchase(
+    input: CreateOrGetReceivedPurchaseInput
+  ): Promise<CreateOrGetReceivedPurchaseResult> {
+    const txHash = normalizeTxHash(input.txHash);
+    const existing = await this.getByTxHash(txHash);
+
+    if (existing) {
+      return {
+        created: false,
+        purchase: existing
+      };
+    }
+
+    const created = await this.create({
+      purchaseId: buildPurchaseIdFromTxHash(txHash),
+      txHash,
+      buyerWallet: assertNonEmpty(input.buyerWallet, "buyerWallet"),
+      ambassadorSlug: normalizeOptionalString(input.ambassadorSlug),
+      purchaseAmountSun: "0",
+      ownerShareSun: "0",
+      source: "frontend-attribution",
+      status: "received",
+      now: input.now
+    });
+
+    return {
+      created: true,
+      purchase: created
+    };
+  }
+
+  async attachAmbassadorToPurchase(
+    input: AttachAmbassadorToPurchaseInput
+  ): Promise<PurchaseRecord> {
+    return this.update(input.purchaseId, {
+      ambassadorSlug: input.ambassadorSlug,
+      ambassadorWallet: input.ambassadorWallet,
+      purchaseAmountSun: input.purchaseAmountSun ?? "0",
+      ownerShareSun: input.ownerShareSun ?? "0",
+      now: input.now
+    });
+  }
+
+  async markVerifiedPurchase(
+    input: MarkVerifiedPurchaseInput
+  ): Promise<PurchaseRecord> {
+    const current = await this.getByPurchaseId(input.purchaseId);
+
+    if (!current) {
+      throw new Error(`Purchase not found: ${input.purchaseId}`);
+    }
+
+    return this.markVerified(input.purchaseId, {
+      purchaseAmountSun: input.purchaseAmountSun,
+      ownerShareSun: input.ownerShareSun,
+      ambassadorSlug: current.ambassadorSlug,
+      ambassadorWallet: current.ambassadorWallet,
+      allocationMode: current.allocationMode,
+      now: input.now
+    });
   }
 
   async create(input: CreatePurchaseRecordInput): Promise<PurchaseRecord> {
@@ -1294,14 +1569,20 @@ export class InMemoryPurchaseStore implements PurchaseStore {
     });
   }
 
-  async listReplayableFailures(): Promise<PurchaseRecord[]> {
-    return Array.from(this.byPurchaseId.values())
+  async listReplayableFailures(limit?: number): Promise<PurchaseRecord[]> {
+    let rows = Array.from(this.byPurchaseId.values())
       .filter(
         (record) =>
           record.status === "deferred" ||
           record.status === "allocation_failed_retryable"
       )
       .sort((left, right) => left.createdAt - right.createdAt);
+
+    if (limit && limit > 0) {
+      rows = rows.slice(0, Math.floor(limit));
+    }
+
+    return rows;
   }
 
   async listPendingByAmbassador(
@@ -1342,4 +1623,8 @@ export class InMemoryPurchaseStore implements PurchaseStore {
       record.status === "allocation_failed_final"
     );
   }
+}
+
+export function createPurchaseStore(): PurchaseStore {
+  return new PostgresPurchaseStore();
 }
