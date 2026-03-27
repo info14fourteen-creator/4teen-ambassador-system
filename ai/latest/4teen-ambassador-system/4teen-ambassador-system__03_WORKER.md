@@ -1,6 +1,6 @@
 # 4teen-ambassador-system — ALLOCATION WORKER
 
-Generated: 2026-03-27T09:25:18.317Z
+Generated: 2026-03-27T09:26:01.773Z
 Repository: info14fourteen-creator/4teen-ambassador-system
 Branch: main
 
@@ -6179,10 +6179,20 @@ export function createGasStationClientFromEnv(): GasStationClient {
 
 ```ts
 import { FOURTEEN_CONTROLLER_CONTRACT } from "../../../../shared/config/contracts";
+import type {
+  AllocationExecutor,
+  AllocationExecutorInput,
+  AllocationExecutorResult
+} from "../domain/allocation";
 
 export interface ControllerClientConfig {
   tronWeb: any;
   contractAddress?: string;
+}
+
+export interface TronControllerAllocationExecutorConfig {
+  tronWeb: any;
+  controllerContractAddress?: string;
 }
 
 export interface ResolveAmbassadorBySlugHashResult {
@@ -6405,6 +6415,36 @@ export class TronControllerClient implements ControllerClient {
     return {
       txid: assertNonEmpty(txid, "txid")
     };
+  }
+}
+
+export class TronControllerAllocationExecutor implements AllocationExecutor {
+  private readonly client: TronControllerClient;
+
+  constructor(config: TronControllerAllocationExecutorConfig) {
+    this.client = new TronControllerClient({
+      tronWeb: config.tronWeb,
+      contractAddress: config.controllerContractAddress
+    });
+  }
+
+  async allocate(
+    input: AllocationExecutorInput
+  ): Promise<AllocationExecutorResult> {
+    const purchase = input.purchase;
+
+    if (!purchase.ambassadorWallet) {
+      throw new Error("Ambassador wallet is required for allocation");
+    }
+
+    return this.client.recordVerifiedPurchase({
+      purchaseId: purchase.purchaseId,
+      buyerWallet: purchase.buyerWallet,
+      ambassadorWallet: purchase.ambassadorWallet,
+      purchaseAmountSun: purchase.purchaseAmountSun,
+      ownerShareSun: purchase.ownerShareSun,
+      feeLimitSun: input.feeLimitSun
+    });
   }
 }
 ```
