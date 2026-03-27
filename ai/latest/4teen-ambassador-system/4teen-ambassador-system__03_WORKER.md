@@ -1,6 +1,6 @@
 # 4teen-ambassador-system — ALLOCATION WORKER
 
-Generated: 2026-03-27T16:34:20.192Z
+Generated: 2026-03-27T17:13:21.805Z
 Repository: info14fourteen-creator/4teen-ambassador-system
 Branch: main
 
@@ -6607,6 +6607,13 @@ export interface CabinetProfileWithdrawalQueue {
   hasProcessingWithdrawal: boolean;
 }
 
+export interface CabinetProfileProgress {
+  currentLevel: number;
+  buyersCount: number;
+  nextThreshold: number;
+  remainingToNextLevel: number;
+}
+
 export interface CabinetProfileRegisteredResult {
   registered: true;
   wallet: string;
@@ -6616,6 +6623,7 @@ export interface CabinetProfileRegisteredResult {
   identity: CabinetProfileIdentity;
   stats: CabinetProfileStats;
   withdrawalQueue: CabinetProfileWithdrawalQueue;
+  progress: CabinetProfileProgress;
 }
 
 export interface CabinetProfileNotRegisteredResult {
@@ -6637,7 +6645,7 @@ function assertNonEmpty(value: string, fieldName: string): string {
   return normalized;
 }
 
-function normalizeSunString(value: string | number | bigint | null | undefined): string {
+function sunToTrxString(value: string | number | bigint | null | undefined): string {
   const raw = String(value ?? "0").trim();
 
   if (!raw || raw === "0") {
@@ -6651,19 +6659,6 @@ function normalizeSunString(value: string | number | bigint | null | undefined):
     return "0";
   }
 
-  const normalizedDigits = digits.replace(/^0+/, "") || "0";
-  return negative ? `-${normalizedDigits}` : normalizedDigits;
-}
-
-function sunToTrxString(value: string | number | bigint | null | undefined): string {
-  const raw = normalizeSunString(value);
-
-  if (raw === "0") {
-    return "0";
-  }
-
-  const negative = raw.startsWith("-");
-  const digits = negative ? raw.slice(1) : raw;
   const padded = digits.padStart(7, "0");
   const whole = padded.slice(0, -6) || "0";
   const fraction = padded.slice(-6).replace(/0+$/, "");
@@ -6684,56 +6679,101 @@ function buildReferralLink(slug: string): string {
   return `https://4teen.me/?r=${encodeURIComponent(slug)}`;
 }
 
+/**
+ * Строго по контракту:
+ * Bronze   < 10 buyers
+ * Silver   >= 10 buyers
+ * Gold     >= 100 buyers
+ * Platinum >= 1000 buyers
+ */
 function inferLevel(totalBuyers: number): number {
-  if (totalBuyers >= 100) return 3;
-  if (totalBuyers >= 25) return 2;
-  if (totalBuyers >= 5) return 1;
+  if (totalBuyers >= 1000) return 3;
+  if (totalBuyers >= 100) return 2;
+  if (totalBuyers >= 10) return 1;
   return 0;
 }
 
+/**
+ * Строго по контракту _getRewardPercentByLevel:
+ * Bronze   = 10
+ * Silver   = 25
+ * Gold     = 50
+ * Platinum = 75
+ *
+ * Это процент от ownerShareSun, а не от полной покупки.
+ */
 function inferRewardPercent(level: number): number {
-  if (level === 3) return 12;
-  if (level === 2) return 10;
-  if (level === 1) return 8;
-  return 7;
+  if (level === 3) return 75;
+  if (level === 2) return 50;
+  if (level === 1) return 25;
+  return 10;
+}
+
+function buildProgress(totalBuyers: number): CabinetProfileProgress {
+  const currentLevel = inferLevel(totalBuyers);
+
+  if (currentLevel === 0) {
+    return {
+      currentLevel,
+      buyersCount: totalBuyers,
+      nextThreshold: 10,
+      remainingToNextLevel: Math.max(0, 10 - totalBuyers)
+    };
+  }
+
+  if (currentLevel === 1) {
+    return {
+      currentLevel,
+      buyersCount: totalBuyers,
+      nextThreshold: 100,
+      remainingToNextLevel: Math.max(0, 100 - totalBuyers)
+    };
+  }
+
+  if (currentLevel === 2) {
+    return {
+      currentLevel,
+      buyersCount: totalBuyers,
+      nextThreshold: 1000,
+      remainingToNextLevel: Math.max(0, 1000 - totalBuyers)
+    };
+  }
+
+  return {
+    currentLevel: 3,
+    buyersCount: totalBuyers,
+    nextThreshold: 1000,
+    remainingToNextLevel: 0
+  };
 }
 
 function mapStats(stats: CabinetStatsRecord): {
   stats: CabinetProfileStats;
   withdrawalQueue: CabinetProfileWithdrawalQueue;
 } {
-  const trackedVolumeSun = normalizeSunString(stats.trackedVolumeSun);
-  const claimableRewardsSun = normalizeSunString(stats.claimableRewardsSun);
-  const lifetimeRewardsSun = normalizeSunString(stats.lifetimeRewardsSun);
-  const withdrawnRewardsSun = normalizeSunString(stats.withdrawnRewardsSun);
-
-  const availableOnChainSun = normalizeSunString(stats.availableOnChainSun);
-  const pendingBackendSyncSun = normalizeSunString(stats.pendingBackendSyncSun);
-  const requestedForProcessingSun = normalizeSunString(stats.requestedForProcessingSun);
-
   return {
     stats: {
-      totalBuyers: Number(stats.totalBuyers || 0),
-      trackedVolumeSun,
-      trackedVolumeTrx: sunToTrxString(trackedVolumeSun),
-      claimableRewardsSun,
-      claimableRewardsTrx: sunToTrxString(claimableRewardsSun),
-      lifetimeRewardsSun,
-      lifetimeRewardsTrx: sunToTrxString(lifetimeRewardsSun),
-      withdrawnRewardsSun,
-      withdrawnRewardsTrx: sunToTrxString(withdrawnRewardsSun)
+      totalBuyers: stats.totalBuyers,
+      trackedVolumeSun: stats.trackedVolumeSun,
+      trackedVolumeTrx: sunToTrxString(stats.trackedVolumeSun),
+      claimableRewardsSun: stats.claimableRewardsSun,
+      claimableRewardsTrx: sunToTrxString(stats.claimableRewardsSun),
+      lifetimeRewardsSun: stats.lifetimeRewardsSun,
+      lifetimeRewardsTrx: sunToTrxString(stats.lifetimeRewardsSun),
+      withdrawnRewardsSun: stats.withdrawnRewardsSun,
+      withdrawnRewardsTrx: sunToTrxString(stats.withdrawnRewardsSun)
     },
     withdrawalQueue: {
-      availableOnChainSun,
-      availableOnChainTrx: sunToTrxString(availableOnChainSun),
-      pendingBackendSyncSun,
-      pendingBackendSyncTrx: sunToTrxString(pendingBackendSyncSun),
-      requestedForProcessingSun,
-      requestedForProcessingTrx: sunToTrxString(requestedForProcessingSun),
-      availableOnChainCount: Number(stats.availableOnChainCount || 0),
-      pendingBackendSyncCount: Number(stats.pendingBackendSyncCount || 0),
-      requestedForProcessingCount: Number(stats.requestedForProcessingCount || 0),
-      hasProcessingWithdrawal: Boolean(stats.hasProcessingWithdrawal)
+      availableOnChainSun: stats.availableOnChainSun,
+      availableOnChainTrx: sunToTrxString(stats.availableOnChainSun),
+      pendingBackendSyncSun: stats.pendingBackendSyncSun,
+      pendingBackendSyncTrx: sunToTrxString(stats.pendingBackendSyncSun),
+      requestedForProcessingSun: stats.requestedForProcessingSun,
+      requestedForProcessingTrx: sunToTrxString(stats.requestedForProcessingSun),
+      availableOnChainCount: stats.availableOnChainCount,
+      pendingBackendSyncCount: stats.pendingBackendSyncCount,
+      requestedForProcessingCount: stats.requestedForProcessingCount,
+      hasProcessingWithdrawal: stats.hasProcessingWithdrawal
     }
   };
 }
@@ -6765,8 +6805,9 @@ export class CabinetService {
     const mapped = mapStats(statsRecord);
 
     const active = record.publicProfile.status === "active";
-    const level = inferLevel(mapped.stats.totalBuyers);
+    const level = inferLevel(statsRecord.totalBuyers);
     const rewardPercent = inferRewardPercent(level);
+    const progress = buildProgress(statsRecord.totalBuyers);
 
     return {
       registered: true,
@@ -6784,7 +6825,8 @@ export class CabinetService {
         metaHash: null
       },
       stats: mapped.stats,
-      withdrawalQueue: mapped.withdrawalQueue
+      withdrawalQueue: mapped.withdrawalQueue,
+      progress
     };
   }
 }
