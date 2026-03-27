@@ -49,6 +49,8 @@ export interface AllocationAttemptResult {
   errorMessage: string | null;
 }
 
+export type AllocationDecision = AllocationAttemptResult;
+
 export interface ReplayFailedAllocationResult {
   status: "allocated" | "failed" | "skipped";
   purchase: PurchaseRecord;
@@ -264,6 +266,17 @@ export class AllocationService {
     this.executor = deps.executor;
     this.now = deps.now ?? (() => Date.now());
     this.logger = deps.logger;
+  }
+
+  async executeAllocation(input: {
+    purchaseId: string;
+    feeLimitSun?: number;
+    allocationMode?: AllocationMode;
+  }): Promise<AllocationDecision> {
+    return this.tryAllocateVerifiedPurchase(input.purchaseId, {
+      feeLimitSun: input.feeLimitSun,
+      allocationMode: input.allocationMode
+    });
   }
 
   async tryAllocateVerifiedPurchase(
