@@ -144,7 +144,7 @@ function buildReferralLink(slug: string): string {
 }
 
 function normalizeHex32(value: unknown): string {
-  const raw = String(value ?? "").trim();
+  const raw = String(value ?? "").trim().toLowerCase();
   return raw || "0x0000000000000000000000000000000000000000000000000000000000000000";
 }
 
@@ -252,11 +252,7 @@ export class CabinetService {
   }> {
     const contract = await this.contract();
 
-    const [
-      coreRaw,
-      profileRaw,
-      progressRaw
-    ] = await Promise.all([
+    const [coreRaw, profileRaw, progressRaw] = await Promise.all([
       contract.getDashboardCore(wallet).call(),
       contract.getDashboardProfile(wallet).call(),
       contract.getAmbassadorLevelProgress(wallet).call()
@@ -307,7 +303,7 @@ export class CabinetService {
       };
     }
 
-    const registryWallet = record.privateIdentity.wallet;
+    const registryWallet = assertNonEmpty(record.privateIdentity.wallet, "registryWallet");
     const statsRecord = await this.store.getCabinetStatsByAmbassadorWallet(registryWallet);
     const mapped = mapStats(statsRecord);
     const onChain = await this.readOnChainDashboard(registryWallet);
