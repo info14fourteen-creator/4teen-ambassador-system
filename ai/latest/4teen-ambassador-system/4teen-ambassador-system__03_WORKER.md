@@ -1,6 +1,6 @@
 # 4teen-ambassador-system — ALLOCATION WORKER
 
-Generated: 2026-03-27T09:34:39.312Z
+Generated: 2026-03-27T09:35:40.709Z
 Repository: info14fourteen-creator/4teen-ambassador-system
 Branch: main
 
@@ -6011,7 +6011,7 @@ async function bootstrap() {
 
   const scanner = new BuyTokensScanner({
     tronWeb,
-    processor: worker.processor,
+    processor: worker.processor as any,
     store: worker.store,
     tokenContractAddress: env.tokenContractAddress,
     pageSize: env.scanPageSize
