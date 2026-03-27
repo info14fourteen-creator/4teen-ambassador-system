@@ -189,28 +189,10 @@ export async function dailyMaintenance(
         error: toErrorMessage(error),
         startedAt: result.startedAt,
         finishedAt: result.finishedAt,
-        durationMs: result.finishedAt - result.startedAt,
-        replayDeferredPurchases: result.replayDeferredPurchases
-          ? {
-              scanned: result.replayDeferredPurchases.scanned,
-              allocated: result.replayDeferredPurchases.allocated,
-              deferred: result.replayDeferredPurchases.deferred,
-              skipped: result.replayDeferredPurchases.skipped,
-              failed: result.replayDeferredPurchases.failed
-            }
-          : null,
-        processAmbassadorPendingQueue: result.processAmbassadorPendingQueue
-          ? {
-              scanned: result.processAmbassadorPendingQueue.scanned,
-              allocated: result.processAmbassadorPendingQueue.allocated,
-              deferred: result.processAmbassadorPendingQueue.deferred,
-              skipped: result.processAmbassadorPendingQueue.skipped,
-              failed: result.processAmbassadorPendingQueue.failed
-            }
-          : null
+        durationMs: result.finishedAt - result.startedAt
       })
     );
 
-    throw error;
+    return result;
   }
 }
