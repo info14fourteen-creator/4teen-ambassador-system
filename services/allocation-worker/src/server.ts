@@ -261,7 +261,7 @@ async function bootstrap() {
 
   const scanner = new BuyTokensScanner({
     tronWeb,
-    processor: worker.processor,
+    processor: worker.processor as any,
     store: worker.store,
     tokenContractAddress: env.tokenContractAddress,
     pageSize: env.scanPageSize
