@@ -1,6 +1,6 @@
 # 4teen-ambassador-system — ALLOCATION WORKER
 
-Generated: 2026-03-27T13:00:38.050Z
+Generated: 2026-03-27T16:08:33.146Z
 Repository: info14fourteen-creator/4teen-ambassador-system
 Branch: main
 
@@ -6668,7 +6668,21 @@ function levelToLabel(level: number): string {
 }
 
 function buildReferralLink(slug: string): string {
-  return `?r=${encodeURIComponent(slug)}`;
+  return `https://4teen.me/?r=${encodeURIComponent(slug)}`;
+}
+
+function inferLevel(totalBuyers: number): number {
+  if (totalBuyers >= 100) return 3;
+  if (totalBuyers >= 25) return 2;
+  if (totalBuyers >= 5) return 1;
+  return 0;
+}
+
+function inferRewardPercent(level: number): number {
+  if (level === 3) return 12;
+  if (level === 2) return 10;
+  if (level === 1) return 8;
+  return 7;
 }
 
 function mapStats(stats: CabinetStatsRecord): {
@@ -6706,6 +6720,10 @@ export class CabinetService {
   private readonly store: PurchaseStore;
 
   constructor(deps: CabinetServiceDependencies) {
+    if (!deps?.store) {
+      throw new Error("store is required");
+    }
+
     this.store = deps.store;
   }
 
@@ -6725,8 +6743,8 @@ export class CabinetService {
     const mapped = mapStats(statsRecord);
 
     const active = record.publicProfile.status === "active";
-    const level = 0;
-    const rewardPercent = 0;
+    const level = inferLevel(statsRecord.totalBuyers);
+    const rewardPercent = inferRewardPercent(level);
 
     return {
       registered: true,
