@@ -1326,7 +1326,10 @@ export class PostgresPurchaseStore implements PurchaseStore {
           END)::text, '0') AS tracked_volume_sun,
 
           COALESCE(SUM(CASE
-            WHEN status = 'allocated' AND withdraw_session_id IS NULL THEN owner_share_sun::numeric
+            WHEN status = 'allocated'
+              AND withdraw_session_id IS NULL
+              AND owner_share_sun::numeric > 0
+            THEN owner_share_sun::numeric
             ELSE 0
           END)::text, '0') AS claimable_rewards_sun,
 
@@ -1348,7 +1351,10 @@ export class PostgresPurchaseStore implements PurchaseStore {
           END)::text, '0') AS withdrawn_rewards_sun,
 
           COALESCE(SUM(CASE
-            WHEN status = 'allocated' AND withdraw_session_id IS NULL THEN owner_share_sun::numeric
+            WHEN status = 'allocated'
+              AND withdraw_session_id IS NULL
+              AND owner_share_sun::numeric > 0
+            THEN owner_share_sun::numeric
             ELSE 0
           END)::text, '0') AS available_on_chain_sun,
 
@@ -1358,7 +1364,10 @@ export class PostgresPurchaseStore implements PurchaseStore {
               'deferred',
               'allocation_in_progress',
               'allocation_failed_retryable'
-            ) AND withdraw_session_id IS NULL THEN owner_share_sun::numeric
+            )
+              AND withdraw_session_id IS NULL
+              AND owner_share_sun::numeric > 0
+            THEN owner_share_sun::numeric
             ELSE 0
           END)::text, '0') AS pending_backend_sync_sun,
 
@@ -1368,7 +1377,9 @@ export class PostgresPurchaseStore implements PurchaseStore {
           END)::text, '0') AS requested_for_processing_sun,
 
           COUNT(*) FILTER (
-            WHERE status = 'allocated' AND withdraw_session_id IS NULL
+            WHERE status = 'allocated'
+              AND withdraw_session_id IS NULL
+              AND owner_share_sun::numeric > 0
           ) AS available_on_chain_count,
 
           COUNT(*) FILTER (
@@ -1377,11 +1388,14 @@ export class PostgresPurchaseStore implements PurchaseStore {
               'deferred',
               'allocation_in_progress',
               'allocation_failed_retryable'
-            ) AND withdraw_session_id IS NULL
+            )
+              AND withdraw_session_id IS NULL
+              AND owner_share_sun::numeric > 0
           ) AS pending_backend_sync_count,
 
           COUNT(*) FILTER (
             WHERE withdraw_session_id IS NOT NULL
+              AND owner_share_sun::numeric > 0
           ) AS requested_for_processing_count
         FROM purchases
         WHERE ambassador_wallet = $1
@@ -1796,6 +1810,8 @@ export class InMemoryPurchaseStore implements PurchaseStore {
         buyers.add(row.buyerWallet);
       }
 
+      const rewardAmount = BigInt(row.ownerShareSun || "0");
+
       const contributesVolume =
         row.status === "verified" ||
         row.status === "deferred" ||
@@ -1810,7 +1826,9 @@ export class InMemoryPurchaseStore implements PurchaseStore {
       }
 
       const isAvailableOnChain =
-        row.status === "allocated" && !row.withdrawSessionId;
+        row.status === "allocated" &&
+        !row.withdrawSessionId &&
+        rewardAmount > 0n;
 
       if (isAvailableOnChain) {
         claimableRewardsSun = sumSunStrings(claimableRewardsSun, row.ownerShareSun);
@@ -1823,14 +1841,18 @@ export class InMemoryPurchaseStore implements PurchaseStore {
           row.status === "deferred" ||
           row.status === "allocation_in_progress" ||
           row.status === "allocation_failed_retryable") &&
-        !row.withdrawSessionId;
+        !row.withdrawSessionId &&
+        rewardAmount > 0n;
 
       if (isPendingBackendSync) {
         pendingBackendSyncSun = sumSunStrings(pendingBackendSyncSun, row.ownerShareSun);
         pendingBackendSyncCount += 1;
       }
 
-      if (row.withdrawSessionId) {
+      const isRequestedForProcessing =
+        !!row.withdrawSessionId && rewardAmount > 0n;
+
+      if (isRequestedForProcessing) {
         withdrawnRewardsSun = sumSunStrings(withdrawnRewardsSun, row.ownerShareSun);
         requestedForProcessingSun = sumSunStrings(
           requestedForProcessingSun,
