@@ -1,6 +1,6 @@
 # 4teen-ambassador-system — ALLOCATION WORKER
 
-Generated: 2026-03-27T22:47:20.162Z
+Generated: 2026-03-27T23:06:44.209Z
 Repository: info14fourteen-creator/4teen-ambassador-system
 Branch: main
 
@@ -6610,12 +6610,39 @@ void bootstrap();
 
 ```ts
 import { getAmbassadorRegistryRecordByWallet } from "../db/ambassadors";
-import type { CabinetStatsRecord, PurchaseStore } from "../db/purchases";
+import type {
+  CabinetStatsRecord,
+  PurchaseProcessingStatus,
+  PurchaseStore
+} from "../db/purchases";
+
+export interface CabinetReplayResultItem {
+  purchaseId: string;
+  ok: boolean;
+  error?: string;
+  result?: unknown;
+}
+
+export interface CabinetReplayPendingResult {
+  wallet: string;
+  totalFound: number;
+  attempted: number;
+  succeeded: number;
+  failed: number;
+  items: CabinetReplayResultItem[];
+}
 
 export interface CabinetServiceDependencies {
   store: PurchaseStore;
   tronWeb: any;
   controllerContractAddress: string;
+  processor: {
+    replayFailedAllocation: (
+      purchaseId: string,
+      feeLimitSun?: number,
+      now?: number
+    ) => Promise<unknown>;
+  };
 }
 
 export interface CabinetProfileIdentity {
@@ -6681,6 +6708,12 @@ export type CabinetProfileResult =
   | CabinetProfileRegisteredResult
   | CabinetProfileNotRegisteredResult;
 
+const DEFAULT_PENDING_STATUSES: PurchaseProcessingStatus[] = [
+  "verified",
+  "deferred",
+  "allocation_failed_retryable"
+];
+
 function assertNonEmpty(value: string, fieldName: string): string {
   const normalized = String(value || "").trim();
 
@@ -6718,6 +6751,26 @@ function safeNumber(value: unknown, fallback = 0): number {
 
 function safeBoolean(value: unknown): boolean {
   return Boolean(value);
+}
+
+function toErrorMessage(error: unknown): string {
+  if (typeof error === "string" && error.trim()) {
+    return error.trim();
+  }
+
+  if (
+    error &&
+    typeof error === "object" &&
+    "message" in error &&
+    typeof (error as { message?: unknown }).message === "string"
+  ) {
+    const message = (error as { message: string }).message.trim();
+    if (message) {
+      return message;
+    }
+  }
+
+  return "Unknown error";
 }
 
 function sunToTrxString(value: string | number | bigint | null | undefined): string {
@@ -6830,6 +6883,7 @@ export class CabinetService {
   private readonly store: PurchaseStore;
   private readonly tronWeb: any;
   private readonly controllerContractAddress: string;
+  private readonly processor: CabinetServiceDependencies["processor"];
   private contractInstance: any | null = null;
 
   constructor(deps: CabinetServiceDependencies) {
@@ -6841,8 +6895,13 @@ export class CabinetService {
       throw new Error("tronWeb is required");
     }
 
+    if (!deps?.processor) {
+      throw new Error("processor is required");
+    }
+
     this.store = deps.store;
     this.tronWeb = deps.tronWeb;
+    this.processor = deps.processor;
     this.controllerContractAddress = assertNonEmpty(
       deps.controllerContractAddress,
       "controllerContractAddress"
@@ -6929,6 +6988,62 @@ export class CabinetService {
       stats: mapped.stats,
       withdrawalQueue: mapped.withdrawalQueue,
       progress: onChain.progress
+    };
+  }
+
+  async replayPendingByWallet(
+    wallet: string,
+    now: number = Date.now(),
+    feeLimitSun?: number
+  ): Promise<CabinetReplayPendingResult> {
+    const normalizedWallet = assertNonEmpty(wallet, "wallet");
+    const record = await getAmbassadorRegistryRecordByWallet(normalizedWallet);
+
+    if (!record) {
+      throw new Error("Ambassador not found for wallet");
+    }
+
+    const registryWallet = assertNonEmpty(record.privateIdentity.wallet, "registryWallet");
+
+    const pending = await this.store.listPendingByAmbassador({
+      ambassadorWallet: registryWallet,
+      statuses: DEFAULT_PENDING_STATUSES
+    });
+
+    const items: CabinetReplayResultItem[] = [];
+
+    for (const purchase of pending) {
+      try {
+        const result = await this.processor.replayFailedAllocation(
+          purchase.purchaseId,
+          feeLimitSun,
+          now
+        );
+
+        items.push({
+          purchaseId: purchase.purchaseId,
+          ok: true,
+          result
+        });
+      } catch (error) {
+        items.push({
+          purchaseId: purchase.purchaseId,
+          ok: false,
+          error: toErrorMessage(error)
+        });
+      }
+    }
+
+    const succeeded = items.filter((item) => item.ok).length;
+    const failed = items.length - succeeded;
+
+    return {
+      wallet: registryWallet,
+      totalFound: pending.length,
+      attempted: items.length,
+      succeeded,
+      failed,
+      items
     };
   }
 }
