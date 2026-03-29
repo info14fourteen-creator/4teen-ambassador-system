@@ -23,6 +23,17 @@ export interface GasStationEstimateResult {
   service_charge_type: string;
 }
 
+export interface GasStationPriceItem {
+  expire_min: string;
+  service_charge_type: string;
+  price: string;
+  remaining_number: string;
+}
+
+export interface GasStationPriceResult {
+  list: GasStationPriceItem[];
+}
+
 export interface GasStationCreateOrderResult {
   trade_no: string;
 }
@@ -109,6 +120,14 @@ async function requestJson<T>(url: string, init?: RequestInit): Promise<T> {
   return parsed.data as T;
 }
 
+function normalizePositiveInteger(value: number, fieldName: string): number {
+  if (!Number.isFinite(value) || value <= 0) {
+    throw new Error(`${fieldName} must be a positive number`);
+  }
+
+  return Math.ceil(value);
+}
+
 export class GasStationClient {
   private readonly appId: string;
   private readonly secretKey: string;
@@ -142,6 +161,30 @@ export class GasStationClient {
     });
   }
 
+  async getPrice(input?: {
+    serviceChargeType?: string;
+    resourceValue?: number;
+  }): Promise<GasStationPriceResult> {
+    const payload: Record<string, unknown> = {};
+
+    if (input?.serviceChargeType) {
+      payload.service_charge_type = assertNonEmpty(
+        input.serviceChargeType,
+        "serviceChargeType"
+      );
+    }
+
+    if (input?.resourceValue != null) {
+      payload.value = normalizePositiveInteger(input.resourceValue, "resourceValue");
+    }
+
+    const url = this.buildEncryptedUrl("/api/tron/gas/order/price", payload);
+
+    return requestJson<GasStationPriceResult>(url, {
+      method: "GET"
+    });
+  }
+
   async estimateEnergyOrder(input: {
     receiveAddress: string;
     addressTo: string;
@@ -171,9 +214,9 @@ export class GasStationClient {
     energyNum: number;
     serviceChargeType?: string;
   }): Promise<GasStationCreateOrderResult> {
-    const energyNum = Number(input.energyNum);
+    const energyNum = normalizePositiveInteger(input.energyNum, "energyNum");
 
-    if (!Number.isFinite(energyNum) || energyNum < 64400) {
+    if (energyNum < 64400) {
       throw new Error("energyNum must be at least 64400");
     }
 
@@ -185,7 +228,37 @@ export class GasStationClient {
         input.serviceChargeType ?? "10010",
         "serviceChargeType"
       ),
-      energy_num: Math.ceil(energyNum)
+      energy_num: energyNum
+    };
+
+    const url = this.buildEncryptedUrl("/api/tron/gas/create_order", payload);
+
+    return requestJson<GasStationCreateOrderResult>(url, {
+      method: "POST"
+    });
+  }
+
+  async createBandwidthOrder(input: {
+    requestId: string;
+    receiveAddress: string;
+    netNum: number;
+    serviceChargeType?: string;
+  }): Promise<GasStationCreateOrderResult> {
+    const netNum = normalizePositiveInteger(input.netNum, "netNum");
+
+    if (netNum < 5000) {
+      throw new Error("netNum must be at least 5000");
+    }
+
+    const payload = {
+      request_id: assertNonEmpty(input.requestId, "requestId"),
+      receive_address: assertNonEmpty(input.receiveAddress, "receiveAddress"),
+      buy_type: 0,
+      service_charge_type: assertNonEmpty(
+        input.serviceChargeType ?? "10010",
+        "serviceChargeType"
+      ),
+      net_num: netNum
     };
 
     const url = this.buildEncryptedUrl("/api/tron/gas/create_order", payload);
