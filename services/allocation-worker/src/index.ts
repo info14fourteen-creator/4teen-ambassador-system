@@ -221,6 +221,38 @@ function isFinalPurchaseStatus(status: PurchaseRecord["status"]): boolean {
   );
 }
 
+function parseBooleanEnv(value: string | undefined, fallback = false): boolean {
+  if (value == null || String(value).trim() === "") {
+    return fallback;
+  }
+
+  const normalized = String(value).trim().toLowerCase();
+
+  return (
+    normalized === "1" ||
+    normalized === "true" ||
+    normalized === "yes" ||
+    normalized === "on"
+  );
+}
+
+function parseNonNegativeIntegerEnv(
+  value: string | undefined,
+  fallback: number
+): number {
+  if (value == null || String(value).trim() === "") {
+    return fallback;
+  }
+
+  const parsed = Number(value);
+
+  if (!Number.isFinite(parsed) || parsed < 0) {
+    throw new Error(`Invalid non-negative integer env value: ${value}`);
+  }
+
+  return Math.floor(parsed);
+}
+
 function mapAllocationAttemptToApiResult(
   result: Awaited<ReturnType<AllocationService["tryAllocateVerifiedPurchase"]>>
 ): {
@@ -621,40 +653,64 @@ class AllocationWorkerProcessorImpl implements AllocationWorkerProcessor {
   }
 }
 
-function tryCreateGasStationClient(
-  logger?: WorkerLogger
-): GasStationClient | null {
-  try {
-    const client = createGasStationClientFromEnv();
-
-    logger?.info?.({
-      scope: "gasstation",
-      step: "client-created"
-    });
-
-    return client;
-  } catch (error) {
-    logger?.warn?.({
-      scope: "gasstation",
-      step: "client-disabled",
-      message: String((error as any)?.message || error || "GasStation env is not configured")
-    });
-
-    return null;
-  }
-}
-
 export function createAllocationWorker(
   options: CreateAllocationWorkerOptions
 ): AllocationWorker {
   const store = createPurchaseStore();
-  const gasStation = tryCreateGasStationClient(options.logger);
+
+  const gasStationEnabled = parseBooleanEnv(process.env.GASSTATION_ENABLED, false);
+  const gasStationMinBandwidth = parseNonNegativeIntegerEnv(
+    process.env.GASSTATION_MIN_BANDWIDTH,
+    0
+  );
+  const gasStationMinEnergy = parseNonNegativeIntegerEnv(
+    process.env.GASSTATION_MIN_ENERGY,
+    0
+  );
+  const allocationMinBandwidth = parseNonNegativeIntegerEnv(
+    process.env.ALLOCATION_MIN_BANDWIDTH,
+    0
+  );
+  const allocationMinEnergy = parseNonNegativeIntegerEnv(
+    process.env.ALLOCATION_MIN_ENERGY,
+    0
+  );
+
+  let gasStationClient: GasStationClient | null = null;
+
+  if (gasStationEnabled) {
+    gasStationClient = createGasStationClientFromEnv();
+
+    options.logger?.info?.({
+      scope: "gasstation",
+      stage: "configured",
+      enabled: true,
+      gasStationMinBandwidth,
+      gasStationMinEnergy,
+      allocationMinBandwidth,
+      allocationMinEnergy
+    });
+  } else {
+    options.logger?.info?.({
+      scope: "gasstation",
+      stage: "configured",
+      enabled: false,
+      gasStationMinBandwidth,
+      gasStationMinEnergy,
+      allocationMinBandwidth,
+      allocationMinEnergy
+    });
+  }
 
   const executorConfig: TronControllerAllocationExecutorConfig = {
     tronWeb: options.tronWeb,
     controllerContractAddress: options.controllerContractAddress,
-    gasStation,
-    logger: options.logger
+    gasStationClient,
+    gasStationEnabled,
+    gasStationMinBandwidth,
+    gasStationMinEnergy,
+    allocationMinBandwidth,
+    allocationMinEnergy
   };
 
   const executor = new TronControllerAllocationExecutor(executorConfig);
