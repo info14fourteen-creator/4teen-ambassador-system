@@ -1,6 +1,6 @@
 # 4teen-ambassador-system — ALLOCATION WORKER
 
-Generated: 2026-03-29T16:38:47.750Z
+Generated: 2026-03-29T18:28:14.674Z
 Repository: info14fourteen-creator/4teen-ambassador-system
 Branch: main
 
@@ -3747,6 +3747,11 @@ function parseNonNegativeIntegerEnv(
   return Math.floor(parsed);
 }
 
+function parseStringEnv(value: string | undefined, fallback: string): string {
+  const normalized = String(value || "").trim();
+  return normalized || fallback;
+}
+
 function mapAllocationAttemptToApiResult(
   result: Awaited<ReturnType<AllocationService["tryAllocateVerifiedPurchase"]>>
 ): {
@@ -4169,8 +4174,10 @@ export function createAllocationWorker(
     process.env.ALLOCATION_MIN_ENERGY,
     0
   );
-  const gasStationServiceChargeType =
-    normalizeOptionalString(process.env.GASSTATION_SERVICE_CHARGE_TYPE) ?? "10010";
+  const gasStationServiceChargeType = parseStringEnv(
+    process.env.GASSTATION_SERVICE_CHARGE_TYPE,
+    "10010"
+  );
 
   let gasStationClient: GasStationClient | null = null;
 
