@@ -1,6 +1,6 @@
 # 4teen-ambassador-system — ALLOCATION WORKER
 
-Generated: 2026-03-27T23:08:16.266Z
+Generated: 2026-03-29T11:36:52.512Z
 Repository: info14fourteen-creator/4teen-ambassador-system
 Branch: main
 
@@ -3503,6 +3503,10 @@ import {
   TronControllerAllocationExecutor,
   type TronControllerAllocationExecutorConfig
 } from "./tron/controller";
+import {
+  createGasStationClientFromEnv,
+  type GasStationClient
+} from "./services/gasStation";
 
 export interface CreateAllocationWorkerOptions {
   tronWeb: any;
@@ -4111,14 +4115,40 @@ class AllocationWorkerProcessorImpl implements AllocationWorkerProcessor {
   }
 }
 
+function tryCreateGasStationClient(
+  logger?: WorkerLogger
+): GasStationClient | null {
+  try {
+    const client = createGasStationClientFromEnv();
+
+    logger?.info?.({
+      scope: "gasstation",
+      step: "client-created"
+    });
+
+    return client;
+  } catch (error) {
+    logger?.warn?.({
+      scope: "gasstation",
+      step: "client-disabled",
+      message: String((error as any)?.message || error || "GasStation env is not configured")
+    });
+
+    return null;
+  }
+}
+
 export function createAllocationWorker(
   options: CreateAllocationWorkerOptions
 ): AllocationWorker {
   const store = createPurchaseStore();
+  const gasStation = tryCreateGasStationClient(options.logger);
 
   const executorConfig: TronControllerAllocationExecutorConfig = {
     tronWeb: options.tronWeb,
-    controllerContractAddress: options.controllerContractAddress
+    controllerContractAddress: options.controllerContractAddress,
+    gasStation,
+    logger: options.logger
   };
 
   const executor = new TronControllerAllocationExecutor(executorConfig);
@@ -7278,15 +7308,28 @@ import type {
   AllocationExecutorInput,
   AllocationExecutorResult
 } from "../domain/allocation";
+import type { GasStationClient } from "../services/gasStation";
 
 export interface ControllerClientConfig {
   tronWeb: any;
   contractAddress?: string;
+  gasStation?: GasStationClient | null;
+  logger?: {
+    info?(payload: Record<string, unknown>): void;
+    warn?(payload: Record<string, unknown>): void;
+    error?(payload: Record<string, unknown>): void;
+  };
 }
 
 export interface TronControllerAllocationExecutorConfig {
   tronWeb: any;
   controllerContractAddress?: string;
+  gasStation?: GasStationClient | null;
+  logger?: {
+    info?(payload: Record<string, unknown>): void;
+    warn?(payload: Record<string, unknown>): void;
+    error?(payload: Record<string, unknown>): void;
+  };
 }
 
 export interface ResolveAmbassadorBySlugHashResult {
@@ -7405,6 +7448,68 @@ function normalizeReturnedAddress(tronWeb: any, value: unknown): string | null {
   return raw || null;
 }
 
+function normalizeTxid(value: unknown): string {
+  const raw = String(value || "").trim();
+
+  if (!raw) {
+    return "";
+  }
+
+  if (typeof value === "string") {
+    return raw;
+  }
+
+  return raw;
+}
+
+function extractTxid(result: unknown): string {
+  if (!result) return "";
+
+  if (typeof result === "string") {
+    return result.trim();
+  }
+
+  if (typeof result === "object") {
+    const candidate =
+      (result as any).txid ||
+      (result as any).txID ||
+      (result as any).transaction?.txID ||
+      (result as any).transaction?.txid ||
+      (result as any).result?.txid ||
+      (result as any).result?.txID ||
+      "";
+
+    return String(candidate || "").trim();
+  }
+
+  return "";
+}
+
+function isResourceError(error: unknown): boolean {
+  const text = String(
+    (error as any)?.message ||
+      (error as any)?.error ||
+      (error as any)?.data?.message ||
+      (error as any)?.response?.data?.message ||
+      (error as any)?.response?.message ||
+      ""
+  ).toLowerCase();
+
+  return (
+    text.includes("out_of_energy") ||
+    text.includes("out of energy") ||
+    text.includes("bandwidth") ||
+    text.includes("net_usage") ||
+    text.includes("resource") ||
+    text.includes("contract validate error") ||
+    text.includes("account resource insufficient")
+  );
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 async function getContract(tronWeb: any, contractAddress: string): Promise<any> {
   if (!tronWeb || typeof tronWeb.contract !== "function") {
     throw new Error("Valid tronWeb instance is required");
@@ -7416,6 +7521,13 @@ async function getContract(tronWeb: any, contractAddress: string): Promise<any> 
 export class TronControllerClient implements ControllerClient {
   private readonly tronWeb: any;
   private readonly contractAddress: string;
+  private readonly gasStation: GasStationClient | null;
+  private readonly logger?: {
+    info?(payload: Record<string, unknown>): void;
+    warn?(payload: Record<string, unknown>): void;
+    error?(payload: Record<string, unknown>): void;
+  };
+
   private contractInstance: any | null = null;
 
   constructor(config: ControllerClientConfig) {
@@ -7428,6 +7540,8 @@ export class TronControllerClient implements ControllerClient {
       config.contractAddress ?? FOURTEEN_CONTROLLER_CONTRACT,
       "contractAddress"
     );
+    this.gasStation = config.gasStation ?? null;
+    this.logger = config.logger;
   }
 
   private async contract(): Promise<any> {
@@ -7436,6 +7550,103 @@ export class TronControllerClient implements ControllerClient {
     }
 
     return this.contractInstance;
+  }
+
+  private getSignerAddress(): string {
+    const address =
+      this.tronWeb?.defaultAddress?.base58 ||
+      this.tronWeb?.address?.fromPrivateKey?.(this.tronWeb?.defaultPrivateKey || "");
+
+    return normalizeAddress(address, "signerAddress");
+  }
+
+  private async sendRecordVerifiedPurchase(
+    input: RecordVerifiedPurchaseInput
+  ): Promise<RecordVerifiedPurchaseResult> {
+    const purchaseId = normalizeBytes32Hex(input.purchaseId, "purchaseId");
+    const buyerWallet = normalizeAddress(input.buyerWallet, "buyerWallet");
+    const ambassadorWallet = normalizeAddress(input.ambassadorWallet, "ambassadorWallet");
+    const purchaseAmountSun = normalizeSunAmount(input.purchaseAmountSun, "purchaseAmountSun");
+    const ownerShareSun = normalizeSunAmount(input.ownerShareSun, "ownerShareSun");
+    const feeLimitSun = normalizeFeeLimitSun(input.feeLimitSun);
+
+    const contract = await this.contract();
+
+    const result = await contract
+      .recordVerifiedPurchase(
+        purchaseId,
+        buyerWallet,
+        ambassadorWallet,
+        purchaseAmountSun,
+        ownerShareSun
+      )
+      .send({
+        feeLimit: feeLimitSun
+      });
+
+    const txid = extractTxid(result);
+
+    return {
+      txid: assertNonEmpty(txid, "txid")
+    };
+  }
+
+  private async ensureGasStationResources(
+    input: RecordVerifiedPurchaseInput
+  ): Promise<void> {
+    if (!this.gasStation) {
+      throw new Error("GasStation client is not configured");
+    }
+
+    const signerAddress = this.getSignerAddress();
+
+    this.logger?.info?.({
+      scope: "allocation",
+      step: "gasstation-estimate-start",
+      signerAddress,
+      controllerContractAddress: this.contractAddress,
+      purchaseId: input.purchaseId
+    });
+
+    const estimate = await this.gasStation.estimateEnergyOrder({
+      receiveAddress: signerAddress,
+      addressTo: this.contractAddress,
+      contractAddress: this.contractAddress
+    });
+
+    const estimatedEnergy = Number(estimate.energy_num || 0);
+
+    if (!Number.isFinite(estimatedEnergy) || estimatedEnergy < 64400) {
+      throw new Error("GasStation returned invalid energy estimate");
+    }
+
+    const requestId = `alloc-${String(input.purchaseId).replace(/^0x/, "").slice(0, 24)}-${Date.now()}`;
+
+    this.logger?.info?.({
+      scope: "allocation",
+      step: "gasstation-create-order-start",
+      signerAddress,
+      controllerContractAddress: this.contractAddress,
+      purchaseId: input.purchaseId,
+      estimatedEnergy
+    });
+
+    const order = await this.gasStation.createEnergyOrder({
+      requestId,
+      receiveAddress: signerAddress,
+      energyNum: estimatedEnergy,
+      serviceChargeType: estimate.service_charge_type || "10010"
+    });
+
+    this.logger?.info?.({
+      scope: "allocation",
+      step: "gasstation-create-order-success",
+      purchaseId: input.purchaseId,
+      tradeNo: order.trade_no,
+      estimatedEnergy
+    });
+
+    await sleep(5000);
   }
 
   async getAmbassadorBySlugHash(slugHash: string): Promise<ResolveAmbassadorBySlugHashResult> {
@@ -7485,30 +7696,30 @@ export class TronControllerClient implements ControllerClient {
   async recordVerifiedPurchase(
     input: RecordVerifiedPurchaseInput
   ): Promise<RecordVerifiedPurchaseResult> {
-    const purchaseId = normalizeBytes32Hex(input.purchaseId, "purchaseId");
-    const buyerWallet = normalizeAddress(input.buyerWallet, "buyerWallet");
-    const ambassadorWallet = normalizeAddress(input.ambassadorWallet, "ambassadorWallet");
-    const purchaseAmountSun = normalizeSunAmount(input.purchaseAmountSun, "purchaseAmountSun");
-    const ownerShareSun = normalizeSunAmount(input.ownerShareSun, "ownerShareSun");
-    const feeLimitSun = normalizeFeeLimitSun(input.feeLimitSun);
+    try {
+      return await this.sendRecordVerifiedPurchase(input);
+    } catch (error) {
+      if (!isResourceError(error) || !this.gasStation) {
+        throw error;
+      }
 
-    const contract = await this.contract();
-
-    const txid = await contract
-      .recordVerifiedPurchase(
-        purchaseId,
-        buyerWallet,
-        ambassadorWallet,
-        purchaseAmountSun,
-        ownerShareSun
-      )
-      .send({
-        feeLimit: feeLimitSun
+      this.logger?.warn?.({
+        scope: "allocation",
+        step: "record-verified-purchase-resource-error",
+        purchaseId: input.purchaseId,
+        message: String((error as any)?.message || error || "Unknown resource error")
       });
 
-    return {
-      txid: assertNonEmpty(txid, "txid")
-    };
+      await this.ensureGasStationResources(input);
+
+      this.logger?.info?.({
+        scope: "allocation",
+        step: "record-verified-purchase-retry-after-gasstation",
+        purchaseId: input.purchaseId
+      });
+
+      return await this.sendRecordVerifiedPurchase(input);
+    }
   }
 }
 
@@ -7518,7 +7729,9 @@ export class TronControllerAllocationExecutor implements AllocationExecutor {
   constructor(config: TronControllerAllocationExecutorConfig) {
     this.client = new TronControllerClient({
       tronWeb: config.tronWeb,
-      contractAddress: config.controllerContractAddress
+      contractAddress: config.controllerContractAddress,
+      gasStation: config.gasStation ?? null,
+      logger: config.logger
     });
   }
 
