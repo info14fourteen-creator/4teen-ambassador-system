@@ -9,6 +9,10 @@ import {
   TronControllerAllocationExecutor,
   type TronControllerAllocationExecutorConfig
 } from "./tron/controller";
+import {
+  createGasStationClientFromEnv,
+  type GasStationClient
+} from "./services/gasStation";
 
 export interface CreateAllocationWorkerOptions {
   tronWeb: any;
@@ -617,14 +621,40 @@ class AllocationWorkerProcessorImpl implements AllocationWorkerProcessor {
   }
 }
 
+function tryCreateGasStationClient(
+  logger?: WorkerLogger
+): GasStationClient | null {
+  try {
+    const client = createGasStationClientFromEnv();
+
+    logger?.info?.({
+      scope: "gasstation",
+      step: "client-created"
+    });
+
+    return client;
+  } catch (error) {
+    logger?.warn?.({
+      scope: "gasstation",
+      step: "client-disabled",
+      message: String((error as any)?.message || error || "GasStation env is not configured")
+    });
+
+    return null;
+  }
+}
+
 export function createAllocationWorker(
   options: CreateAllocationWorkerOptions
 ): AllocationWorker {
   const store = createPurchaseStore();
+  const gasStation = tryCreateGasStationClient(options.logger);
 
   const executorConfig: TronControllerAllocationExecutorConfig = {
     tronWeb: options.tronWeb,
-    controllerContractAddress: options.controllerContractAddress
+    controllerContractAddress: options.controllerContractAddress,
+    gasStation,
+    logger: options.logger
   };
 
   const executor = new TronControllerAllocationExecutor(executorConfig);
