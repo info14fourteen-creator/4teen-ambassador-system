@@ -1,6 +1,6 @@
 # 4teen-ambassador-system — ALLOCATION WORKER
 
-Generated: 2026-03-29T12:48:05.439Z
+Generated: 2026-03-29T13:11:39.316Z
 Repository: info14fourteen-creator/4teen-ambassador-system
 Branch: main
 
@@ -6141,6 +6141,16 @@ interface EnvConfig {
   tokenContractAddress?: string;
   scanPageSize: number;
   allowedOrigins: string[];
+
+  gasStationEnabled: boolean;
+  gasStationApiBaseUrl?: string;
+  gasStationApiKey?: string;
+  gasStationApiSecret?: string;
+
+  gasStationMinBandwidth: number;
+  gasStationMinEnergy: number;
+  allocationMinBandwidth: number;
+  allocationMinEnergy: number;
 }
 
 type TronWebConstructor = new (config: {
@@ -6200,6 +6210,24 @@ function parsePositiveInteger(
   return parsed;
 }
 
+function parseBoolean(value: string | undefined, fallback = false): boolean {
+  if (value == null || value.trim() === "") {
+    return fallback;
+  }
+
+  const normalized = value.trim().toLowerCase();
+
+  if (["1", "true", "yes", "y", "on"].includes(normalized)) {
+    return true;
+  }
+
+  if (["0", "false", "no", "n", "off"].includes(normalized)) {
+    return false;
+  }
+
+  throw new Error(`Invalid boolean value: ${value}`);
+}
+
 function parseAllowedOrigins(value: string | undefined): string[] {
   const defaults = [
     "https://4teen.me",
@@ -6221,12 +6249,40 @@ function parseAllowedOrigins(value: string | undefined): string[] {
 }
 
 function loadEnv(): EnvConfig {
+  const gasStationEnabled = parseBoolean(process.env.GASSTATION_ENABLED, false);
+
   const config: EnvConfig = {
     port: parsePositiveInteger(process.env.PORT, 3000, "PORT"),
     tronFullHost: assertNonEmpty(process.env.TRON_FULL_HOST, "TRON_FULL_HOST"),
     tronPrivateKey: assertNonEmpty(process.env.TRON_PRIVATE_KEY, "TRON_PRIVATE_KEY"),
     scanPageSize: parsePositiveInteger(process.env.SCAN_PAGE_SIZE, 50, "SCAN_PAGE_SIZE"),
-    allowedOrigins: parseAllowedOrigins(process.env.ALLOWED_ORIGINS)
+    allowedOrigins: parseAllowedOrigins(process.env.ALLOWED_ORIGINS),
+
+    gasStationEnabled,
+    gasStationApiBaseUrl: normalizeOptionalString(process.env.GASSTATION_API_BASE_URL),
+    gasStationApiKey: normalizeOptionalString(process.env.GASSTATION_API_KEY),
+    gasStationApiSecret: normalizeOptionalString(process.env.GASSTATION_API_SECRET),
+
+    gasStationMinBandwidth: parsePositiveInteger(
+      process.env.GASSTATION_MIN_BANDWIDTH,
+      100,
+      "GASSTATION_MIN_BANDWIDTH"
+    ),
+    gasStationMinEnergy: parsePositiveInteger(
+      process.env.GASSTATION_MIN_ENERGY,
+      200000,
+      "GASSTATION_MIN_ENERGY"
+    ),
+    allocationMinBandwidth: parsePositiveInteger(
+      process.env.ALLOCATION_MIN_BANDWIDTH,
+      100,
+      "ALLOCATION_MIN_BANDWIDTH"
+    ),
+    allocationMinEnergy: parsePositiveInteger(
+      process.env.ALLOCATION_MIN_ENERGY,
+      180000,
+      "ALLOCATION_MIN_ENERGY"
+    )
   };
 
   const controllerContractAddress = process.env.FOURTEEN_CONTROLLER_CONTRACT?.trim();
@@ -6238,6 +6294,21 @@ function loadEnv(): EnvConfig {
 
   if (tokenContractAddress) {
     config.tokenContractAddress = tokenContractAddress;
+  }
+
+  if (config.gasStationEnabled) {
+    config.gasStationApiBaseUrl = assertNonEmpty(
+      config.gasStationApiBaseUrl,
+      "GASSTATION_API_BASE_URL"
+    );
+    config.gasStationApiKey = assertNonEmpty(
+      config.gasStationApiKey,
+      "GASSTATION_API_KEY"
+    );
+    config.gasStationApiSecret = assertNonEmpty(
+      config.gasStationApiSecret,
+      "GASSTATION_API_SECRET"
+    );
   }
 
   return config;
@@ -6381,15 +6452,27 @@ async function bootstrap() {
       error(payload) {
         console.error(JSON.stringify({ level: "error", ...payload }));
       }
+    },
+    gasStation: {
+      enabled: env.gasStationEnabled,
+      apiBaseUrl: env.gasStationApiBaseUrl,
+      apiKey: env.gasStationApiKey,
+      apiSecret: env.gasStationApiSecret,
+      minBandwidth: env.gasStationMinBandwidth,
+      minEnergy: env.gasStationMinEnergy
+    },
+    allocationThresholds: {
+      minBandwidth: env.allocationMinBandwidth,
+      minEnergy: env.allocationMinEnergy
     }
   });
 
   const cabinetService = createCabinetService({
-  store: worker.store,
-  tronWeb,
-  controllerContractAddress: resolvedControllerContractAddress,
-  processor: worker.processor
-});
+    store: worker.store,
+    tronWeb,
+    controllerContractAddress: resolvedControllerContractAddress,
+    processor: worker.processor
+  });
 
   const scanner = new BuyTokensScanner({
     tronWeb,
@@ -6418,7 +6501,17 @@ async function bootstrap() {
           ok: true,
           service: "allocation-worker",
           timestamp: Date.now(),
-          controllerContractAddress: resolvedControllerContractAddress
+          controllerContractAddress: resolvedControllerContractAddress,
+          gasStation: {
+            enabled: env.gasStationEnabled,
+            apiBaseUrl: env.gasStationApiBaseUrl || null,
+            minBandwidth: env.gasStationMinBandwidth,
+            minEnergy: env.gasStationMinEnergy
+          },
+          allocationThresholds: {
+            minBandwidth: env.allocationMinBandwidth,
+            minEnergy: env.allocationMinEnergy
+          }
         });
         return;
       }
@@ -6682,7 +6775,17 @@ async function bootstrap() {
         message: "allocation-worker started",
         port: env.port,
         allowedOrigins: env.allowedOrigins,
-        controllerContractAddress: resolvedControllerContractAddress
+        controllerContractAddress: resolvedControllerContractAddress,
+        gasStation: {
+          enabled: env.gasStationEnabled,
+          apiBaseUrl: env.gasStationApiBaseUrl || null,
+          minBandwidth: env.gasStationMinBandwidth,
+          minEnergy: env.gasStationMinEnergy
+        },
+        allocationThresholds: {
+          minBandwidth: env.allocationMinBandwidth,
+          minEnergy: env.allocationMinEnergy
+        }
       })
     );
   });
