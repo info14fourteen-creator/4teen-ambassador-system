@@ -675,6 +675,8 @@ export function createAllocationWorker(
     process.env.ALLOCATION_MIN_ENERGY,
     0
   );
+  const gasStationServiceChargeType =
+    normalizeOptionalString(process.env.GASSTATION_SERVICE_CHARGE_TYPE) ?? "10010";
 
   let gasStationClient: GasStationClient | null = null;
 
@@ -688,7 +690,8 @@ export function createAllocationWorker(
       gasStationMinBandwidth,
       gasStationMinEnergy,
       allocationMinBandwidth,
-      allocationMinEnergy
+      allocationMinEnergy,
+      gasStationServiceChargeType
     });
   } else {
     options.logger?.info?.({
@@ -698,7 +701,8 @@ export function createAllocationWorker(
       gasStationMinBandwidth,
       gasStationMinEnergy,
       allocationMinBandwidth,
-      allocationMinEnergy
+      allocationMinEnergy,
+      gasStationServiceChargeType
     });
   }
 
@@ -710,7 +714,8 @@ export function createAllocationWorker(
     gasStationMinBandwidth,
     gasStationMinEnergy,
     allocationMinBandwidth,
-    allocationMinEnergy
+    allocationMinEnergy,
+    gasStationServiceChargeType
   };
 
   const executor = new TronControllerAllocationExecutor(executorConfig);
