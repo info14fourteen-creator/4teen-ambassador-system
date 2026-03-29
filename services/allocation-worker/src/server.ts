@@ -22,16 +22,15 @@ interface EnvConfig {
   tokenContractAddress?: string;
   scanPageSize: number;
   allowedOrigins: string[];
-
   gasStationEnabled: boolean;
   gasStationApiBaseUrl?: string;
   gasStationApiKey?: string;
   gasStationApiSecret?: string;
-
   gasStationMinBandwidth: number;
   gasStationMinEnergy: number;
   allocationMinBandwidth: number;
   allocationMinEnergy: number;
+  gasStationServiceChargeType: string;
 }
 
 type TronWebConstructor = new (config: {
@@ -140,30 +139,39 @@ function loadEnv(): EnvConfig {
     allowedOrigins: parseAllowedOrigins(process.env.ALLOWED_ORIGINS),
 
     gasStationEnabled,
-    gasStationApiBaseUrl: normalizeOptionalString(process.env.GASSTATION_API_BASE_URL),
-    gasStationApiKey: normalizeOptionalString(process.env.GASSTATION_API_KEY),
-    gasStationApiSecret: normalizeOptionalString(process.env.GASSTATION_API_SECRET),
+    gasStationApiBaseUrl: normalizeOptionalString(
+      process.env.GASSTATION_API_BASE_URL ?? process.env.GASSTATION_BASE_URL
+    ),
+    gasStationApiKey: normalizeOptionalString(
+      process.env.GASSTATION_API_KEY ?? process.env.GASSTATION_APP_ID
+    ),
+    gasStationApiSecret: normalizeOptionalString(
+      process.env.GASSTATION_API_SECRET ?? process.env.GASSTATION_SECRET_KEY
+    ),
 
     gasStationMinBandwidth: parsePositiveInteger(
       process.env.GASSTATION_MIN_BANDWIDTH,
-      100,
+      5000,
       "GASSTATION_MIN_BANDWIDTH"
     ),
     gasStationMinEnergy: parsePositiveInteger(
       process.env.GASSTATION_MIN_ENERGY,
-      200000,
+      64400,
       "GASSTATION_MIN_ENERGY"
     ),
     allocationMinBandwidth: parsePositiveInteger(
       process.env.ALLOCATION_MIN_BANDWIDTH,
-      100,
+      444,
       "ALLOCATION_MIN_BANDWIDTH"
     ),
     allocationMinEnergy: parsePositiveInteger(
       process.env.ALLOCATION_MIN_ENERGY,
-      180000,
+      168502,
       "ALLOCATION_MIN_ENERGY"
-    )
+    ),
+    gasStationServiceChargeType: String(
+      process.env.GASSTATION_SERVICE_CHARGE_TYPE || "10010"
+    ).trim() || "10010"
   };
 
   const controllerContractAddress = process.env.FOURTEEN_CONTROLLER_CONTRACT?.trim();
@@ -274,6 +282,7 @@ function toErrorMessage(error: unknown): string {
     typeof (error as { message?: unknown }).message === "string"
   ) {
     const message = (error as { message: string }).message.trim();
+
     if (message) {
       return message;
     }
@@ -333,18 +342,6 @@ async function bootstrap() {
       error(payload) {
         console.error(JSON.stringify({ level: "error", ...payload }));
       }
-    },
-    gasStation: {
-      enabled: env.gasStationEnabled,
-      apiBaseUrl: env.gasStationApiBaseUrl,
-      apiKey: env.gasStationApiKey,
-      apiSecret: env.gasStationApiSecret,
-      minBandwidth: env.gasStationMinBandwidth,
-      minEnergy: env.gasStationMinEnergy
-    },
-    allocationThresholds: {
-      minBandwidth: env.allocationMinBandwidth,
-      minEnergy: env.allocationMinEnergy
     }
   });
 
@@ -387,7 +384,8 @@ async function bootstrap() {
             enabled: env.gasStationEnabled,
             apiBaseUrl: env.gasStationApiBaseUrl || null,
             minBandwidth: env.gasStationMinBandwidth,
-            minEnergy: env.gasStationMinEnergy
+            minEnergy: env.gasStationMinEnergy,
+            serviceChargeType: env.gasStationServiceChargeType
           },
           allocationThresholds: {
             minBandwidth: env.allocationMinBandwidth,
@@ -563,7 +561,7 @@ async function bootstrap() {
 
         const feeLimitSun =
           body.feeLimitSun !== undefined
-            ? parsePositiveInteger(String(body.feeLimitSun), 0, "feeLimitSun")
+            ? parsePositiveInteger(String(body.feeLimitSun), 1, "feeLimitSun")
             : undefined;
 
         const result = await worker.processor.processFrontendAttribution({
@@ -610,7 +608,7 @@ async function bootstrap() {
 
         const feeLimitSun =
           body.feeLimitSun !== undefined
-            ? parsePositiveInteger(String(body.feeLimitSun), 0, "feeLimitSun")
+            ? parsePositiveInteger(String(body.feeLimitSun), 1, "feeLimitSun")
             : undefined;
 
         const result = await worker.processor.replayFailedAllocation(
@@ -661,7 +659,8 @@ async function bootstrap() {
           enabled: env.gasStationEnabled,
           apiBaseUrl: env.gasStationApiBaseUrl || null,
           minBandwidth: env.gasStationMinBandwidth,
-          minEnergy: env.gasStationMinEnergy
+          minEnergy: env.gasStationMinEnergy,
+          serviceChargeType: env.gasStationServiceChargeType
         },
         allocationThresholds: {
           minBandwidth: env.allocationMinBandwidth,
