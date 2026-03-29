@@ -1,6 +1,6 @@
 # 4teen-ambassador-system — ALLOCATION WORKER
 
-Generated: 2026-03-29T16:32:11.309Z
+Generated: 2026-03-29T16:38:47.750Z
 Repository: info14fourteen-creator/4teen-ambassador-system
 Branch: main
 
@@ -4169,6 +4169,8 @@ export function createAllocationWorker(
     process.env.ALLOCATION_MIN_ENERGY,
     0
   );
+  const gasStationServiceChargeType =
+    normalizeOptionalString(process.env.GASSTATION_SERVICE_CHARGE_TYPE) ?? "10010";
 
   let gasStationClient: GasStationClient | null = null;
 
@@ -4182,7 +4184,8 @@ export function createAllocationWorker(
       gasStationMinBandwidth,
       gasStationMinEnergy,
       allocationMinBandwidth,
-      allocationMinEnergy
+      allocationMinEnergy,
+      gasStationServiceChargeType
     });
   } else {
     options.logger?.info?.({
@@ -4192,7 +4195,8 @@ export function createAllocationWorker(
       gasStationMinBandwidth,
       gasStationMinEnergy,
       allocationMinBandwidth,
-      allocationMinEnergy
+      allocationMinEnergy,
+      gasStationServiceChargeType
     });
   }
 
@@ -4204,7 +4208,8 @@ export function createAllocationWorker(
     gasStationMinBandwidth,
     gasStationMinEnergy,
     allocationMinBandwidth,
-    allocationMinEnergy
+    allocationMinEnergy,
+    gasStationServiceChargeType
   };
 
   const executor = new TronControllerAllocationExecutor(executorConfig);
