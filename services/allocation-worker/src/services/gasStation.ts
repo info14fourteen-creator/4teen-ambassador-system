@@ -38,12 +38,13 @@ function assertNonEmpty(value: string | undefined, fieldName: string): string {
 }
 
 function normalizeBaseUrl(value?: string): string {
-  return String(value || "https://openapi.gasstation.ai").replace(/\/+$/, "");
+  return String(value || "https://openapi.gasstation.ai").trim().replace(/\/+$/, "");
 }
 
 function pkcs7Pad(buffer: Buffer): Buffer {
   const blockSize = 16;
-  const padLength = blockSize - (buffer.length % blockSize || blockSize);
+  const remainder = buffer.length % blockSize;
+  const padLength = remainder === 0 ? blockSize : blockSize - remainder;
   const padding = Buffer.alloc(padLength, padLength);
   return Buffer.concat([buffer, padding]);
 }
@@ -52,16 +53,17 @@ function toBase64UrlSafe(buffer: Buffer): string {
   return buffer
     .toString("base64")
     .replace(/\+/g, "-")
-    .replace(/\//g, "_");
-}
-
-function fromBase64UrlSafe(value: string): Buffer {
-  const normalized = value.replace(/-/g, "+").replace(/_/g, "/");
-  return Buffer.from(normalized, "base64");
+    .replace(/\//g, "_")
+    .replace(/=+$/g, "");
 }
 
 function encryptAesEcbPkcs7Base64UrlSafe(plainText: string, secretKey: string): string {
   const key = Buffer.from(assertNonEmpty(secretKey, "secretKey"), "utf8");
+
+  if (![16, 24, 32].includes(key.length)) {
+    throw new Error("secretKey must be 16, 24, or 32 bytes long");
+  }
+
   const plainBuffer = Buffer.from(plainText, "utf8");
   const padded = pkcs7Pad(plainBuffer);
 
@@ -72,13 +74,10 @@ function encryptAesEcbPkcs7Base64UrlSafe(plainText: string, secretKey: string): 
   return toBase64UrlSafe(encrypted);
 }
 
-async function requestJson<T>(
-  url: string,
-  init?: RequestInit
-): Promise<T> {
+async function requestJson<T>(url: string, init?: RequestInit): Promise<T> {
   const response = await fetch(url, init);
-
   const text = await response.text();
+
   let parsed: any = null;
 
   try {
@@ -121,10 +120,7 @@ export class GasStationClient {
     this.baseUrl = normalizeBaseUrl(config.baseUrl);
   }
 
-  private buildEncryptedUrl(
-    path: string,
-    payload: Record<string, unknown>
-  ): string {
+  private buildEncryptedUrl(path: string, payload: Record<string, unknown>): string {
     const plainText = JSON.stringify(payload);
     const encrypted = encryptAesEcbPkcs7Base64UrlSafe(plainText, this.secretKey);
 
@@ -140,6 +136,7 @@ export class GasStationClient {
     };
 
     const url = this.buildEncryptedUrl("/api/mpc/tron/gas/balance", payload);
+
     return requestJson<GasStationBalanceResult>(url, {
       method: "GET"
     });
@@ -162,6 +159,7 @@ export class GasStationClient {
     };
 
     const url = this.buildEncryptedUrl("/api/tron/gas/estimate", payload);
+
     return requestJson<GasStationEstimateResult>(url, {
       method: "GET"
     });
@@ -191,6 +189,7 @@ export class GasStationClient {
     };
 
     const url = this.buildEncryptedUrl("/api/tron/gas/create_order", payload);
+
     return requestJson<GasStationCreateOrderResult>(url, {
       method: "POST"
     });
@@ -199,8 +198,14 @@ export class GasStationClient {
 
 export function createGasStationClientFromEnv(): GasStationClient {
   return new GasStationClient({
-    appId: assertNonEmpty(process.env.GASSTATION_APP_ID, "GASSTATION_APP_ID"),
-    secretKey: assertNonEmpty(process.env.GASSTATION_SECRET_KEY, "GASSTATION_SECRET_KEY"),
-    baseUrl: process.env.GASSTATION_BASE_URL
+    appId: assertNonEmpty(
+      process.env.GASSTATION_API_KEY ?? process.env.GASSTATION_APP_ID,
+      "GASSTATION_API_KEY"
+    ),
+    secretKey: assertNonEmpty(
+      process.env.GASSTATION_API_SECRET ?? process.env.GASSTATION_SECRET_KEY,
+      "GASSTATION_API_SECRET"
+    ),
+    baseUrl: process.env.GASSTATION_API_BASE_URL ?? process.env.GASSTATION_BASE_URL
   });
 }
