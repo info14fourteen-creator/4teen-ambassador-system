@@ -1,31 +1,32 @@
+import crypto from "node:crypto";
 import { FOURTEEN_CONTROLLER_CONTRACT } from "../../../../shared/config/contracts";
+import { GasStationClient } from "../services/gasStation";
 import type {
   AllocationExecutor,
   AllocationExecutorInput,
   AllocationExecutorResult
 } from "../domain/allocation";
-import type { GasStationClient } from "../services/gasStation";
 
 export interface ControllerClientConfig {
   tronWeb: any;
   contractAddress?: string;
-  gasStation?: GasStationClient | null;
-  logger?: {
-    info?(payload: Record<string, unknown>): void;
-    warn?(payload: Record<string, unknown>): void;
-    error?(payload: Record<string, unknown>): void;
-  };
+  gasStationClient?: GasStationClient | null;
+  gasStationEnabled?: boolean;
+  gasStationMinEnergy?: number;
+  gasStationMinBandwidth?: number;
+  allocationMinEnergy?: number;
+  allocationMinBandwidth?: number;
 }
 
 export interface TronControllerAllocationExecutorConfig {
   tronWeb: any;
   controllerContractAddress?: string;
-  gasStation?: GasStationClient | null;
-  logger?: {
-    info?(payload: Record<string, unknown>): void;
-    warn?(payload: Record<string, unknown>): void;
-    error?(payload: Record<string, unknown>): void;
-  };
+  gasStationClient?: GasStationClient | null;
+  gasStationEnabled?: boolean;
+  gasStationMinEnergy?: number;
+  gasStationMinBandwidth?: number;
+  allocationMinEnergy?: number;
+  allocationMinBandwidth?: number;
 }
 
 export interface ResolveAmbassadorBySlugHashResult {
@@ -52,6 +53,12 @@ export interface ControllerClient {
   isPurchaseProcessed(purchaseId: string): Promise<boolean>;
   canBindBuyerToAmbassador(buyerWallet: string, ambassadorWallet: string): Promise<boolean>;
   recordVerifiedPurchase(input: RecordVerifiedPurchaseInput): Promise<RecordVerifiedPurchaseResult>;
+}
+
+interface AccountResourceSnapshot {
+  address: string;
+  energyAvailable: number;
+  bandwidthAvailable: number;
 }
 
 const TRON_HEX_ZERO_ADDRESS = "410000000000000000000000000000000000000000";
@@ -94,6 +101,18 @@ function normalizeFeeLimitSun(value: number | undefined): number {
   }
 
   return resolved;
+}
+
+function normalizeNonNegativeInteger(value: number | undefined, fallback: number): number {
+  if (value == null) {
+    return fallback;
+  }
+
+  if (!Number.isFinite(value) || value < 0) {
+    throw new Error("Resource threshold must be a non-negative integer");
+  }
+
+  return Math.floor(value);
 }
 
 function isHexAddress(value: string): boolean {
@@ -144,66 +163,18 @@ function normalizeReturnedAddress(tronWeb: any, value: unknown): string | null {
   return raw || null;
 }
 
-function normalizeTxid(value: unknown): string {
-  const raw = String(value || "").trim();
-
-  if (!raw) {
-    return "";
-  }
-
-  if (typeof value === "string") {
-    return raw;
-  }
-
-  return raw;
+function toNumberSafe(value: unknown): number {
+  const parsed = Number(value ?? 0);
+  return Number.isFinite(parsed) ? parsed : 0;
 }
 
-function extractTxid(result: unknown): string {
-  if (!result) return "";
+function buildGasRequestId(prefix: string, purchaseId: string): string {
+  const hash = crypto
+    .createHash("sha256")
+    .update(`${prefix}:${purchaseId}:${Date.now()}:${Math.random()}`)
+    .digest("hex");
 
-  if (typeof result === "string") {
-    return result.trim();
-  }
-
-  if (typeof result === "object") {
-    const candidate =
-      (result as any).txid ||
-      (result as any).txID ||
-      (result as any).transaction?.txID ||
-      (result as any).transaction?.txid ||
-      (result as any).result?.txid ||
-      (result as any).result?.txID ||
-      "";
-
-    return String(candidate || "").trim();
-  }
-
-  return "";
-}
-
-function isResourceError(error: unknown): boolean {
-  const text = String(
-    (error as any)?.message ||
-      (error as any)?.error ||
-      (error as any)?.data?.message ||
-      (error as any)?.response?.data?.message ||
-      (error as any)?.response?.message ||
-      ""
-  ).toLowerCase();
-
-  return (
-    text.includes("out_of_energy") ||
-    text.includes("out of energy") ||
-    text.includes("bandwidth") ||
-    text.includes("net_usage") ||
-    text.includes("resource") ||
-    text.includes("contract validate error") ||
-    text.includes("account resource insufficient")
-  );
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+  return hash.slice(0, 32);
 }
 
 async function getContract(tronWeb: any, contractAddress: string): Promise<any> {
@@ -214,16 +185,46 @@ async function getContract(tronWeb: any, contractAddress: string): Promise<any> 
   return await tronWeb.contract().at(contractAddress);
 }
 
+async function getAccountResourceSnapshot(
+  tronWeb: any,
+  address: string
+): Promise<AccountResourceSnapshot> {
+  const normalizedAddress = normalizeAddress(address, "address");
+
+  const [resources, account] = await Promise.all([
+    tronWeb.trx.getAccountResources(normalizedAddress),
+    tronWeb.trx.getAccount(normalizedAddress)
+  ]);
+
+  const energyLimit = toNumberSafe(resources?.EnergyLimit);
+  const energyUsed = toNumberSafe(resources?.EnergyUsed);
+  const energyAvailable = Math.max(0, energyLimit - energyUsed);
+
+  const freeNetLimit = toNumberSafe(account?.freeNetLimit);
+  const freeNetUsed = toNumberSafe(account?.freeNetUsed);
+  const netLimit = toNumberSafe(account?.NetLimit);
+  const netUsed = toNumberSafe(account?.NetUsed);
+
+  const freeBandwidthAvailable = Math.max(0, freeNetLimit - freeNetUsed);
+  const paidBandwidthAvailable = Math.max(0, netLimit - netUsed);
+  const bandwidthAvailable = freeBandwidthAvailable + paidBandwidthAvailable;
+
+  return {
+    address: normalizedAddress,
+    energyAvailable,
+    bandwidthAvailable
+  };
+}
+
 export class TronControllerClient implements ControllerClient {
   private readonly tronWeb: any;
   private readonly contractAddress: string;
-  private readonly gasStation: GasStationClient | null;
-  private readonly logger?: {
-    info?(payload: Record<string, unknown>): void;
-    warn?(payload: Record<string, unknown>): void;
-    error?(payload: Record<string, unknown>): void;
-  };
-
+  private readonly gasStationClient: GasStationClient | null;
+  private readonly gasStationEnabled: boolean;
+  private readonly gasStationMinEnergy: number;
+  private readonly gasStationMinBandwidth: number;
+  private readonly allocationMinEnergy: number;
+  private readonly allocationMinBandwidth: number;
   private contractInstance: any | null = null;
 
   constructor(config: ControllerClientConfig) {
@@ -236,8 +237,12 @@ export class TronControllerClient implements ControllerClient {
       config.contractAddress ?? FOURTEEN_CONTROLLER_CONTRACT,
       "contractAddress"
     );
-    this.gasStation = config.gasStation ?? null;
-    this.logger = config.logger;
+    this.gasStationClient = config.gasStationClient ?? null;
+    this.gasStationEnabled = Boolean(config.gasStationEnabled);
+    this.gasStationMinEnergy = normalizeNonNegativeInteger(config.gasStationMinEnergy, 0);
+    this.gasStationMinBandwidth = normalizeNonNegativeInteger(config.gasStationMinBandwidth, 0);
+    this.allocationMinEnergy = normalizeNonNegativeInteger(config.allocationMinEnergy, 0);
+    this.allocationMinBandwidth = normalizeNonNegativeInteger(config.allocationMinBandwidth, 0);
   }
 
   private async contract(): Promise<any> {
@@ -248,101 +253,73 @@ export class TronControllerClient implements ControllerClient {
     return this.contractInstance;
   }
 
-  private getSignerAddress(): string {
-    const address =
+  private getOperatorAddress(): string {
+    const operatorAddress =
       this.tronWeb?.defaultAddress?.base58 ||
-      this.tronWeb?.address?.fromPrivateKey?.(this.tronWeb?.defaultPrivateKey || "");
+      this.tronWeb?.defaultAddress?.hex ||
+      "";
 
-    return normalizeAddress(address, "signerAddress");
+    return normalizeAddress(operatorAddress, "operatorAddress");
   }
 
-  private async sendRecordVerifiedPurchase(
-    input: RecordVerifiedPurchaseInput
-  ): Promise<RecordVerifiedPurchaseResult> {
-    const purchaseId = normalizeBytes32Hex(input.purchaseId, "purchaseId");
-    const buyerWallet = normalizeAddress(input.buyerWallet, "buyerWallet");
-    const ambassadorWallet = normalizeAddress(input.ambassadorWallet, "ambassadorWallet");
-    const purchaseAmountSun = normalizeSunAmount(input.purchaseAmountSun, "purchaseAmountSun");
-    const ownerShareSun = normalizeSunAmount(input.ownerShareSun, "ownerShareSun");
-    const feeLimitSun = normalizeFeeLimitSun(input.feeLimitSun);
+  private async ensureResourcesForAllocation(purchaseId: string): Promise<void> {
+    const operatorAddress = this.getOperatorAddress();
 
-    const contract = await this.contract();
+    const before = await getAccountResourceSnapshot(this.tronWeb, operatorAddress);
 
-    const result = await contract
-      .recordVerifiedPurchase(
-        purchaseId,
-        buyerWallet,
-        ambassadorWallet,
-        purchaseAmountSun,
-        ownerShareSun
-      )
-      .send({
-        feeLimit: feeLimitSun
-      });
+    const needsEnergy = before.energyAvailable < this.allocationMinEnergy;
+    const needsBandwidth = before.bandwidthAvailable < this.allocationMinBandwidth;
 
-    const txid = extractTxid(result);
-
-    return {
-      txid: assertNonEmpty(txid, "txid")
-    };
-  }
-
-  private async ensureGasStationResources(
-    input: RecordVerifiedPurchaseInput
-  ): Promise<void> {
-    if (!this.gasStation) {
-      throw new Error("GasStation client is not configured");
+    if (!needsEnergy && !needsBandwidth) {
+      return;
     }
 
-    const signerAddress = this.getSignerAddress();
+    if (!this.gasStationEnabled || !this.gasStationClient) {
+      throw new Error(
+        `Account resource insufficient. Energy=${before.energyAvailable}, Bandwidth=${before.bandwidthAvailable}, RequiredEnergy=${this.allocationMinEnergy}, RequiredBandwidth=${this.allocationMinBandwidth}`
+      );
+    }
 
-    this.logger?.info?.({
-      scope: "allocation",
-      step: "gasstation-estimate-start",
-      signerAddress,
-      controllerContractAddress: this.contractAddress,
-      purchaseId: input.purchaseId
-    });
+    const orderEnergyTarget = Math.max(
+      this.gasStationMinEnergy,
+      this.allocationMinEnergy - before.energyAvailable
+    );
 
-    const estimate = await this.gasStation.estimateEnergyOrder({
-      receiveAddress: signerAddress,
-      addressTo: this.contractAddress,
+    const orderBandwidthTarget = Math.max(
+      this.gasStationMinBandwidth,
+      this.allocationMinBandwidth - before.bandwidthAvailable
+    );
+
+    const effectiveEnergyTarget = Math.max(orderEnergyTarget, 64400);
+
+    await this.gasStationClient.estimateEnergyOrder({
+      receiveAddress: operatorAddress,
+      addressTo: operatorAddress,
       contractAddress: this.contractAddress
     });
 
-    const estimatedEnergy = Number(estimate.energy_num || 0);
+    await this.gasStationClient.createEnergyOrder({
+      requestId: buildGasRequestId("allocation", purchaseId),
+      receiveAddress: operatorAddress,
+      energyNum: effectiveEnergyTarget
+    });
 
-    if (!Number.isFinite(estimatedEnergy) || estimatedEnergy < 64400) {
-      throw new Error("GasStation returned invalid energy estimate");
+    await new Promise((resolve) => setTimeout(resolve, 2500));
+
+    const after = await getAccountResourceSnapshot(this.tronWeb, operatorAddress);
+
+    const energyOk = after.energyAvailable >= this.allocationMinEnergy;
+    const bandwidthOk =
+      after.bandwidthAvailable >= Math.max(
+        this.allocationMinBandwidth,
+        orderBandwidthTarget > 0 ? this.gasStationMinBandwidth : this.allocationMinBandwidth
+      );
+
+    if (!energyOk || !bandwidthOk) {
+      throw new Error(
+        `Account resource insufficient after GasStation order. Energy=${after.energyAvailable}, Bandwidth=${after.bandwidthAvailable}, RequiredEnergy=${this.allocationMinEnergy}, RequiredBandwidth=${this.allocationMinBandwidth}`
+      );
     }
-
-    const requestId = `alloc-${String(input.purchaseId).replace(/^0x/, "").slice(0, 24)}-${Date.now()}`;
-
-    this.logger?.info?.({
-      scope: "allocation",
-      step: "gasstation-create-order-start",
-      signerAddress,
-      controllerContractAddress: this.contractAddress,
-      purchaseId: input.purchaseId,
-      estimatedEnergy
-    });
-
-    const order = await this.gasStation.createEnergyOrder({
-      requestId,
-      receiveAddress: signerAddress,
-      energyNum: estimatedEnergy,
-      serviceChargeType: estimate.service_charge_type || "10010"
-    });
-
-    this.logger?.info?.({
-      scope: "allocation",
-      step: "gasstation-create-order-success",
-      purchaseId: input.purchaseId,
-      tradeNo: order.trade_no,
-      estimatedEnergy
-    });
-
-    await sleep(5000);
   }
 
   async getAmbassadorBySlugHash(slugHash: string): Promise<ResolveAmbassadorBySlugHashResult> {
@@ -392,30 +369,32 @@ export class TronControllerClient implements ControllerClient {
   async recordVerifiedPurchase(
     input: RecordVerifiedPurchaseInput
   ): Promise<RecordVerifiedPurchaseResult> {
-    try {
-      return await this.sendRecordVerifiedPurchase(input);
-    } catch (error) {
-      if (!isResourceError(error) || !this.gasStation) {
-        throw error;
-      }
+    const purchaseId = normalizeBytes32Hex(input.purchaseId, "purchaseId");
+    const buyerWallet = normalizeAddress(input.buyerWallet, "buyerWallet");
+    const ambassadorWallet = normalizeAddress(input.ambassadorWallet, "ambassadorWallet");
+    const purchaseAmountSun = normalizeSunAmount(input.purchaseAmountSun, "purchaseAmountSun");
+    const ownerShareSun = normalizeSunAmount(input.ownerShareSun, "ownerShareSun");
+    const feeLimitSun = normalizeFeeLimitSun(input.feeLimitSun);
 
-      this.logger?.warn?.({
-        scope: "allocation",
-        step: "record-verified-purchase-resource-error",
-        purchaseId: input.purchaseId,
-        message: String((error as any)?.message || error || "Unknown resource error")
+    await this.ensureResourcesForAllocation(purchaseId);
+
+    const contract = await this.contract();
+
+    const txid = await contract
+      .recordVerifiedPurchase(
+        purchaseId,
+        buyerWallet,
+        ambassadorWallet,
+        purchaseAmountSun,
+        ownerShareSun
+      )
+      .send({
+        feeLimit: feeLimitSun
       });
 
-      await this.ensureGasStationResources(input);
-
-      this.logger?.info?.({
-        scope: "allocation",
-        step: "record-verified-purchase-retry-after-gasstation",
-        purchaseId: input.purchaseId
-      });
-
-      return await this.sendRecordVerifiedPurchase(input);
-    }
+    return {
+      txid: assertNonEmpty(txid, "txid")
+    };
   }
 }
 
@@ -426,14 +405,16 @@ export class TronControllerAllocationExecutor implements AllocationExecutor {
     this.client = new TronControllerClient({
       tronWeb: config.tronWeb,
       contractAddress: config.controllerContractAddress,
-      gasStation: config.gasStation ?? null,
-      logger: config.logger
+      gasStationClient: config.gasStationClient ?? null,
+      gasStationEnabled: config.gasStationEnabled,
+      gasStationMinEnergy: config.gasStationMinEnergy,
+      gasStationMinBandwidth: config.gasStationMinBandwidth,
+      allocationMinEnergy: config.allocationMinEnergy,
+      allocationMinBandwidth: config.allocationMinBandwidth
     });
   }
 
-  async allocate(
-    input: AllocationExecutorInput
-  ): Promise<AllocationExecutorResult> {
+  async allocate(input: AllocationExecutorInput): Promise<AllocationExecutorResult> {
     const purchase = input.purchase;
 
     if (!purchase.ambassadorWallet) {
