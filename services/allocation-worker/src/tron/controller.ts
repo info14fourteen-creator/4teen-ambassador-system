@@ -16,6 +16,7 @@ export interface ControllerClientConfig {
   gasStationMinBandwidth?: number;
   allocationMinEnergy?: number;
   allocationMinBandwidth?: number;
+  gasStationServiceChargeType?: string;
 }
 
 export interface TronControllerAllocationExecutorConfig {
@@ -27,6 +28,7 @@ export interface TronControllerAllocationExecutorConfig {
   gasStationMinBandwidth?: number;
   allocationMinEnergy?: number;
   allocationMinBandwidth?: number;
+  gasStationServiceChargeType?: string;
 }
 
 export interface ResolveAmbassadorBySlugHashResult {
@@ -59,9 +61,12 @@ interface AccountResourceSnapshot {
   address: string;
   energyAvailable: number;
   bandwidthAvailable: number;
+  trxBalanceSun: number;
 }
 
 const TRON_HEX_ZERO_ADDRESS = "410000000000000000000000000000000000000000";
+const DEFAULT_SERVICE_CHARGE_TYPE = "10010";
+const DEFAULT_WAIT_AFTER_ORDER_MS = 2500;
 
 function assertNonEmpty(value: string, fieldName: string): string {
   const normalized = String(value || "").trim();
@@ -168,13 +173,25 @@ function toNumberSafe(value: unknown): number {
   return Number.isFinite(parsed) ? parsed : 0;
 }
 
-function buildGasRequestId(prefix: string, purchaseId: string): string {
+function buildGasRequestId(prefix: string, purchaseId: string, suffix: string): string {
   const hash = crypto
     .createHash("sha256")
-    .update(`${prefix}:${purchaseId}:${Date.now()}:${Math.random()}`)
+    .update(`${prefix}:${purchaseId}:${suffix}:${Date.now()}:${Math.random()}`)
     .digest("hex");
 
   return hash.slice(0, 32);
+}
+
+function ceilPositive(value: number): number {
+  if (!Number.isFinite(value) || value <= 0) {
+    return 0;
+  }
+
+  return Math.ceil(value);
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 async function getContract(tronWeb: any, contractAddress: string): Promise<any> {
@@ -191,9 +208,10 @@ async function getAccountResourceSnapshot(
 ): Promise<AccountResourceSnapshot> {
   const normalizedAddress = normalizeAddress(address, "address");
 
-  const [resources, account] = await Promise.all([
+  const [resources, account, balanceSunRaw] = await Promise.all([
     tronWeb.trx.getAccountResources(normalizedAddress),
-    tronWeb.trx.getAccount(normalizedAddress)
+    tronWeb.trx.getAccount(normalizedAddress),
+    tronWeb.trx.getBalance(normalizedAddress)
   ]);
 
   const energyLimit = toNumberSafe(resources?.EnergyLimit);
@@ -212,7 +230,8 @@ async function getAccountResourceSnapshot(
   return {
     address: normalizedAddress,
     energyAvailable,
-    bandwidthAvailable
+    bandwidthAvailable,
+    trxBalanceSun: toNumberSafe(balanceSunRaw)
   };
 }
 
@@ -225,6 +244,7 @@ export class TronControllerClient implements ControllerClient {
   private readonly gasStationMinBandwidth: number;
   private readonly allocationMinEnergy: number;
   private readonly allocationMinBandwidth: number;
+  private readonly gasStationServiceChargeType: string;
   private contractInstance: any | null = null;
 
   constructor(config: ControllerClientConfig) {
@@ -243,6 +263,10 @@ export class TronControllerClient implements ControllerClient {
     this.gasStationMinBandwidth = normalizeNonNegativeInteger(config.gasStationMinBandwidth, 0);
     this.allocationMinEnergy = normalizeNonNegativeInteger(config.allocationMinEnergy, 0);
     this.allocationMinBandwidth = normalizeNonNegativeInteger(config.allocationMinBandwidth, 0);
+    this.gasStationServiceChargeType = assertNonEmpty(
+      config.gasStationServiceChargeType ?? DEFAULT_SERVICE_CHARGE_TYPE,
+      "gasStationServiceChargeType"
+    );
   }
 
   private async contract(): Promise<any> {
@@ -262,15 +286,57 @@ export class TronControllerClient implements ControllerClient {
     return normalizeAddress(operatorAddress, "operatorAddress");
   }
 
+  private async estimateRentalCostSun(input: {
+    energyToBuy: number;
+    bandwidthToBuy: number;
+  }): Promise<number> {
+    if (!this.gasStationClient) {
+      throw new Error("GasStation client is not configured");
+    }
+
+    let totalTrx = 0;
+
+    if (input.energyToBuy > 0) {
+      const energyEstimate = await this.gasStationClient.estimateEnergyOrder({
+        receiveAddress: this.getOperatorAddress(),
+        addressTo: this.getOperatorAddress(),
+        contractAddress: this.contractAddress,
+        serviceChargeType: this.gasStationServiceChargeType
+      });
+
+      totalTrx += toNumberSafe(energyEstimate.amount);
+    }
+
+    if (input.bandwidthToBuy > 0) {
+      const bandwidthPrice = await this.gasStationClient.getPrice({
+        serviceChargeType: this.gasStationServiceChargeType,
+        resourceValue: input.bandwidthToBuy
+      });
+
+      const matched =
+        bandwidthPrice.list?.find(
+          (item) => item.service_charge_type === this.gasStationServiceChargeType
+        ) ?? bandwidthPrice.list?.[0];
+
+      if (!matched) {
+        throw new Error("GasStation bandwidth price is unavailable");
+      }
+
+      totalTrx += toNumberSafe(matched.price);
+    }
+
+    return Math.ceil(totalTrx * 1_000_000);
+  }
+
   private async ensureResourcesForAllocation(purchaseId: string): Promise<void> {
     const operatorAddress = this.getOperatorAddress();
 
     const before = await getAccountResourceSnapshot(this.tronWeb, operatorAddress);
 
-    const needsEnergy = before.energyAvailable < this.allocationMinEnergy;
-    const needsBandwidth = before.bandwidthAvailable < this.allocationMinBandwidth;
+    const missingEnergy = Math.max(0, this.allocationMinEnergy - before.energyAvailable);
+    const missingBandwidth = Math.max(0, this.allocationMinBandwidth - before.bandwidthAvailable);
 
-    if (!needsEnergy && !needsBandwidth) {
+    if (missingEnergy <= 0 && missingBandwidth <= 0) {
       return;
     }
 
@@ -280,44 +346,55 @@ export class TronControllerClient implements ControllerClient {
       );
     }
 
-    const orderEnergyTarget = Math.max(
-      this.gasStationMinEnergy,
-      this.allocationMinEnergy - before.energyAvailable
-    );
+    const energyToBuy =
+      missingEnergy > 0
+        ? Math.max(this.gasStationMinEnergy, missingEnergy, 64400)
+        : 0;
 
-    const orderBandwidthTarget = Math.max(
-      this.gasStationMinBandwidth,
-      this.allocationMinBandwidth - before.bandwidthAvailable
-    );
+    const bandwidthToBuy =
+      missingBandwidth > 0
+        ? Math.max(this.gasStationMinBandwidth, missingBandwidth, 5000)
+        : 0;
 
-    const effectiveEnergyTarget = Math.max(orderEnergyTarget, 64400);
-
-    await this.gasStationClient.estimateEnergyOrder({
-      receiveAddress: operatorAddress,
-      addressTo: operatorAddress,
-      contractAddress: this.contractAddress
+    const estimatedRentalCostSun = await this.estimateRentalCostSun({
+      energyToBuy,
+      bandwidthToBuy
     });
 
-    await this.gasStationClient.createEnergyOrder({
-      requestId: buildGasRequestId("allocation", purchaseId),
-      receiveAddress: operatorAddress,
-      energyNum: effectiveEnergyTarget
-    });
+    if (before.trxBalanceSun < estimatedRentalCostSun) {
+      throw new Error(
+        `Insufficient TRX balance for resource rental. BalanceSun=${before.trxBalanceSun}, RequiredSun=${estimatedRentalCostSun}, MissingEnergy=${missingEnergy}, MissingBandwidth=${missingBandwidth}`
+      );
+    }
 
-    await new Promise((resolve) => setTimeout(resolve, 2500));
+    if (energyToBuy > 0) {
+      await this.gasStationClient.createEnergyOrder({
+        requestId: buildGasRequestId("allocation", purchaseId, "energy"),
+        receiveAddress: operatorAddress,
+        energyNum: energyToBuy,
+        serviceChargeType: this.gasStationServiceChargeType
+      });
+    }
+
+    if (bandwidthToBuy > 0) {
+      await this.gasStationClient.createBandwidthOrder({
+        requestId: buildGasRequestId("allocation", purchaseId, "bandwidth"),
+        receiveAddress: operatorAddress,
+        netNum: bandwidthToBuy,
+        serviceChargeType: this.gasStationServiceChargeType
+      });
+    }
+
+    await delay(DEFAULT_WAIT_AFTER_ORDER_MS);
 
     const after = await getAccountResourceSnapshot(this.tronWeb, operatorAddress);
 
-    const energyOk = after.energyAvailable >= this.allocationMinEnergy;
-    const bandwidthOk =
-      after.bandwidthAvailable >= Math.max(
-        this.allocationMinBandwidth,
-        orderBandwidthTarget > 0 ? this.gasStationMinBandwidth : this.allocationMinBandwidth
-      );
-
-    if (!energyOk || !bandwidthOk) {
+    if (
+      after.energyAvailable < this.allocationMinEnergy ||
+      after.bandwidthAvailable < this.allocationMinBandwidth
+    ) {
       throw new Error(
-        `Account resource insufficient after GasStation order. Energy=${after.energyAvailable}, Bandwidth=${after.bandwidthAvailable}, RequiredEnergy=${this.allocationMinEnergy}, RequiredBandwidth=${this.allocationMinBandwidth}`
+        `Account resource insufficient after rental. Energy=${after.energyAvailable}, Bandwidth=${after.bandwidthAvailable}, RequiredEnergy=${this.allocationMinEnergy}, RequiredBandwidth=${this.allocationMinBandwidth}`
       );
     }
   }
@@ -410,7 +487,8 @@ export class TronControllerAllocationExecutor implements AllocationExecutor {
       gasStationMinEnergy: config.gasStationMinEnergy,
       gasStationMinBandwidth: config.gasStationMinBandwidth,
       allocationMinEnergy: config.allocationMinEnergy,
-      allocationMinBandwidth: config.allocationMinBandwidth
+      allocationMinBandwidth: config.allocationMinBandwidth,
+      gasStationServiceChargeType: config.gasStationServiceChargeType
     });
   }
 
