@@ -11,9 +11,9 @@
   },
   "dependencies": {
     "@noble/hashes": "^1.8.0",
-    "https-proxy-agent": "^7.0.6",
     "pg": "^8.13.1",
-    "tronweb": "^6.0.4"
+    "tronweb": "^6.0.4",
+    "undici": "^7.13.0"
   },
   "devDependencies": {
     "@types/node": "^24.3.0",
