@@ -1,6 +1,6 @@
 # 4teen-ambassador-system — ALLOCATION WORKER
 
-Generated: 2026-03-30T20:31:34.614Z
+Generated: 2026-03-30T20:32:01.178Z
 Repository: info14fourteen-creator/4teen-ambassador-system
 Branch: main
 
@@ -6976,10 +6976,16 @@ import type {
   PurchaseProcessingStatus,
   PurchaseStore
 } from "../db/purchases";
+import {
+  getAllocationRetryReadyAt,
+  isPurchaseReadyForAllocationRetry,
+  isRateLimitedAllocationFailure
+} from "../db/purchases";
 
 export interface CabinetReplayResultItem {
   purchaseId: string;
   ok: boolean;
+  skipped?: boolean;
   error?: string;
   result?: unknown;
 }
@@ -6990,6 +6996,7 @@ export interface CabinetReplayPendingResult {
   attempted: number;
   succeeded: number;
   failed: number;
+  skipped: number;
   items: CabinetReplayResultItem[];
 }
 
@@ -7083,12 +7090,6 @@ function assertNonEmpty(value: string, fieldName: string): string {
   }
 
   return normalized;
-}
-
-function safeString(value: unknown, fallback = "0"): string {
-  if (value == null) return fallback;
-  const normalized = String(value).trim();
-  return normalized || fallback;
 }
 
 function safeNumber(value: unknown, fallback = 0): number {
@@ -7374,6 +7375,21 @@ export class CabinetService {
     const items: CabinetReplayResultItem[] = [];
 
     for (const purchase of pending) {
+      if (!isPurchaseReadyForAllocationRetry(purchase, now)) {
+        const retryAt = getAllocationRetryReadyAt(purchase);
+        const retryInMs = Math.max(0, retryAt - now);
+
+        items.push({
+          purchaseId: purchase.purchaseId,
+          ok: true,
+          skipped: true,
+          error: isRateLimitedAllocationFailure(purchase)
+            ? `Cooldown active after rate limit. Retry in ${retryInMs}ms`
+            : `Cooldown active. Retry in ${retryInMs}ms`
+        });
+        continue;
+      }
+
       try {
         const result = await this.processor.replayFailedAllocation(
           purchase.purchaseId,
@@ -7395,15 +7411,17 @@ export class CabinetService {
       }
     }
 
-    const succeeded = items.filter((item) => item.ok).length;
-    const failed = items.length - succeeded;
+    const succeeded = items.filter((item) => item.ok && !item.skipped).length;
+    const skipped = items.filter((item) => item.skipped).length;
+    const failed = items.filter((item) => !item.ok).length;
 
     return {
       wallet: registryWallet,
       totalFound: pending.length,
-      attempted: items.length,
+      attempted: succeeded + failed,
       succeeded,
       failed,
+      skipped,
       items
     };
   }
