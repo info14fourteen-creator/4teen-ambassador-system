@@ -670,5 +670,16 @@ async function bootstrap() {
     );
   });
 }
+      if (method === "GET" && pathname === "/debug/gasstation/balance") {
+        const { createGasStationClientFromEnv } = await import("./services/gasStation");
+        const client = createGasStationClientFromEnv();
+        const result = await client.getBalance();
+
+        sendJson(req, res, env, 200, {
+          ok: true,
+          result
+        });
+        return;
+      }
 
 void bootstrap();
