@@ -1,6 +1,6 @@
 # 4teen-ambassador-system — ALLOCATION WORKER
 
-Generated: 2026-03-30T20:32:12.483Z
+Generated: 2026-03-30T20:32:36.003Z
 Repository: info14fourteen-creator/4teen-ambassador-system
 Branch: main
 
@@ -7880,6 +7880,7 @@ interface AccountResourceSnapshot {
 const TRON_HEX_ZERO_ADDRESS = "410000000000000000000000000000000000000000";
 const DEFAULT_SERVICE_CHARGE_TYPE = "10010";
 const DEFAULT_WAIT_AFTER_ORDER_MS = 2500;
+const DEFAULT_TRON_RETRY_ATTEMPTS = 4;
 
 function assertNonEmpty(value: string, fieldName: string): string {
   const normalized = String(value || "").trim();
@@ -7995,16 +7996,176 @@ function buildGasRequestId(prefix: string, purchaseId: string, suffix: string): 
   return hash.slice(0, 32);
 }
 
-function ceilPositive(value: number): number {
-  if (!Number.isFinite(value) || value <= 0) {
-    return 0;
-  }
-
-  return Math.ceil(value);
-}
-
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function getErrorMessage(error: unknown): string {
+  if (typeof error === "string" && error.trim()) {
+    return error.trim();
+  }
+
+  if (
+    error &&
+    typeof error === "object" &&
+    "message" in error &&
+    typeof (error as { message?: unknown }).message === "string"
+  ) {
+    const message = (error as { message: string }).message.trim();
+    if (message) {
+      return message;
+    }
+  }
+
+  return "Unknown error";
+}
+
+function extractErrorCode(error: unknown): string | null {
+  if (!error || typeof error !== "object") {
+    return null;
+  }
+
+  const candidates = [
+    (error as any).code,
+    (error as any).errorCode,
+    (error as any).response?.status,
+    (error as any).statusCode,
+    (error as any).status
+  ];
+
+  for (const candidate of candidates) {
+    if (candidate == null) {
+      continue;
+    }
+
+    const normalized = String(candidate).trim();
+    if (normalized) {
+      return normalized;
+    }
+  }
+
+  return null;
+}
+
+function parseRetryAfterMs(value: unknown): number | null {
+  if (typeof value === "number" && Number.isFinite(value) && value >= 0) {
+    return Math.floor(value);
+  }
+
+  if (typeof value === "string" && value.trim()) {
+    const parsed = Number(value);
+    if (Number.isFinite(parsed) && parsed >= 0) {
+      return Math.floor(parsed);
+    }
+  }
+
+  return null;
+}
+
+function isRateLimitError(error: unknown): boolean {
+  const message = getErrorMessage(error).toLowerCase();
+  const code = String(extractErrorCode(error) || "").toUpperCase();
+
+  return (
+    message.includes("status code 429") ||
+    message.includes("http 429") ||
+    message.includes("too many requests") ||
+    message.includes("rate limit") ||
+    message.includes("rate limited") ||
+    code === "429" ||
+    code === "ERR_BAD_REQUEST" ||
+    code === "TRON_RATE_LIMIT" ||
+    code === "GASSTATION_RATE_LIMIT"
+  );
+}
+
+function createTaggedError(
+  message: string,
+  extras?: {
+    code?: string | null;
+    retryAfterMs?: number | null;
+    cause?: unknown;
+  }
+): Error {
+  const error = new Error(message) as Error & {
+    code?: string;
+    retryAfterMs?: number | null;
+    cause?: unknown;
+  };
+
+  if (extras?.code) {
+    error.code = extras.code;
+  }
+
+  if (extras?.retryAfterMs != null) {
+    error.retryAfterMs = extras.retryAfterMs;
+  }
+
+  if (extras?.cause !== undefined) {
+    error.cause = extras.cause;
+  }
+
+  return error;
+}
+
+function wrapAsRateLimitError(error: unknown, defaultCode = "TRON_RATE_LIMIT"): Error {
+  const retryAfterMs =
+    parseRetryAfterMs((error as any)?.retryAfterMs) ??
+    parseRetryAfterMs((error as any)?.response?.headers?.["retry-after"]) ??
+    null;
+
+  return createTaggedError(getErrorMessage(error), {
+    code: extractErrorCode(error) ?? defaultCode,
+    retryAfterMs,
+    cause: error
+  });
+}
+
+function computeBackoffMs(attemptIndex: number, retryAfterMs?: number | null): number {
+  if (retryAfterMs != null && retryAfterMs >= 0) {
+    return retryAfterMs;
+  }
+
+  if (attemptIndex <= 0) return 750;
+  if (attemptIndex === 1) return 1500;
+  if (attemptIndex === 2) return 3000;
+  return 5000;
+}
+
+async function withRateLimitRetry<T>(
+  operationName: string,
+  fn: () => Promise<T>,
+  maxAttempts = DEFAULT_TRON_RETRY_ATTEMPTS
+): Promise<T> {
+  let lastError: unknown = null;
+
+  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+    try {
+      return await fn();
+    } catch (error) {
+      lastError = error;
+
+      if (!isRateLimitError(error) || attempt >= maxAttempts - 1) {
+        break;
+      }
+
+      const waitMs = computeBackoffMs(
+        attempt,
+        parseRetryAfterMs((error as any)?.retryAfterMs)
+      );
+
+      await delay(waitMs);
+    }
+  }
+
+  if (isRateLimitError(lastError)) {
+    throw wrapAsRateLimitError(
+      lastError,
+      `${operationName.toUpperCase().replace(/[^A-Z0-9]+/g, "_")}_RATE_LIMIT`
+    );
+  }
+
+  throw lastError instanceof Error ? lastError : new Error(`${operationName} failed`);
 }
 
 async function getContract(tronWeb: any, contractAddress: string): Promise<any> {
@@ -8012,7 +8173,9 @@ async function getContract(tronWeb: any, contractAddress: string): Promise<any> 
     throw new Error("Valid tronWeb instance is required");
   }
 
-  return await tronWeb.contract().at(contractAddress);
+  return withRateLimitRetry("contract.at", async () => {
+    return await tronWeb.contract().at(contractAddress);
+  });
 }
 
 async function getAccountResourceSnapshot(
@@ -8022,9 +8185,15 @@ async function getAccountResourceSnapshot(
   const normalizedAddress = normalizeAddress(address, "address");
 
   const [resources, account, balanceSunRaw] = await Promise.all([
-    tronWeb.trx.getAccountResources(normalizedAddress),
-    tronWeb.trx.getAccount(normalizedAddress),
-    tronWeb.trx.getBalance(normalizedAddress)
+    withRateLimitRetry("trx.getAccountResources", async () => {
+      return await tronWeb.trx.getAccountResources(normalizedAddress);
+    }),
+    withRateLimitRetry("trx.getAccount", async () => {
+      return await tronWeb.trx.getAccount(normalizedAddress);
+    }),
+    withRateLimitRetry("trx.getBalance", async () => {
+      return await tronWeb.trx.getBalance(normalizedAddress);
+    })
   ]);
 
   const energyLimit = toNumberSafe(resources?.EnergyLimit);
@@ -8143,7 +8312,6 @@ export class TronControllerClient implements ControllerClient {
 
   private async ensureResourcesForAllocation(purchaseId: string): Promise<void> {
     const operatorAddress = this.getOperatorAddress();
-
     const before = await getAccountResourceSnapshot(this.tronWeb, operatorAddress);
 
     const missingEnergy = Math.max(0, this.allocationMinEnergy - before.energyAvailable);
@@ -8180,22 +8348,29 @@ export class TronControllerClient implements ControllerClient {
       );
     }
 
-    if (energyToBuy > 0) {
-      await this.gasStationClient.createEnergyOrder({
-        requestId: buildGasRequestId("allocation", purchaseId, "energy"),
-        receiveAddress: operatorAddress,
-        energyNum: energyToBuy,
-        serviceChargeType: this.gasStationServiceChargeType
-      });
-    }
+    try {
+      if (energyToBuy > 0) {
+        await this.gasStationClient.createEnergyOrder({
+          requestId: buildGasRequestId("allocation", purchaseId, "energy"),
+          receiveAddress: operatorAddress,
+          energyNum: energyToBuy,
+          serviceChargeType: this.gasStationServiceChargeType
+        });
+      }
 
-    if (bandwidthToBuy > 0) {
-      await this.gasStationClient.createBandwidthOrder({
-        requestId: buildGasRequestId("allocation", purchaseId, "bandwidth"),
-        receiveAddress: operatorAddress,
-        netNum: bandwidthToBuy,
-        serviceChargeType: this.gasStationServiceChargeType
-      });
+      if (bandwidthToBuy > 0) {
+        await this.gasStationClient.createBandwidthOrder({
+          requestId: buildGasRequestId("allocation", purchaseId, "bandwidth"),
+          receiveAddress: operatorAddress,
+          netNum: bandwidthToBuy,
+          serviceChargeType: this.gasStationServiceChargeType
+        });
+      }
+    } catch (error) {
+      if (isRateLimitError(error)) {
+        throw wrapAsRateLimitError(error, "GASSTATION_RATE_LIMIT");
+      }
+      throw error;
     }
 
     await delay(DEFAULT_WAIT_AFTER_ORDER_MS);
@@ -8216,7 +8391,10 @@ export class TronControllerClient implements ControllerClient {
     const normalizedSlugHash = normalizeBytes32Hex(slugHash, "slugHash");
     const contract = await this.contract();
 
-    const result = await contract.getAmbassadorBySlugHash(normalizedSlugHash).call();
+    const result = await withRateLimitRetry("getAmbassadorBySlugHash.call", async () => {
+      return await contract.getAmbassadorBySlugHash(normalizedSlugHash).call();
+    });
+
     const ambassadorWallet = normalizeReturnedAddress(this.tronWeb, result);
 
     return {
@@ -8229,7 +8407,10 @@ export class TronControllerClient implements ControllerClient {
     const normalizedBuyerWallet = normalizeAddress(buyerWallet, "buyerWallet");
     const contract = await this.contract();
 
-    const result = await contract.getBuyerAmbassador(normalizedBuyerWallet).call();
+    const result = await withRateLimitRetry("getBuyerAmbassador.call", async () => {
+      return await contract.getBuyerAmbassador(normalizedBuyerWallet).call();
+    });
+
     return normalizeReturnedAddress(this.tronWeb, result);
   }
 
@@ -8237,7 +8418,10 @@ export class TronControllerClient implements ControllerClient {
     const normalizedPurchaseId = normalizeBytes32Hex(purchaseId, "purchaseId");
     const contract = await this.contract();
 
-    const result = await contract.isPurchaseProcessed(normalizedPurchaseId).call();
+    const result = await withRateLimitRetry("isPurchaseProcessed.call", async () => {
+      return await contract.isPurchaseProcessed(normalizedPurchaseId).call();
+    });
+
     return Boolean(result);
   }
 
@@ -8249,9 +8433,11 @@ export class TronControllerClient implements ControllerClient {
     const normalizedAmbassadorWallet = normalizeAddress(ambassadorWallet, "ambassadorWallet");
     const contract = await this.contract();
 
-    const result = await contract
-      .canBindBuyerToAmbassador(normalizedBuyerWallet, normalizedAmbassadorWallet)
-      .call();
+    const result = await withRateLimitRetry("canBindBuyerToAmbassador.call", async () => {
+      return await contract
+        .canBindBuyerToAmbassador(normalizedBuyerWallet, normalizedAmbassadorWallet)
+        .call();
+    });
 
     return Boolean(result);
   }
@@ -8270,21 +8456,30 @@ export class TronControllerClient implements ControllerClient {
 
     const contract = await this.contract();
 
-    const txid = await contract
-      .recordVerifiedPurchase(
-        purchaseId,
-        buyerWallet,
-        ambassadorWallet,
-        purchaseAmountSun,
-        ownerShareSun
-      )
-      .send({
-        feeLimit: feeLimitSun
+    try {
+      const txid = await withRateLimitRetry("recordVerifiedPurchase.send", async () => {
+        return await contract
+          .recordVerifiedPurchase(
+            purchaseId,
+            buyerWallet,
+            ambassadorWallet,
+            purchaseAmountSun,
+            ownerShareSun
+          )
+          .send({
+            feeLimit: feeLimitSun
+          });
       });
 
-    return {
-      txid: assertNonEmpty(txid, "txid")
-    };
+      return {
+        txid: assertNonEmpty(txid, "txid")
+      };
+    } catch (error) {
+      if (isRateLimitError(error)) {
+        throw wrapAsRateLimitError(error, "TRON_RATE_LIMIT");
+      }
+      throw error;
+    }
   }
 }
 
