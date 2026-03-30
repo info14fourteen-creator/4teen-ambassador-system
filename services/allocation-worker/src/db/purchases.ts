@@ -271,6 +271,21 @@ const DEFAULT_PENDING_STATUSES: PurchaseProcessingStatus[] = [
   "allocation_failed_retryable"
 ];
 
+const RATE_LIMIT_ERROR_CODES = new Set([
+  "429",
+  "ERR_BAD_REQUEST",
+  "TRON_RATE_LIMIT",
+  "GASSTATION_RATE_LIMIT"
+]);
+
+const RATE_LIMIT_MESSAGE_PARTS = [
+  "status code 429",
+  "http 429",
+  "too many requests",
+  "rate limit",
+  "rate limited"
+];
+
 function assertNonEmpty(value: string, fieldName: string): string {
   const normalized = String(value || "").trim();
 
@@ -408,6 +423,76 @@ function emptyCabinetStatsRecord(): CabinetStatsRecord {
     requestedForProcessingCount: 0,
     hasProcessingWithdrawal: false
   };
+}
+
+export function isRateLimitedAllocationFailure(record: PurchaseRecord): boolean {
+  const code = String(record.lastAllocationErrorCode || "").trim().toUpperCase();
+  const message = String(
+    record.lastAllocationErrorMessage || record.failureReason || ""
+  ).toLowerCase();
+
+  if (RATE_LIMIT_ERROR_CODES.has(code)) {
+    return RATE_LIMIT_MESSAGE_PARTS.some((part) => message.includes(part)) || code !== "ERR_BAD_REQUEST";
+  }
+
+  return RATE_LIMIT_MESSAGE_PARTS.some((part) => message.includes(part));
+}
+
+export function computeAllocationRetryDelayMs(record: PurchaseRecord): number {
+  if (record.status !== "allocation_failed_retryable" && record.status !== "deferred") {
+    return 0;
+  }
+
+  const attempts = Math.max(1, Number(record.allocationAttempts || 0));
+
+  if (isRateLimitedAllocationFailure(record)) {
+    if (attempts <= 1) return 30_000;
+    if (attempts === 2) return 60_000;
+    if (attempts === 3) return 180_000;
+    if (attempts === 4) return 600_000;
+    return 1_800_000;
+  }
+
+  if (record.status === "deferred") {
+    if (attempts <= 1) return 15_000;
+    if (attempts === 2) return 30_000;
+    if (attempts === 3) return 60_000;
+    if (attempts === 4) return 180_000;
+    return 300_000;
+  }
+
+  if (attempts <= 1) return 10_000;
+  if (attempts === 2) return 30_000;
+  if (attempts === 3) return 60_000;
+  if (attempts === 4) return 180_000;
+  return 600_000;
+}
+
+export function getAllocationRetryReadyAt(record: PurchaseRecord): number {
+  const base =
+    Number(record.lastAllocationAttemptAt || 0) ||
+    Number(record.updatedAt || 0) ||
+    Number(record.createdAt || 0);
+
+  return base + computeAllocationRetryDelayMs(record);
+}
+
+export function isPurchaseReadyForAllocationRetry(
+  record: PurchaseRecord,
+  now: number = Date.now()
+): boolean {
+  if (record.status === "verified") {
+    return true;
+  }
+
+  if (
+    record.status !== "deferred" &&
+    record.status !== "allocation_failed_retryable"
+  ) {
+    return false;
+  }
+
+  return now >= getAllocationRetryReadyAt(record);
 }
 
 function createRecord(input: CreatePurchaseRecordInput): PurchaseRecord {
