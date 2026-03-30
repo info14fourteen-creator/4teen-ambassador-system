@@ -1,6 +1,6 @@
 # 4teen-ambassador-system — ALLOCATION WORKER
 
-Generated: 2026-03-30T23:36:47.818Z
+Generated: 2026-03-30T23:48:45.058Z
 Repository: info14fourteen-creator/4teen-ambassador-system
 Branch: main
 
@@ -7463,6 +7463,7 @@ export interface GasStationConfig {
 export interface GasStationBalanceResult {
   symbol: string;
   balance: string;
+  deposit_address?: string;
 }
 
 export interface GasStationEstimateResult {
