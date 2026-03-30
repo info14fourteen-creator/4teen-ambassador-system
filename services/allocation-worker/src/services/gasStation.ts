@@ -1,5 +1,5 @@
 import crypto from "node:crypto";
-import { HttpsProxyAgent } from "https-proxy-agent";
+import { ProxyAgent } from "undici";
 
 export interface GasStationConfig {
   appId: string;
@@ -40,14 +40,6 @@ export interface GasStationCreateOrderResult {
   trade_no: string;
 }
 
-type TaggedError = Error & {
-  code?: string;
-  retryAfterMs?: number | null;
-  cause?: unknown;
-  status?: number;
-  rawBody?: string | null;
-};
-
 function assertNonEmpty(value: string | undefined, fieldName: string): string {
   const normalized = String(value || "").trim();
 
@@ -58,7 +50,7 @@ function assertNonEmpty(value: string | undefined, fieldName: string): string {
   return normalized;
 }
 
-function normalizeOptionalString(value: string | undefined): string | undefined {
+function normalizeOptionalString(value?: string): string | undefined {
   const normalized = String(value || "").trim();
   return normalized || undefined;
 }
@@ -75,10 +67,6 @@ function pkcs7Pad(buffer: Buffer): Buffer {
   return Buffer.concat([buffer, padding]);
 }
 
-/**
- * GasStation expects regular Base64 in the `data` query param.
- * URLSearchParams will encode reserved characters safely.
- */
 function toStandardBase64(buffer: Buffer): string {
   return buffer.toString("base64");
 }
@@ -109,8 +97,14 @@ function createTaggedError(
     status?: number;
     rawBody?: string | null;
   }
-): TaggedError {
-  const error = new Error(message) as TaggedError;
+): Error {
+  const error = new Error(message) as Error & {
+    code?: string;
+    retryAfterMs?: number | null;
+    cause?: unknown;
+    status?: number;
+    rawBody?: string | null;
+  };
 
   if (extras?.code) {
     error.code = extras.code;
@@ -161,66 +155,58 @@ function parseRetryAfterMs(value: string | null): number | null {
   return null;
 }
 
-function normalizePositiveInteger(value: number, fieldName: string): number {
-  if (!Number.isFinite(value) || value <= 0) {
-    throw new Error(`${fieldName} must be a positive number`);
-  }
-
-  return Math.ceil(value);
-}
-
-function buildDispatcher(proxyUrl?: string): HttpsProxyAgent<string> | undefined {
-  const normalizedProxyUrl = normalizeOptionalString(proxyUrl);
-
-  if (!normalizedProxyUrl) {
-    return undefined;
-  }
-
-  return new HttpsProxyAgent(normalizedProxyUrl);
-}
-
 async function requestJson<T>(
   url: string,
   init?: RequestInit,
   proxyUrl?: string
 ): Promise<T> {
-  const dispatcher = buildDispatcher(proxyUrl);
-
-  const response = await fetch(url, {
-    ...init,
-    headers: {
-      Accept: "application/json",
-      ...(init?.headers || {})
-    },
-    dispatcher
-  } as RequestInit & { dispatcher?: HttpsProxyAgent<string> });
-
-  const text = await response.text();
-
-  let parsed: any = null;
+  const dispatcher = proxyUrl ? new ProxyAgent(proxyUrl) : undefined;
 
   try {
-    parsed = text ? JSON.parse(text) : null;
-  } catch {
-    throw createTaggedError(
-      `GasStation returned non-JSON response: ${text || "empty response"}`,
-      {
-        code: "GASSTATION_INVALID_RESPONSE",
-        status: response.status,
-        rawBody: text || null
+    const response = await fetch(url, {
+      ...init,
+      headers: {
+        Accept: "application/json",
+        ...(init?.headers || {})
+      },
+      dispatcher
+    } as RequestInit & { dispatcher?: ProxyAgent });
+
+    const text = await response.text();
+
+    let parsed: any = null;
+
+    try {
+      parsed = text ? JSON.parse(text) : null;
+    } catch {
+      throw createTaggedError(
+        `GasStation returned non-JSON response: ${text || "empty response"}`,
+        {
+          code: "GASSTATION_INVALID_RESPONSE",
+          status: response.status,
+          rawBody: text || null
+        }
+      );
+    }
+
+    if (!response.ok) {
+      const retryAfterMs = parseRetryAfterMs(response.headers.get("retry-after"));
+      const message = parsed?.msg
+        ? `GasStation HTTP ${response.status}: ${parsed.msg}`
+        : `GasStation HTTP ${response.status}`;
+
+      if (response.status === 429) {
+        throw createTaggedError(message, {
+          code: "GASSTATION_RATE_LIMIT",
+          retryAfterMs,
+          cause: parsed,
+          status: response.status,
+          rawBody: text || null
+        });
       }
-    );
-  }
 
-  if (!response.ok) {
-    const retryAfterMs = parseRetryAfterMs(response.headers.get("retry-after"));
-    const message = parsed?.msg
-      ? `GasStation HTTP ${response.status}: ${parsed.msg}`
-      : `GasStation HTTP ${response.status}`;
-
-    if (response.status === 429) {
       throw createTaggedError(message, {
-        code: "GASSTATION_RATE_LIMIT",
+        code: `GASSTATION_HTTP_${response.status}`,
         retryAfterMs,
         cause: parsed,
         status: response.status,
@@ -228,44 +214,55 @@ async function requestJson<T>(
       });
     }
 
-    throw createTaggedError(message, {
-      code: `GASSTATION_HTTP_${response.status}`,
-      retryAfterMs,
-      cause: parsed,
-      status: response.status,
-      rawBody: text || null
+    if (!parsed || typeof parsed !== "object") {
+      throw createTaggedError("GasStation returned invalid response", {
+        code: "GASSTATION_INVALID_RESPONSE",
+        status: response.status,
+        rawBody: text || null
+      });
+    }
+
+    if (parsed.code !== 0) {
+      const message = parsed.msg
+        ? `GasStation error ${parsed.code}: ${parsed.msg}`
+        : `GasStation error ${parsed.code}`;
+
+      const normalizedMessage = String(parsed.msg || "").toLowerCase();
+      const isRateLimited =
+        parsed.code === 429 ||
+        normalizedMessage.includes("too many requests") ||
+        normalizedMessage.includes("rate limit") ||
+        normalizedMessage.includes("429");
+
+      throw createTaggedError(message, {
+        code: isRateLimited ? "GASSTATION_RATE_LIMIT" : `GASSTATION_ERROR_${parsed.code}`,
+        cause: parsed,
+        status: response.status,
+        rawBody: text || null
+      });
+    }
+
+    return parsed.data as T;
+  } catch (error) {
+    if (error instanceof Error && error.message) {
+      throw error;
+    }
+
+    throw createTaggedError("GasStation fetch failed", {
+      code: "GASSTATION_FETCH_FAILED",
+      cause: error
     });
+  } finally {
+    await dispatcher?.close();
+  }
+}
+
+function normalizePositiveInteger(value: number, fieldName: string): number {
+  if (!Number.isFinite(value) || value <= 0) {
+    throw new Error(`${fieldName} must be a positive number`);
   }
 
-  if (!parsed || typeof parsed !== "object") {
-    throw createTaggedError("GasStation returned invalid response", {
-      code: "GASSTATION_INVALID_RESPONSE",
-      status: response.status,
-      rawBody: text || null
-    });
-  }
-
-  if (parsed.code !== 0) {
-    const message = parsed.msg
-      ? `GasStation error ${parsed.code}: ${parsed.msg}`
-      : `GasStation error ${parsed.code}`;
-
-    const normalizedMessage = String(parsed.msg || "").toLowerCase();
-    const isRateLimited =
-      parsed.code === 429 ||
-      normalizedMessage.includes("too many requests") ||
-      normalizedMessage.includes("rate limit") ||
-      normalizedMessage.includes("429");
-
-    throw createTaggedError(message, {
-      code: isRateLimited ? "GASSTATION_RATE_LIMIT" : `GASSTATION_ERROR_${parsed.code}`,
-      cause: parsed,
-      status: response.status,
-      rawBody: text || null
-    });
-  }
-
-  return parsed.data as T;
+  return Math.ceil(value);
 }
 
 export class GasStationClient {
