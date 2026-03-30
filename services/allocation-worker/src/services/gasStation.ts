@@ -11,6 +11,7 @@ export interface GasStationConfig {
 export interface GasStationBalanceResult {
   symbol: string;
   balance: string;
+  deposit_address?: string;
 }
 
 export interface GasStationEstimateResult {
