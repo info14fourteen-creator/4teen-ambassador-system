@@ -269,6 +269,37 @@ function mapStats(stats: CabinetStatsRecord): {
   };
 }
 
+function getReplayStatus(value: unknown): "allocated" | "failed" | "skipped" | null {
+  if (!value || typeof value !== "object") {
+    return null;
+  }
+
+  const status = (value as { status?: unknown }).status;
+
+  if (status === "allocated" || status === "failed" || status === "skipped") {
+    return status;
+  }
+
+  return null;
+}
+
+function getReplayReason(value: unknown): string | null {
+  if (!value || typeof value !== "object") {
+    return null;
+  }
+
+  const candidateKeys = ["reason", "errorMessage", "message"] as const;
+
+  for (const key of candidateKeys) {
+    const current = (value as Record<string, unknown>)[key];
+    if (typeof current === "string" && current.trim()) {
+      return current.trim();
+    }
+  }
+
+  return null;
+}
+
 export class CabinetService {
   private readonly store: PurchaseStore;
   private readonly tronWeb: any;
@@ -425,9 +456,43 @@ export class CabinetService {
           now
         );
 
+        const replayStatus = getReplayStatus(result);
+        const replayReason = getReplayReason(result);
+
+        if (replayStatus === "allocated") {
+          items.push({
+            purchaseId: purchase.purchaseId,
+            ok: true,
+            result
+          });
+          continue;
+        }
+
+        if (replayStatus === "skipped") {
+          items.push({
+            purchaseId: purchase.purchaseId,
+            ok: true,
+            skipped: true,
+            error: replayReason ?? "Replay skipped",
+            result
+          });
+          continue;
+        }
+
+        if (replayStatus === "failed") {
+          items.push({
+            purchaseId: purchase.purchaseId,
+            ok: false,
+            error: replayReason ?? "Replay failed",
+            result
+          });
+          continue;
+        }
+
         items.push({
           purchaseId: purchase.purchaseId,
-          ok: true,
+          ok: false,
+          error: "Replay returned unknown status",
           result
         });
       } catch (error) {
