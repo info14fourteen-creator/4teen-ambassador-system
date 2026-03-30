@@ -1,6 +1,6 @@
 # 4teen-ambassador-system — ALLOCATION WORKER
 
-Generated: 2026-03-30T22:49:23.079Z
+Generated: 2026-03-30T23:36:47.818Z
 Repository: info14fourteen-creator/4teen-ambassador-system
 Branch: main
 
@@ -7973,7 +7973,12 @@ interface AccountResourceSnapshot {
 const TRON_HEX_ZERO_ADDRESS = "410000000000000000000000000000000000000000";
 const DEFAULT_SERVICE_CHARGE_TYPE = "10010";
 const DEFAULT_WAIT_AFTER_ORDER_MS = 2500;
+const DEFAULT_WAIT_AFTER_TOPUP_MS = 5000;
 const DEFAULT_TRON_RETRY_ATTEMPTS = 4;
+
+const SUN_PER_TRX = 1_000_000;
+const MIN_OPERATOR_REMAINING_BALANCE_SUN = 2 * SUN_PER_TRX;
+const MIN_GASSTATION_TOPUP_SUN = 8_500_000;
 
 function assertNonEmpty(value: string, fieldName: string): string {
   const normalized = String(value || "").trim();
@@ -8261,6 +8266,31 @@ async function withRateLimitRetry<T>(
   throw lastError instanceof Error ? lastError : new Error(`${operationName} failed`);
 }
 
+function parseTrxAmountToSun(value: unknown, fieldName: string): number {
+  const raw = String(value ?? "").trim();
+
+  if (!raw) {
+    throw new Error(`${fieldName} is required`);
+  }
+
+  if (!/^\d+(\.\d+)?$/.test(raw)) {
+    throw new Error(`${fieldName} must be a numeric TRX amount`);
+  }
+
+  const [wholePart, fractionPart = ""] = raw.split(".");
+  const normalizedFraction = `${fractionPart}000000`.slice(0, 6);
+
+  const whole = BigInt(wholePart || "0");
+  const fraction = BigInt(normalizedFraction || "0");
+  const totalSun = whole * BigInt(SUN_PER_TRX) + fraction;
+
+  if (totalSun > BigInt(Number.MAX_SAFE_INTEGER)) {
+    throw new Error(`${fieldName} is too large`);
+  }
+
+  return Number(totalSun);
+}
+
 async function getContract(tronWeb: any, contractAddress: string): Promise<any> {
   if (!tronWeb || typeof tronWeb.contract !== "function") {
     throw new Error("Valid tronWeb instance is required");
@@ -8400,7 +8430,65 @@ export class TronControllerClient implements ControllerClient {
       totalTrx += toNumberSafe(matched.price);
     }
 
-    return Math.ceil(totalTrx * 1_000_000);
+    return Math.ceil(totalTrx * SUN_PER_TRX);
+  }
+
+  private async getGasStationBalanceSnapshot(): Promise<{
+    balanceSun: number;
+    depositAddress: string;
+  }> {
+    if (!this.gasStationClient) {
+      throw new Error("GasStation client is not configured");
+    }
+
+    const result = await this.gasStationClient.getBalance();
+    const depositAddress = normalizeAddress(result.deposit_address, "deposit_address");
+    const balanceSun = parseTrxAmountToSun(result.balance, "gasStation.balance");
+
+    return {
+      balanceSun,
+      depositAddress
+    };
+  }
+
+  private async topUpGasStationFromOperatorIfNeeded(requiredSun: number): Promise<void> {
+    if (!this.gasStationClient) {
+      throw new Error("GasStation client is not configured");
+    }
+
+    const { balanceSun, depositAddress } = await this.getGasStationBalanceSnapshot();
+
+    if (balanceSun >= requiredSun) {
+      return;
+    }
+
+    const operatorAddress = this.getOperatorAddress();
+    const operatorSnapshot = await getAccountResourceSnapshot(this.tronWeb, operatorAddress);
+
+    const transferableSun = operatorSnapshot.trxBalanceSun - MIN_OPERATOR_REMAINING_BALANCE_SUN;
+
+    if (transferableSun < MIN_GASSTATION_TOPUP_SUN) {
+      throw new Error(
+        `Operator wallet top-up is too small. AvailableToTopUpSun=${Math.max(
+          0,
+          transferableSun
+        )}, RequiredMinimumSun=${MIN_GASSTATION_TOPUP_SUN}, OperatorBalanceSun=${operatorSnapshot.trxBalanceSun}`
+      );
+    }
+
+    await withRateLimitRetry("trx.sendTransaction", async () => {
+      return await this.tronWeb.trx.sendTransaction(depositAddress, transferableSun);
+    });
+
+    await delay(DEFAULT_WAIT_AFTER_TOPUP_MS);
+
+    const afterTopUp = await this.getGasStationBalanceSnapshot();
+
+    if (afterTopUp.balanceSun <= balanceSun) {
+      throw new Error(
+        `GasStation balance did not increase after top-up. BeforeSun=${balanceSun}, AfterSun=${afterTopUp.balanceSun}`
+      );
+    }
   }
 
   private async ensureResourcesForAllocation(purchaseId: string): Promise<void> {
@@ -8435,11 +8523,7 @@ export class TronControllerClient implements ControllerClient {
       bandwidthToBuy
     });
 
-    if (before.trxBalanceSun < estimatedRentalCostSun) {
-      throw new Error(
-        `Insufficient TRX balance for resource rental. BalanceSun=${before.trxBalanceSun}, RequiredSun=${estimatedRentalCostSun}, MissingEnergy=${missingEnergy}, MissingBandwidth=${missingBandwidth}`
-      );
-    }
+    await this.topUpGasStationFromOperatorIfNeeded(estimatedRentalCostSun);
 
     try {
       if (energyToBuy > 0) {
