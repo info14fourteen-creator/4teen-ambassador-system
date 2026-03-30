@@ -1,6 +1,6 @@
 # 4teen-ambassador-system — ALLOCATION WORKER
 
-Generated: 2026-03-30T21:20:38.645Z
+Generated: 2026-03-30T21:23:48.680Z
 Repository: info14fourteen-creator/4teen-ambassador-system
 Branch: main
 
@@ -6961,6 +6961,17 @@ async function bootstrap() {
     );
   });
 }
+      if (method === "GET" && pathname === "/debug/gasstation/balance") {
+        const { createGasStationClientFromEnv } = await import("./services/gasStation");
+        const client = createGasStationClientFromEnv();
+        const result = await client.getBalance();
+
+        sendJson(req, res, env, 200, {
+          ok: true,
+          result
+        });
+        return;
+      }
 
 void bootstrap();
 ```
