@@ -38,6 +38,8 @@ export interface GasStationCreateOrderResult {
   trade_no: string;
 }
 
+type GasStationEncodingMode = "base64url" | "base64";
+
 function assertNonEmpty(value: string | undefined, fieldName: string): string {
   const normalized = String(value || "").trim();
 
@@ -60,6 +62,10 @@ function pkcs7Pad(buffer: Buffer): Buffer {
   return Buffer.concat([buffer, padding]);
 }
 
+function toBase64(buffer: Buffer): string {
+  return buffer.toString("base64");
+}
+
 function toBase64UrlSafe(buffer: Buffer): string {
   return buffer
     .toString("base64")
@@ -68,7 +74,11 @@ function toBase64UrlSafe(buffer: Buffer): string {
     .replace(/=+$/g, "");
 }
 
-function encryptAesEcbPkcs7Base64UrlSafe(plainText: string, secretKey: string): string {
+function encryptAesEcbPkcs7(
+  plainText: string,
+  secretKey: string,
+  mode: GasStationEncodingMode
+): string {
   const key = Buffer.from(assertNonEmpty(secretKey, "secretKey"), "utf8");
 
   if (![16, 24, 32].includes(key.length)) {
@@ -82,7 +92,8 @@ function encryptAesEcbPkcs7Base64UrlSafe(plainText: string, secretKey: string): 
   cipher.setAutoPadding(false);
 
   const encrypted = Buffer.concat([cipher.update(padded), cipher.final()]);
-  return toBase64UrlSafe(encrypted);
+
+  return mode === "base64url" ? toBase64UrlSafe(encrypted) : toBase64(encrypted);
 }
 
 function createTaggedError(
@@ -91,48 +102,36 @@ function createTaggedError(
     code?: string;
     retryAfterMs?: number | null;
     cause?: unknown;
+    status?: number | null;
   }
 ): Error {
   const error = new Error(message) as Error & {
     code?: string;
     retryAfterMs?: number | null;
     cause?: unknown;
+    status?: number | null;
   };
 
-  if (extras?.code) {
-    error.code = extras.code;
-  }
-
-  if (extras?.retryAfterMs != null) {
-    error.retryAfterMs = extras.retryAfterMs;
-  }
-
-  if (extras?.cause !== undefined) {
-    error.cause = extras.cause;
-  }
+  if (extras?.code) error.code = extras.code;
+  if (extras?.retryAfterMs != null) error.retryAfterMs = extras.retryAfterMs;
+  if (extras?.cause !== undefined) error.cause = extras.cause;
+  if (extras?.status != null) error.status = extras.status;
 
   return error;
 }
 
 function parseRetryAfterMs(value: string | null): number | null {
-  if (!value) {
-    return null;
-  }
+  if (!value) return null;
 
   const trimmed = value.trim();
-
-  if (!trimmed) {
-    return null;
-  }
+  if (!trimmed) return null;
 
   const seconds = Number(trimmed);
-
   if (Number.isFinite(seconds) && seconds >= 0) {
     return Math.ceil(seconds * 1000);
   }
 
   const dateMs = Date.parse(trimmed);
-
   if (Number.isFinite(dateMs)) {
     return Math.max(0, dateMs - Date.now());
   }
@@ -140,7 +139,7 @@ function parseRetryAfterMs(value: string | null): number | null {
   return null;
 }
 
-async function requestJson<T>(url: string, init?: RequestInit): Promise<T> {
+async function requestJsonOnce<T>(url: string, init?: RequestInit): Promise<T> {
   const response = await fetch(url, init);
   const text = await response.text();
 
@@ -151,7 +150,10 @@ async function requestJson<T>(url: string, init?: RequestInit): Promise<T> {
   } catch {
     throw createTaggedError(
       `GasStation returned non-JSON response: ${text || "empty response"}`,
-      { code: "GASSTATION_INVALID_RESPONSE" }
+      {
+        code: "GASSTATION_INVALID_RESPONSE",
+        status: response.status || null
+      }
     );
   }
 
@@ -165,20 +167,23 @@ async function requestJson<T>(url: string, init?: RequestInit): Promise<T> {
       throw createTaggedError(message, {
         code: "GASSTATION_RATE_LIMIT",
         retryAfterMs,
-        cause: parsed
+        cause: parsed,
+        status: response.status
       });
     }
 
     throw createTaggedError(message, {
       code: `GASSTATION_HTTP_${response.status}`,
       retryAfterMs,
-      cause: parsed
+      cause: parsed,
+      status: response.status
     });
   }
 
   if (!parsed || typeof parsed !== "object") {
     throw createTaggedError("GasStation returned invalid response", {
-      code: "GASSTATION_INVALID_RESPONSE"
+      code: "GASSTATION_INVALID_RESPONSE",
+      status: response.status || null
     });
   }
 
@@ -222,9 +227,13 @@ export class GasStationClient {
     this.baseUrl = normalizeBaseUrl(config.baseUrl);
   }
 
-  private buildEncryptedUrl(path: string, payload: Record<string, unknown>): string {
+  private buildEncryptedUrl(
+    path: string,
+    payload: Record<string, unknown>,
+    mode: GasStationEncodingMode
+  ): string {
     const plainText = JSON.stringify(payload);
-    const encrypted = encryptAesEcbPkcs7Base64UrlSafe(plainText, this.secretKey);
+    const encrypted = encryptAesEcbPkcs7(plainText, this.secretKey, mode);
 
     const url = new URL(`${this.baseUrl}${path}`);
     url.searchParams.set("app_id", this.appId);
@@ -232,16 +241,41 @@ export class GasStationClient {
     return url.toString();
   }
 
+  private async requestWithFallback<T>(
+    path: string,
+    payload: Record<string, unknown>,
+    init?: RequestInit
+  ): Promise<T> {
+    const firstUrl = this.buildEncryptedUrl(path, payload, "base64url");
+
+    try {
+      return await requestJsonOnce<T>(firstUrl, init);
+    } catch (error) {
+      const status =
+        error && typeof error === "object" && "status" in error
+          ? Number((error as { status?: unknown }).status)
+          : null;
+
+      if (status !== 403) {
+        throw error;
+      }
+    }
+
+    const fallbackUrl = this.buildEncryptedUrl(path, payload, "base64");
+
+    return requestJsonOnce<T>(fallbackUrl, init);
+  }
+
   async getBalance(time?: string): Promise<GasStationBalanceResult> {
     const payload = {
       time: time ?? String(Math.floor(Date.now() / 1000))
     };
 
-    const url = this.buildEncryptedUrl("/api/mpc/tron/gas/balance", payload);
-
-    return requestJson<GasStationBalanceResult>(url, {
-      method: "GET"
-    });
+    return this.requestWithFallback<GasStationBalanceResult>(
+      "/api/mpc/tron/gas/balance",
+      payload,
+      { method: "GET" }
+    );
   }
 
   async getPrice(input?: {
@@ -261,11 +295,11 @@ export class GasStationClient {
       payload.value = normalizePositiveInteger(input.resourceValue, "resourceValue");
     }
 
-    const url = this.buildEncryptedUrl("/api/tron/gas/order/price", payload);
-
-    return requestJson<GasStationPriceResult>(url, {
-      method: "GET"
-    });
+    return this.requestWithFallback<GasStationPriceResult>(
+      "/api/tron/gas/order/price",
+      payload,
+      { method: "GET" }
+    );
   }
 
   async estimateEnergyOrder(input: {
@@ -284,11 +318,11 @@ export class GasStationClient {
       )
     };
 
-    const url = this.buildEncryptedUrl("/api/tron/gas/estimate", payload);
-
-    return requestJson<GasStationEstimateResult>(url, {
-      method: "GET"
-    });
+    return this.requestWithFallback<GasStationEstimateResult>(
+      "/api/tron/gas/estimate",
+      payload,
+      { method: "GET" }
+    );
   }
 
   async createEnergyOrder(input: {
@@ -314,11 +348,11 @@ export class GasStationClient {
       energy_num: energyNum
     };
 
-    const url = this.buildEncryptedUrl("/api/tron/gas/create_order", payload);
-
-    return requestJson<GasStationCreateOrderResult>(url, {
-      method: "POST"
-    });
+    return this.requestWithFallback<GasStationCreateOrderResult>(
+      "/api/tron/gas/create_order",
+      payload,
+      { method: "POST" }
+    );
   }
 
   async createBandwidthOrder(input: {
@@ -344,11 +378,11 @@ export class GasStationClient {
       net_num: netNum
     };
 
-    const url = this.buildEncryptedUrl("/api/tron/gas/create_order", payload);
-
-    return requestJson<GasStationCreateOrderResult>(url, {
-      method: "POST"
-    });
+    return this.requestWithFallback<GasStationCreateOrderResult>(
+      "/api/tron/gas/create_order",
+      payload,
+      { method: "POST" }
+    );
   }
 }
 
