@@ -130,12 +130,21 @@ function extractErrorCode(error: unknown): string | null {
     (error as any).code,
     (error as any).errorCode,
     (error as any).error_code,
-    (error as any).name
+    (error as any).name,
+    (error as any).response?.status,
+    (error as any).statusCode,
+    (error as any).status
   ];
 
   for (const candidate of candidates) {
-    if (typeof candidate === "string" && candidate.trim()) {
-      return candidate.trim();
+    if (candidate == null) {
+      continue;
+    }
+
+    const normalized = String(candidate).trim();
+
+    if (normalized) {
+      return normalized;
     }
   }
 
@@ -159,6 +168,19 @@ function isResourceInsufficientMessage(message: string): boolean {
   );
 }
 
+function isRateLimitedMessage(message: string): boolean {
+  const value = message.toLowerCase();
+
+  return (
+    value.includes("status code 429") ||
+    value.includes("http 429") ||
+    value.includes("429") ||
+    value.includes("too many requests") ||
+    value.includes("rate limit") ||
+    value.includes("rate limited")
+  );
+}
+
 function isRetryableTransportMessage(message: string): boolean {
   const value = message.toLowerCase();
 
@@ -172,8 +194,7 @@ function isRetryableTransportMessage(message: string): boolean {
     value.includes("502") ||
     value.includes("gateway") ||
     value.includes("temporar") ||
-    value.includes("rate limit") ||
-    value.includes("too many requests")
+    value.includes("service unavailable")
   );
 }
 
@@ -188,8 +209,7 @@ function isFinalMessage(message: string): boolean {
     value.includes("purchase not eligible") ||
     value.includes("already allocated") ||
     value.includes("already processed") ||
-    value.includes("permission denied") ||
-    value.includes("bad request")
+    value.includes("permission denied")
   );
 }
 
@@ -212,9 +232,26 @@ function classifyAllocationError(error: unknown): ClassifiedAllocationError {
   }
 
   if (
+    isRateLimitedMessage(message) ||
+    lowerCode === "429" ||
+    lowerCode.includes("rate_limit") ||
+    lowerCode.includes("rate limited") ||
+    lowerCode.includes("too_many_requests")
+  ) {
+    return {
+      kind: "retryable",
+      code,
+      reason: "Temporary allocation rate limit error.",
+      message
+    };
+  }
+
+  if (
     isRetryableTransportMessage(message) ||
     lowerCode.includes("timeout") ||
-    lowerCode.includes("network")
+    lowerCode.includes("network") ||
+    lowerCode.includes("econnreset") ||
+    lowerCode.includes("temporar")
   ) {
     return {
       kind: "retryable",
@@ -225,6 +262,18 @@ function classifyAllocationError(error: unknown): ClassifiedAllocationError {
   }
 
   if (isFinalMessage(message)) {
+    return {
+      kind: "final",
+      code,
+      reason: message,
+      message
+    };
+  }
+
+  if (
+    lowerCode === "err_bad_request" &&
+    !isRateLimitedMessage(message)
+  ) {
     return {
       kind: "final",
       code,
