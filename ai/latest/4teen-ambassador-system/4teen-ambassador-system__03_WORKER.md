@@ -1,6 +1,6 @@
 # 4teen-ambassador-system — ALLOCATION WORKER
 
-Generated: 2026-03-30T20:32:01.178Z
+Generated: 2026-03-30T20:32:12.483Z
 Repository: info14fourteen-creator/4teen-ambassador-system
 Branch: main
 
@@ -7524,6 +7524,61 @@ function encryptAesEcbPkcs7Base64UrlSafe(plainText: string, secretKey: string): 
   return toBase64UrlSafe(encrypted);
 }
 
+function createTaggedError(
+  message: string,
+  extras?: {
+    code?: string;
+    retryAfterMs?: number | null;
+    cause?: unknown;
+  }
+): Error {
+  const error = new Error(message) as Error & {
+    code?: string;
+    retryAfterMs?: number | null;
+    cause?: unknown;
+  };
+
+  if (extras?.code) {
+    error.code = extras.code;
+  }
+
+  if (extras?.retryAfterMs != null) {
+    error.retryAfterMs = extras.retryAfterMs;
+  }
+
+  if (extras?.cause !== undefined) {
+    error.cause = extras.cause;
+  }
+
+  return error;
+}
+
+function parseRetryAfterMs(value: string | null): number | null {
+  if (!value) {
+    return null;
+  }
+
+  const trimmed = value.trim();
+
+  if (!trimmed) {
+    return null;
+  }
+
+  const seconds = Number(trimmed);
+
+  if (Number.isFinite(seconds) && seconds >= 0) {
+    return Math.ceil(seconds * 1000);
+  }
+
+  const dateMs = Date.parse(trimmed);
+
+  if (Number.isFinite(dateMs)) {
+    return Math.max(0, dateMs - Date.now());
+  }
+
+  return null;
+}
+
 async function requestJson<T>(url: string, init?: RequestInit): Promise<T> {
   const response = await fetch(url, init);
   const text = await response.text();
@@ -7533,27 +7588,55 @@ async function requestJson<T>(url: string, init?: RequestInit): Promise<T> {
   try {
     parsed = text ? JSON.parse(text) : null;
   } catch {
-    throw new Error(`GasStation returned non-JSON response: ${text || "empty response"}`);
+    throw createTaggedError(
+      `GasStation returned non-JSON response: ${text || "empty response"}`,
+      { code: "GASSTATION_INVALID_RESPONSE" }
+    );
   }
 
   if (!response.ok) {
-    throw new Error(
-      parsed?.msg
-        ? `GasStation HTTP ${response.status}: ${parsed.msg}`
-        : `GasStation HTTP ${response.status}`
-    );
+    const retryAfterMs = parseRetryAfterMs(response.headers.get("retry-after"));
+    const message = parsed?.msg
+      ? `GasStation HTTP ${response.status}: ${parsed.msg}`
+      : `GasStation HTTP ${response.status}`;
+
+    if (response.status === 429) {
+      throw createTaggedError(message, {
+        code: "GASSTATION_RATE_LIMIT",
+        retryAfterMs,
+        cause: parsed
+      });
+    }
+
+    throw createTaggedError(message, {
+      code: `GASSTATION_HTTP_${response.status}`,
+      retryAfterMs,
+      cause: parsed
+    });
   }
 
   if (!parsed || typeof parsed !== "object") {
-    throw new Error("GasStation returned invalid response");
+    throw createTaggedError("GasStation returned invalid response", {
+      code: "GASSTATION_INVALID_RESPONSE"
+    });
   }
 
   if (parsed.code !== 0) {
-    throw new Error(
-      parsed.msg
-        ? `GasStation error ${parsed.code}: ${parsed.msg}`
-        : `GasStation error ${parsed.code}`
-    );
+    const message = parsed.msg
+      ? `GasStation error ${parsed.code}: ${parsed.msg}`
+      : `GasStation error ${parsed.code}`;
+
+    const normalizedMessage = String(parsed.msg || "").toLowerCase();
+    const isRateLimited =
+      parsed.code === 429 ||
+      normalizedMessage.includes("too many requests") ||
+      normalizedMessage.includes("rate limit") ||
+      normalizedMessage.includes("429");
+
+    throw createTaggedError(message, {
+      code: isRateLimited ? "GASSTATION_RATE_LIMIT" : `GASSTATION_ERROR_${parsed.code}`,
+      cause: parsed
+    });
   }
 
   return parsed.data as T;
