@@ -1,6 +1,6 @@
 # 4teen-ambassador-system — ALLOCATION WORKER
 
-Generated: 2026-03-30T21:44:11.357Z
+Generated: 2026-03-30T22:34:50.863Z
 Repository: info14fourteen-creator/4teen-ambassador-system
 Branch: main
 
@@ -7450,11 +7450,13 @@ export function createCabinetService(deps: CabinetServiceDependencies): CabinetS
 
 ```ts
 import crypto from "node:crypto";
+import { HttpsProxyAgent } from "https-proxy-agent";
 
 export interface GasStationConfig {
   appId: string;
   secretKey: string;
   baseUrl?: string;
+  proxyUrl?: string;
 }
 
 export interface GasStationBalanceResult {
@@ -7489,6 +7491,14 @@ export interface GasStationCreateOrderResult {
   trade_no: string;
 }
 
+type TaggedError = Error & {
+  code?: string;
+  retryAfterMs?: number | null;
+  cause?: unknown;
+  status?: number;
+  rawBody?: string | null;
+};
+
 function assertNonEmpty(value: string | undefined, fieldName: string): string {
   const normalized = String(value || "").trim();
 
@@ -7497,6 +7507,11 @@ function assertNonEmpty(value: string | undefined, fieldName: string): string {
   }
 
   return normalized;
+}
+
+function normalizeOptionalString(value: string | undefined): string | undefined {
+  const normalized = String(value || "").trim();
+  return normalized || undefined;
 }
 
 function normalizeBaseUrl(value?: string): string {
@@ -7512,8 +7527,8 @@ function pkcs7Pad(buffer: Buffer): Buffer {
 }
 
 /**
- * GasStation docs examples show standard Base64 in the `data` query param,
- * not URL-safe Base64. Keep + / and = as-is; URLSearchParams will encode them.
+ * GasStation expects regular Base64 in the `data` query param.
+ * URLSearchParams will encode reserved characters safely.
  */
 function toStandardBase64(buffer: Buffer): string {
   return buffer.toString("base64");
@@ -7545,14 +7560,8 @@ function createTaggedError(
     status?: number;
     rawBody?: string | null;
   }
-): Error {
-  const error = new Error(message) as Error & {
-    code?: string;
-    retryAfterMs?: number | null;
-    cause?: unknown;
-    status?: number;
-    rawBody?: string | null;
-  };
+): TaggedError {
+  const error = new Error(message) as TaggedError;
 
   if (extras?.code) {
     error.code = extras.code;
@@ -7603,14 +7612,39 @@ function parseRetryAfterMs(value: string | null): number | null {
   return null;
 }
 
-async function requestJson<T>(url: string, init?: RequestInit): Promise<T> {
+function normalizePositiveInteger(value: number, fieldName: string): number {
+  if (!Number.isFinite(value) || value <= 0) {
+    throw new Error(`${fieldName} must be a positive number`);
+  }
+
+  return Math.ceil(value);
+}
+
+function buildDispatcher(proxyUrl?: string): HttpsProxyAgent<string> | undefined {
+  const normalizedProxyUrl = normalizeOptionalString(proxyUrl);
+
+  if (!normalizedProxyUrl) {
+    return undefined;
+  }
+
+  return new HttpsProxyAgent(normalizedProxyUrl);
+}
+
+async function requestJson<T>(
+  url: string,
+  init?: RequestInit,
+  proxyUrl?: string
+): Promise<T> {
+  const dispatcher = buildDispatcher(proxyUrl);
+
   const response = await fetch(url, {
     ...init,
     headers: {
       Accept: "application/json",
       ...(init?.headers || {})
-    }
-  });
+    },
+    dispatcher
+  } as RequestInit & { dispatcher?: HttpsProxyAgent<string> });
 
   const text = await response.text();
 
@@ -7685,23 +7719,17 @@ async function requestJson<T>(url: string, init?: RequestInit): Promise<T> {
   return parsed.data as T;
 }
 
-function normalizePositiveInteger(value: number, fieldName: string): number {
-  if (!Number.isFinite(value) || value <= 0) {
-    throw new Error(`${fieldName} must be a positive number`);
-  }
-
-  return Math.ceil(value);
-}
-
 export class GasStationClient {
   private readonly appId: string;
   private readonly secretKey: string;
   private readonly baseUrl: string;
+  private readonly proxyUrl?: string;
 
   constructor(config: GasStationConfig) {
     this.appId = assertNonEmpty(config.appId, "appId");
     this.secretKey = assertNonEmpty(config.secretKey, "secretKey");
     this.baseUrl = normalizeBaseUrl(config.baseUrl);
+    this.proxyUrl = normalizeOptionalString(config.proxyUrl);
   }
 
   private buildEncryptedUrl(path: string, payload: Record<string, unknown>): string {
@@ -7721,9 +7749,13 @@ export class GasStationClient {
 
     const url = this.buildEncryptedUrl("/api/mpc/tron/gas/balance", payload);
 
-    return requestJson<GasStationBalanceResult>(url, {
-      method: "GET"
-    });
+    return requestJson<GasStationBalanceResult>(
+      url,
+      {
+        method: "GET"
+      },
+      this.proxyUrl
+    );
   }
 
   async getPrice(input?: {
@@ -7745,9 +7777,13 @@ export class GasStationClient {
 
     const url = this.buildEncryptedUrl("/api/tron/gas/order/price", payload);
 
-    return requestJson<GasStationPriceResult>(url, {
-      method: "GET"
-    });
+    return requestJson<GasStationPriceResult>(
+      url,
+      {
+        method: "GET"
+      },
+      this.proxyUrl
+    );
   }
 
   async estimateEnergyOrder(input: {
@@ -7768,9 +7804,13 @@ export class GasStationClient {
 
     const url = this.buildEncryptedUrl("/api/tron/gas/estimate", payload);
 
-    return requestJson<GasStationEstimateResult>(url, {
-      method: "GET"
-    });
+    return requestJson<GasStationEstimateResult>(
+      url,
+      {
+        method: "GET"
+      },
+      this.proxyUrl
+    );
   }
 
   async createEnergyOrder(input: {
@@ -7798,9 +7838,13 @@ export class GasStationClient {
 
     const url = this.buildEncryptedUrl("/api/tron/gas/create_order", payload);
 
-    return requestJson<GasStationCreateOrderResult>(url, {
-      method: "POST"
-    });
+    return requestJson<GasStationCreateOrderResult>(
+      url,
+      {
+        method: "POST"
+      },
+      this.proxyUrl
+    );
   }
 
   async createBandwidthOrder(input: {
@@ -7828,9 +7872,13 @@ export class GasStationClient {
 
     const url = this.buildEncryptedUrl("/api/tron/gas/create_order", payload);
 
-    return requestJson<GasStationCreateOrderResult>(url, {
-      method: "POST"
-    });
+    return requestJson<GasStationCreateOrderResult>(
+      url,
+      {
+        method: "POST"
+      },
+      this.proxyUrl
+    );
   }
 }
 
@@ -7844,7 +7892,11 @@ export function createGasStationClientFromEnv(): GasStationClient {
       process.env.GASSTATION_API_SECRET ?? process.env.GASSTATION_SECRET_KEY,
       "GASSTATION_API_SECRET"
     ),
-    baseUrl: process.env.GASSTATION_API_BASE_URL ?? process.env.GASSTATION_BASE_URL
+    baseUrl: process.env.GASSTATION_API_BASE_URL ?? process.env.GASSTATION_BASE_URL,
+    proxyUrl:
+      process.env.QUOTAGUARDSTATIC_URL ??
+      process.env.QUOTAGUARD_URL ??
+      process.env.FIXIE_URL
   });
 }
 ```
