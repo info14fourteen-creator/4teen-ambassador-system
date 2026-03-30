@@ -1,6 +1,6 @@
 # 4teen-ambassador-system — ALLOCATION WORKER
 
-Generated: 2026-03-30T22:34:50.863Z
+Generated: 2026-03-30T22:36:41.297Z
 Repository: info14fourteen-creator/4teen-ambassador-system
 Branch: main
 
@@ -47,6 +47,7 @@ Branch: main
   },
   "dependencies": {
     "@noble/hashes": "^1.8.0",
+    "https-proxy-agent": "^7.0.6",
     "pg": "^8.13.1",
     "tronweb": "^6.0.4"
   },
