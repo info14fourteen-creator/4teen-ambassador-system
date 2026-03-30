@@ -5,6 +5,7 @@ import { assertValidSlug, normalizeSlug } from "../../../shared/utils/slug";
 import { createAllocationWorker } from "./index";
 import { BuyTokensScanner } from "./run-scan";
 import { createCabinetService } from "./services/cabinet";
+import { createGasStationClientFromEnv } from "./services/gasStation";
 import {
   completeAmbassadorRegistration,
   getAmbassadorPublicProfileBySlug,
@@ -395,6 +396,17 @@ async function bootstrap() {
         return;
       }
 
+      if (method === "GET" && pathname === "/debug/gasstation/balance") {
+        const client = createGasStationClientFromEnv();
+        const result = await client.getBalance();
+
+        sendJson(req, res, env, 200, {
+          ok: true,
+          result
+        });
+        return;
+      }
+
       if (method === "GET" && pathname === "/slug/check") {
         const slug = normalizeIncomingSlug(requestUrl.searchParams.get("slug"));
         const taken = await isSlugTaken(slug);
@@ -670,16 +682,5 @@ async function bootstrap() {
     );
   });
 }
-      if (method === "GET" && pathname === "/debug/gasstation/balance") {
-        const { createGasStationClientFromEnv } = await import("./services/gasStation");
-        const client = createGasStationClientFromEnv();
-        const result = await client.getBalance();
-
-        sendJson(req, res, env, 200, {
-          ok: true,
-          result
-        });
-        return;
-      }
 
 void bootstrap();
