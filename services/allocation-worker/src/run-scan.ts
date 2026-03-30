@@ -1,6 +1,11 @@
 import { FOURTEEN_TOKEN_CONTRACT } from "../../../shared/config/contracts";
 import { AttributionProcessor } from "./app/processAttribution";
-import { PurchaseStore } from "./db/purchases";
+import {
+  PurchaseStore,
+  getAllocationRetryReadyAt,
+  isPurchaseReadyForAllocationRetry,
+  isRateLimitedAllocationFailure
+} from "./db/purchases";
 
 export interface RunScanConfig {
   tronWeb: any;
@@ -32,6 +37,7 @@ export type ScanProcessStatus =
   | "skipped-no-local-attribution"
   | "skipped-missing-slug"
   | "skipped-already-final"
+  | "skipped-retry-cooldown"
   | "verification-blocked"
   | "allocation-failed"
   | "event-parse-failed"
@@ -335,13 +341,13 @@ export class BuyTokensScanner {
             ? String((error as { message?: unknown }).message || "").trim()
             : "";
 
-        processed.push({
-          status: "event-parse-failed",
-          event: null,
-          purchaseId: null,
-          reason: message || "Failed to parse BuyTokens event",
-          rawResult: rawEvent
-        });
+          processed.push({
+            status: "event-parse-failed",
+            event: null,
+            purchaseId: null,
+            reason: message || "Failed to parse BuyTokens event",
+            rawResult: rawEvent
+          });
       }
     }
 
@@ -377,12 +383,32 @@ export class BuyTokensScanner {
       };
     }
 
-    if (localPurchase.status === "allocated" || localPurchase.status === "ignored") {
+    if (
+      localPurchase.status === "allocated" ||
+      localPurchase.status === "ignored" ||
+      localPurchase.status === "allocation_failed_final"
+    ) {
       return {
         status: "skipped-already-final",
         event,
         purchaseId: localPurchase.purchaseId,
         reason: `Purchase already finalized with status: ${localPurchase.status}`
+      };
+    }
+
+    const now = Date.now();
+
+    if (!isPurchaseReadyForAllocationRetry(localPurchase, now)) {
+      const retryAt = getAllocationRetryReadyAt(localPurchase);
+      const retryInMs = Math.max(0, retryAt - now);
+
+      return {
+        status: "skipped-retry-cooldown",
+        event,
+        purchaseId: localPurchase.purchaseId,
+        reason: isRateLimitedAllocationFailure(localPurchase)
+          ? `Allocation retry cooldown active after rate limit. Retry in ${retryInMs}ms`
+          : `Allocation retry cooldown active. Retry in ${retryInMs}ms`
       };
     }
 
