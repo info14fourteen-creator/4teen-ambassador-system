@@ -1,6 +1,6 @@
 # 4teen-ambassador-system — CABINET
 
-Generated: 2026-03-31T21:28:16.448Z
+Generated: 2026-03-31T21:29:40.073Z
 Repository: info14fourteen-creator/4teen-ambassador-system
 Branch: main
 
@@ -879,7 +879,18 @@ export function useAmbassadorDashboard(): UseAmbassadorDashboardResult {
     }));
 
     try {
-      const result = await withdrawRewards();
+      const wallet =
+        state.wallet && state.wallet.trim()
+          ? state.wallet
+          : await getConnectedWalletAddress();
+
+      const withdrawSessionId =
+        state.dashboard?.withdrawalQueue?.withdrawSessionId ?? null;
+
+      const result = await withdrawRewards({
+        wallet,
+        withdrawSessionId
+      });
 
       if (!mountedRef.current) {
         return result;
@@ -910,7 +921,7 @@ export function useAmbassadorDashboard(): UseAmbassadorDashboardResult {
 
       throw error;
     }
-  }, [load]);
+  }, [load, state.wallet, state.dashboard]);
 
   const clearError = useCallback(() => {
     setState((current) => ({
