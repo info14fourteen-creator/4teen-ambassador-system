@@ -1,6 +1,6 @@
 # 4teen-ambassador-system — ALLOCATION WORKER
 
-Generated: 2026-03-31T00:43:57.591Z
+Generated: 2026-03-31T00:44:30.082Z
 Repository: info14fourteen-creator/4teen-ambassador-system
 Branch: main
 
@@ -2895,7 +2895,9 @@ function isKnownRetryableCode(lowerCode: string): boolean {
     lowerCode.includes("gasstation_topup_not_settled") ||
     lowerCode.includes("gasstation_topup_failed") ||
     lowerCode.includes("gasstation_fetch_failed") ||
-    lowerCode.includes("gasstation_invalid_response")
+    lowerCode.includes("gasstation_invalid_response") ||
+    lowerCode.includes("gasstation_http_5") ||
+    lowerCode.includes("gasstation_error_100003")
   );
 }
 
