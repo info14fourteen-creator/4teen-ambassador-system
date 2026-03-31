@@ -1,6 +1,6 @@
 # 4teen-ambassador-system — ALLOCATION WORKER
 
-Generated: 2026-03-31T00:03:56.451Z
+Generated: 2026-03-31T00:04:20.878Z
 Repository: info14fourteen-creator/4teen-ambassador-system
 Branch: main
 
@@ -6393,6 +6393,10 @@ type TronWebConstructor = new (config: {
 }) => any;
 
 const DEFAULT_CONTROLLER_CONTRACT = "TF8yhohRfMxsdVRr7fFrYLh5fxK8sAFkeZ";
+const SUN_PER_TRX = 1_000_000;
+const GASSTATION_LOW_BALANCE_SUN = 8_500_000;
+const OPERATOR_MIN_BALANCE_FOR_TOPUP_SUN = 11_000_000;
+const OPERATOR_REMAINING_RESERVE_SUN = 2_000_000;
 
 function getTronWebConstructor(): TronWebConstructor {
   const candidate =
@@ -6668,6 +6672,59 @@ function buildReferralLink(slug: string): string {
   return `?r=${encodeURIComponent(slug)}`;
 }
 
+function isBase58Address(value: string): boolean {
+  return /^T[1-9A-HJ-NP-Za-km-z]{33}$/.test(value);
+}
+
+function isHexAddress(value: string): boolean {
+  return /^41[0-9a-fA-F]{40}$/.test(value);
+}
+
+function normalizeAddress(value: string, fieldName: string): string {
+  const normalized = assertNonEmpty(value, fieldName);
+
+  if (!isBase58Address(normalized) && !isHexAddress(normalized)) {
+    throw new Error(`${fieldName} must be a valid TRON address`);
+  }
+
+  return normalized;
+}
+
+function parseTrxAmountToSun(value: unknown, fieldName: string): number {
+  const raw = String(value ?? "").trim();
+
+  if (!raw) {
+    throw new Error(`${fieldName} is required`);
+  }
+
+  if (!/^\d+(\.\d+)?$/.test(raw)) {
+    throw new Error(`${fieldName} must be a numeric TRX amount`);
+  }
+
+  const [wholePart, fractionPart = ""] = raw.split(".");
+  const normalizedFraction = `${fractionPart}000000`.slice(0, 6);
+
+  const whole = BigInt(wholePart || "0");
+  const fraction = BigInt(normalizedFraction || "0");
+  const totalSun = whole * BigInt(SUN_PER_TRX) + fraction;
+
+  if (totalSun > BigInt(Number.MAX_SAFE_INTEGER)) {
+    throw new Error(`${fieldName} is too large`);
+  }
+
+  return Number(totalSun);
+}
+
+function sunToTrxString(value: number): string {
+  if (!Number.isFinite(value) || value <= 0) {
+    return "0";
+  }
+
+  const whole = Math.floor(value / SUN_PER_TRX);
+  const fraction = String(value % SUN_PER_TRX).padStart(6, "0").replace(/0+$/, "");
+  return fraction ? `${whole}.${fraction}` : String(whole);
+}
+
 async function bootstrap() {
   const env = loadEnv();
   const TronWeb = getTronWebConstructor();
@@ -6751,11 +6808,65 @@ async function bootstrap() {
 
       if (method === "GET" && pathname === "/debug/gasstation/balance") {
         const client = createGasStationClientFromEnv();
-        const result = await client.getBalance();
+        const gasBalance = await client.getBalance();
+
+        const operatorAddress = normalizeAddress(
+          tronWeb?.defaultAddress?.base58 || tronWeb?.defaultAddress?.hex || "",
+          "operatorAddress"
+        );
+
+        const operatorBalanceSun = Number(
+          await tronWeb.trx.getBalance(operatorAddress)
+        );
+
+        const serviceBalanceSun = parseTrxAmountToSun(
+          gasBalance.balance,
+          "gasStation.balance"
+        );
+
+        const depositAddress = normalizeAddress(
+          (gasBalance as any).deposit_address,
+          "deposit_address"
+        );
+
+        const availableForTopUpSun = Math.max(
+          0,
+          operatorBalanceSun - OPERATOR_REMAINING_RESERVE_SUN
+        );
+
+        const needsTopUp = serviceBalanceSun < GASSTATION_LOW_BALANCE_SUN;
+        const canTopUp =
+          operatorBalanceSun >= OPERATOR_MIN_BALANCE_FOR_TOPUP_SUN &&
+          availableForTopUpSun >= GASSTATION_LOW_BALANCE_SUN;
+
+        const recommendedTopUpSun = canTopUp ? availableForTopUpSun : 0;
 
         sendJson(req, res, env, 200, {
           ok: true,
-          result
+          result: {
+            gasStation: {
+              balanceSun: serviceBalanceSun,
+              balanceTrx: sunToTrxString(serviceBalanceSun),
+              depositAddress,
+              lowBalanceThresholdSun: GASSTATION_LOW_BALANCE_SUN,
+              lowBalanceThresholdTrx: sunToTrxString(GASSTATION_LOW_BALANCE_SUN),
+              needsTopUp
+            },
+            operator: {
+              address: operatorAddress,
+              balanceSun: operatorBalanceSun,
+              balanceTrx: sunToTrxString(operatorBalanceSun),
+              minBalanceForTopUpSun: OPERATOR_MIN_BALANCE_FOR_TOPUP_SUN,
+              minBalanceForTopUpTrx: sunToTrxString(OPERATOR_MIN_BALANCE_FOR_TOPUP_SUN),
+              reserveAfterTopUpSun: OPERATOR_REMAINING_RESERVE_SUN,
+              reserveAfterTopUpTrx: sunToTrxString(OPERATOR_REMAINING_RESERVE_SUN),
+              availableForTopUpSun,
+              availableForTopUpTrx: sunToTrxString(availableForTopUpSun),
+              canTopUp,
+              recommendedTopUpSun,
+              recommendedTopUpTrx: sunToTrxString(recommendedTopUpSun)
+            }
+          }
         });
         return;
       }
