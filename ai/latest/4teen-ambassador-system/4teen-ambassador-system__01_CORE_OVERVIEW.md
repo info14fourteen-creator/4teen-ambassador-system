@@ -1,6 +1,6 @@
 # 4teen-ambassador-system — CORE OVERVIEW
 
-Generated: 2026-03-31T20:43:18.323Z
+Generated: 2026-03-31T21:03:59.104Z
 Repository: info14fourteen-creator/4teen-ambassador-system
 Branch: main
 
@@ -60,6 +60,7 @@ Branch: main
       - jobs/
         - allocatePurchase.ts
         - dailyMaintenance.ts
+        - finalizeAmbassadorWithdrawal.ts
         - prepareAmbassadorWithdrawal.ts
         - processAmbassadorPendingQueue.ts
         - rentEnergy.ts
