@@ -1,6 +1,6 @@
 # 4teen-ambassador-system — ALLOCATION WORKER
 
-Generated: 2026-03-31T00:25:34.343Z
+Generated: 2026-03-31T00:33:05.072Z
 Repository: info14fourteen-creator/4teen-ambassador-system
 Branch: main
 
@@ -8703,7 +8703,6 @@ export class TronControllerClient implements ControllerClient {
 
   private async waitForGasStationBalanceIncrease(input: {
     beforeBalanceSun: number;
-    minimumExpectedBalanceSun: number;
   }): Promise<GasStationBalanceSnapshot> {
     let lastSnapshot: GasStationBalanceSnapshot | null = null;
 
@@ -8713,16 +8712,13 @@ export class TronControllerClient implements ControllerClient {
       const snapshot = await this.getGasStationBalanceSnapshot();
       lastSnapshot = snapshot;
 
-      if (
-        snapshot.balanceSun > input.beforeBalanceSun &&
-        snapshot.balanceSun >= input.minimumExpectedBalanceSun
-      ) {
+      if (snapshot.balanceSun > input.beforeBalanceSun) {
         return snapshot;
       }
     }
 
     throw createTaggedError(
-      `GasStation service balance was low, auto top-up transfer was sent but the balance did not update in time. ExpectedAtLeastSun=${input.minimumExpectedBalanceSun}, LastBalanceSun=${lastSnapshot?.balanceSun ?? 0}`,
+      `GasStation service balance was low, auto top-up transfer was sent but the balance did not update in time. LastBalanceSun=${lastSnapshot?.balanceSun ?? 0}`,
       {
         code: "GASSTATION_TOPUP_NOT_SETTLED"
       }
@@ -8746,7 +8742,7 @@ export class TronControllerClient implements ControllerClient {
 
     const availableToTopUpSun = Math.max(
       0,
-      operatorSnapshot.trxBalanceSun - MIN_OPERATOR_REMAINING_BALANCE_SUN
+      operatorSnapshot.trxBalanceSun - OPERATOR_REMAINING_RESERVE_SUN
     );
 
     if (
@@ -8782,10 +8778,11 @@ export class TronControllerClient implements ControllerClient {
 
     const txid = extractTxidFromSendTransactionResult(transferResult);
 
+    let afterTopUp: GasStationBalanceSnapshot;
+
     try {
-      await this.waitForGasStationBalanceIncrease({
-        beforeBalanceSun: beforeGasStation.balanceSun,
-        minimumExpectedBalanceSun: requiredServiceBalanceSun
+      afterTopUp = await this.waitForGasStationBalanceIncrease({
+        beforeBalanceSun: beforeGasStation.balanceSun
       });
     } catch (error) {
       if (
@@ -8806,6 +8803,15 @@ export class TronControllerClient implements ControllerClient {
         {
           code: "GASSTATION_TOPUP_FAILED",
           cause: error
+        }
+      );
+    }
+
+    if (afterTopUp.balanceSun < requiredServiceBalanceSun) {
+      throw createTaggedError(
+        `GasStation service balance was topped up, but it is still not enough for resource order. BalanceSun=${afterTopUp.balanceSun}, RequiredSun=${requiredServiceBalanceSun}`,
+        {
+          code: "GASSTATION_SERVICE_BALANCE_LOW_AFTER_TOPUP"
         }
       );
     }
