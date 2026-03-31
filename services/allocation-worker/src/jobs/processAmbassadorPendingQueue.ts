@@ -214,7 +214,8 @@ export async function processAmbassadorPendingQueue(
         ambassadorSlug,
         ambassadorWallet,
         scanned: result.scanned,
-        limit
+        limit,
+        now
       })
     );
 
