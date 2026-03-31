@@ -42,9 +42,16 @@ export interface CabinetServiceDependencies {
 }
 
 export interface CabinetProfileIdentity {
+  wallet: string;
+  exists: boolean;
   active: boolean;
+  selfRegistered: boolean;
+  manualAssigned: boolean;
+  overrideEnabled: boolean;
   level: number;
-  levelLabel: string;
+  effectiveLevel: number;
+  currentLevel: number;
+  overrideLevel: number;
   rewardPercent: number;
   createdAt: number;
   slugHash: string;
@@ -53,14 +60,28 @@ export interface CabinetProfileIdentity {
 
 export interface CabinetProfileStats {
   totalBuyers: number;
+
   trackedVolumeSun: string;
   trackedVolumeTrx: string;
+
   claimableRewardsSun: string;
   claimableRewardsTrx: string;
+
   lifetimeRewardsSun: string;
   lifetimeRewardsTrx: string;
+
   withdrawnRewardsSun: string;
   withdrawnRewardsTrx: string;
+
+  /**
+   * Backward-compatible aliases for older UI consumers.
+   */
+  totalVolumeSun: string;
+  totalVolumeTrx: string;
+  totalRewardsAccruedSun: string;
+  totalRewardsAccruedTrx: string;
+  totalRewardsClaimedSun: string;
+  totalRewardsClaimedTrx: string;
 }
 
 export interface CabinetProfileWithdrawalQueue {
@@ -151,6 +172,15 @@ function safeNumber(value: unknown, fallback = 0): number {
 
 function safeBoolean(value: unknown): boolean {
   return Boolean(value);
+}
+
+function safeString(value: unknown, fallback = "0"): string {
+  if (value == null) {
+    return fallback;
+  }
+
+  const normalized = String(value).trim();
+  return normalized || fallback;
 }
 
 function toErrorMessage(error: unknown): string {
@@ -244,6 +274,22 @@ function pickTupleValue(source: any, index: number, key?: string): unknown {
   return undefined;
 }
 
+function toSunString(value: unknown): string {
+  if (typeof value === "bigint") {
+    return value.toString();
+  }
+
+  if (typeof value === "number" && Number.isFinite(value) && value >= 0) {
+    return Math.floor(value).toString();
+  }
+
+  if (typeof value === "string" && /^\d+$/.test(value.trim())) {
+    return value.trim();
+  }
+
+  return "0";
+}
+
 function mapStats(input: {
   onChainStats: {
     totalBuyers: string;
@@ -259,44 +305,59 @@ function mapStats(input: {
 } {
   const { onChainStats, dbStats } = input;
 
+  const trackedVolumeSun = onChainStats.trackedVolumeSun;
+  const claimableRewardsSun = onChainStats.claimableRewardsSun;
+  const lifetimeRewardsSun = onChainStats.lifetimeRewardsSun;
+  const withdrawnRewardsSun = onChainStats.withdrawnRewardsSun;
+
   return {
     stats: {
       totalBuyers: safeNumber(onChainStats.totalBuyers),
-      trackedVolumeSun: onChainStats.trackedVolumeSun,
-      trackedVolumeTrx: sunToTrxString(onChainStats.trackedVolumeSun),
-      claimableRewardsSun: onChainStats.claimableRewardsSun,
-      claimableRewardsTrx: sunToTrxString(onChainStats.claimableRewardsSun),
-      lifetimeRewardsSun: onChainStats.lifetimeRewardsSun,
-      lifetimeRewardsTrx: sunToTrxString(onChainStats.lifetimeRewardsSun),
-      withdrawnRewardsSun: onChainStats.withdrawnRewardsSun,
-      withdrawnRewardsTrx: sunToTrxString(onChainStats.withdrawnRewardsSun)
+
+      trackedVolumeSun,
+      trackedVolumeTrx: sunToTrxString(trackedVolumeSun),
+
+      claimableRewardsSun,
+      claimableRewardsTrx: sunToTrxString(claimableRewardsSun),
+
+      lifetimeRewardsSun,
+      lifetimeRewardsTrx: sunToTrxString(lifetimeRewardsSun),
+
+      withdrawnRewardsSun,
+      withdrawnRewardsTrx: sunToTrxString(withdrawnRewardsSun),
+
+      totalVolumeSun: trackedVolumeSun,
+      totalVolumeTrx: sunToTrxString(trackedVolumeSun),
+      totalRewardsAccruedSun: lifetimeRewardsSun,
+      totalRewardsAccruedTrx: sunToTrxString(lifetimeRewardsSun),
+      totalRewardsClaimedSun: withdrawnRewardsSun,
+      totalRewardsClaimedTrx: sunToTrxString(withdrawnRewardsSun)
     },
     withdrawalQueue: {
       /**
-       * Real withdrawable now.
-       * This must come only from blockchain contract state.
+       * Real withdrawable amount.
+       * Must come from on-chain contract state only.
        */
-      availableOnChainSun: onChainStats.claimableRewardsSun,
-      availableOnChainTrx: sunToTrxString(onChainStats.claimableRewardsSun),
+      availableOnChainSun: claimableRewardsSun,
+      availableOnChainTrx: sunToTrxString(claimableRewardsSun),
       availableOnChainCount: dbStats.availableOnChainCount,
 
       /**
-       * Backend-derived informational bucket.
-       * Allocated in DB does NOT mean currently withdrawable on-chain.
+       * Backend accounting only.
        */
       allocatedInDbSun: dbStats.allocatedInDbSun,
       allocatedInDbTrx: sunToTrxString(dbStats.allocatedInDbSun),
       allocatedInDbCount: dbStats.allocatedInDbCount,
 
       /**
-       * Verified / deferred / retryable purchases that still need backend sync.
+       * Verified / deferred / retryable queue in backend.
        */
       pendingBackendSyncSun: dbStats.pendingBackendSyncSun,
       pendingBackendSyncTrx: sunToTrxString(dbStats.pendingBackendSyncSun),
       pendingBackendSyncCount: dbStats.pendingBackendSyncCount,
 
       /**
-       * Queue already included into active withdrawal preparation flow.
+       * Already included into withdrawal processing queue.
        */
       requestedForProcessingSun: dbStats.requestedForProcessingSun,
       requestedForProcessingTrx: sunToTrxString(dbStats.requestedForProcessingSun),
@@ -344,22 +405,6 @@ function extractReplayReason(result: unknown): string | null {
   }
 
   return null;
-}
-
-function toSunString(value: unknown): string {
-  if (typeof value === "bigint") {
-    return value.toString();
-  }
-
-  if (typeof value === "number" && Number.isFinite(value) && value >= 0) {
-    return Math.floor(value).toString();
-  }
-
-  if (typeof value === "string" && /^\d+$/.test(value.trim())) {
-    return value.trim();
-  }
-
-  return "0";
 }
 
 export class CabinetService {
@@ -419,15 +464,24 @@ export class CabinetService {
       contract.getDashboardStats(wallet).call()
     ]);
 
+    const exists = safeBoolean(pickTupleValue(coreRaw, 0, "exists"));
     const active = safeBoolean(pickTupleValue(coreRaw, 1, "active"));
     const effectiveLevel = safeNumber(pickTupleValue(coreRaw, 2, "effectiveLevel"));
     const rewardPercent = safeNumber(pickTupleValue(coreRaw, 3, "rewardPercent"));
     const createdAt = safeNumber(pickTupleValue(coreRaw, 4, "createdAt"));
 
+    const selfRegistered = safeBoolean(pickTupleValue(profileRaw, 0, "selfRegistered"));
+    const manualAssigned = safeBoolean(pickTupleValue(profileRaw, 1, "manualAssigned"));
+    const overrideEnabled = safeBoolean(pickTupleValue(profileRaw, 2, "overrideEnabled"));
     const currentLevel = safeNumber(pickTupleValue(profileRaw, 3, "currentLevel"));
+    const overrideLevel = safeNumber(pickTupleValue(profileRaw, 4, "overrideLevel"));
     const slugHash = normalizeHex32(pickTupleValue(profileRaw, 5, "slugHash"));
     const metaHash = normalizeMetaHash(pickTupleValue(profileRaw, 6, "metaHash"));
 
+    const progressCurrentLevel = safeNumber(
+      pickTupleValue(progressRaw, 0, "currentLevel"),
+      currentLevel
+    );
     const buyersCount = safeNumber(pickTupleValue(progressRaw, 1, "buyersCount"));
     const nextThreshold = safeNumber(pickTupleValue(progressRaw, 2, "nextThreshold"));
     const remainingToNextLevel = safeNumber(
@@ -435,12 +489,17 @@ export class CabinetService {
     );
 
     const totalBuyers = toSunString(pickTupleValue(statsRaw, 0, "totalBuyers"));
-    const trackedVolumeSun = toSunString(pickTupleValue(statsRaw, 1, "totalVolumeSun"));
+    const trackedVolumeSun = toSunString(
+      pickTupleValue(statsRaw, 1, "trackedVolumeSun") ??
+        pickTupleValue(statsRaw, 1, "totalVolumeSun")
+    );
     const lifetimeRewardsSun = toSunString(
-      pickTupleValue(statsRaw, 2, "totalRewardsAccruedSun")
+      pickTupleValue(statsRaw, 2, "lifetimeRewardsSun") ??
+        pickTupleValue(statsRaw, 2, "totalRewardsAccruedSun")
     );
     const withdrawnRewardsSun = toSunString(
-      pickTupleValue(statsRaw, 3, "totalRewardsClaimedSun")
+      pickTupleValue(statsRaw, 3, "withdrawnRewardsSun") ??
+        pickTupleValue(statsRaw, 3, "totalRewardsClaimedSun")
     );
     const claimableRewardsSun = toSunString(
       pickTupleValue(statsRaw, 4, "claimableRewardsSun")
@@ -448,16 +507,23 @@ export class CabinetService {
 
     return {
       identity: {
+        wallet,
+        exists,
         active,
+        selfRegistered,
+        manualAssigned,
+        overrideEnabled,
         level: effectiveLevel,
-        levelLabel: levelToLabel(effectiveLevel),
+        effectiveLevel,
+        currentLevel,
+        overrideLevel,
         rewardPercent,
         createdAt,
         slugHash,
         metaHash
       },
       progress: {
-        currentLevel,
+        currentLevel: progressCurrentLevel,
         buyersCount,
         nextThreshold,
         remainingToNextLevel
@@ -468,6 +534,56 @@ export class CabinetService {
         claimableRewardsSun,
         lifetimeRewardsSun,
         withdrawnRewardsSun
+      }
+    };
+  }
+
+  private buildFallbackProfile(
+    wallet: string,
+    slug: string,
+    status: string,
+    dbStatsRecord: CabinetStatsRecord
+  ): CabinetProfileRegisteredResult {
+    const mapped = mapStats({
+      onChainStats: {
+        totalBuyers: String(dbStatsRecord.totalBuyers || 0),
+        trackedVolumeSun: dbStatsRecord.trackedVolumeSun || "0",
+        claimableRewardsSun: "0",
+        lifetimeRewardsSun: dbStatsRecord.lifetimeRewardsSun || "0",
+        withdrawnRewardsSun: dbStatsRecord.withdrawnRewardsSun || "0"
+      },
+      dbStats: dbStatsRecord
+    });
+
+    return {
+      registered: true,
+      wallet,
+      slug,
+      status,
+      referralLink: buildReferralLink(slug),
+      identity: {
+        wallet,
+        exists: true,
+        active: status === "active",
+        selfRegistered: false,
+        manualAssigned: false,
+        overrideEnabled: false,
+        level: 0,
+        effectiveLevel: 0,
+        currentLevel: 0,
+        overrideLevel: 0,
+        rewardPercent: 0,
+        createdAt: 0,
+        slugHash: ZERO_BYTES32,
+        metaHash: null
+      },
+      stats: mapped.stats,
+      withdrawalQueue: mapped.withdrawalQueue,
+      progress: {
+        currentLevel: 0,
+        buyersCount: dbStatsRecord.totalBuyers || 0,
+        nextThreshold: 0,
+        remainingToNextLevel: 0
       }
     };
   }
@@ -484,28 +600,40 @@ export class CabinetService {
     }
 
     const registryWallet = assertNonEmpty(record.privateIdentity.wallet, "registryWallet");
+    const slug = record.publicProfile.slug;
+    const status = record.publicProfile.status;
 
-    const [dbStatsRecord, onChain] = await Promise.all([
-      this.store.getCabinetStatsByAmbassadorWallet(registryWallet),
-      this.readOnChainDashboard(registryWallet)
-    ]);
+    const dbStatsRecord = await this.store.getCabinetStatsByAmbassadorWallet(registryWallet);
 
-    const mapped = mapStats({
-      onChainStats: onChain.stats,
-      dbStats: dbStatsRecord
-    });
+    try {
+      const onChain = await this.readOnChainDashboard(registryWallet);
+      const mapped = mapStats({
+        onChainStats: onChain.stats,
+        dbStats: dbStatsRecord
+      });
 
-    return {
-      registered: true,
-      wallet: registryWallet,
-      slug: record.publicProfile.slug,
-      status: record.publicProfile.status,
-      referralLink: buildReferralLink(record.publicProfile.slug),
-      identity: onChain.identity,
-      stats: mapped.stats,
-      withdrawalQueue: mapped.withdrawalQueue,
-      progress: onChain.progress
-    };
+      return {
+        registered: true,
+        wallet: registryWallet,
+        slug,
+        status,
+        referralLink: buildReferralLink(slug),
+        identity: {
+          ...onChain.identity,
+          active: status === "active" ? onChain.identity.active : false
+        },
+        stats: mapped.stats,
+        withdrawalQueue: mapped.withdrawalQueue,
+        progress: onChain.progress
+      };
+    } catch {
+      return this.buildFallbackProfile(
+        registryWallet,
+        slug,
+        status,
+        dbStatsRecord
+      );
+    }
   }
 
   async replayPendingByWallet(
