@@ -27,9 +27,7 @@ export interface AllocationExecutorResult {
 }
 
 export interface AllocationExecutor {
-  allocate(
-    input: AllocationExecutorInput
-  ): Promise<AllocationExecutorResult>;
+  allocate(input: AllocationExecutorInput): Promise<AllocationExecutorResult>;
 }
 
 export type AllocationAttemptStatus =
@@ -171,6 +169,7 @@ function isResourceInsufficientMessage(message: string): boolean {
     value.includes("not enough bandwidth") ||
     value.includes("gasstation service balance") ||
     value.includes("gasstation balance") ||
+    value.includes("gasstation operator balance") ||
     value.includes("top-up") ||
     value.includes("top up")
   );
@@ -356,6 +355,7 @@ function classifyAllocationError(error: unknown): ClassifiedAllocationError {
 function isFinalPurchaseStatus(status: PurchaseRecord["status"]): boolean {
   return (
     status === "allocated" ||
+    status === "withdraw_included" ||
     status === "withdraw_completed" ||
     status === "ignored" ||
     status === "allocation_failed_final"
@@ -520,8 +520,7 @@ export class AllocationService {
       ) {
         stoppedEarly = true;
         stopReason =
-          result.reason ||
-          "Allocation stopped because resources were not sufficient.";
+          result.reason || "Allocation stopped because resources were not sufficient.";
         break;
       }
     }
@@ -665,10 +664,7 @@ export class AllocationService {
         });
 
         return {
-          status:
-            allocationMode === "claim-first"
-              ? "stopped-on-resource-shortage"
-              : "deferred",
+          status: allocationMode === "claim-first" ? "stopped-on-resource-shortage" : "deferred",
           purchase: deferred,
           txid: null,
           reason: classified.reason,
