@@ -1,6 +1,6 @@
 # 4teen-ambassador-system — ALLOCATION WORKER
 
-Generated: 2026-03-31T20:05:51.708Z
+Generated: 2026-03-31T20:09:33.722Z
 Repository: info14fourteen-creator/4teen-ambassador-system
 Branch: main
 
@@ -8838,6 +8838,7 @@ interface ResourceRequirement {
 const TRON_HEX_ZERO_ADDRESS = "410000000000000000000000000000000000000000";
 const DEFAULT_SERVICE_CHARGE_TYPE = "10010";
 const DEFAULT_TRON_RETRY_ATTEMPTS = 4;
+const DEFAULT_FEE_LIMIT_SUN = 300_000_000;
 
 const SUN_PER_TRX = 1_000_000;
 
@@ -8893,7 +8894,7 @@ function normalizeBytes32Hex(value: string, fieldName: string): string {
 }
 
 function normalizeFeeLimitSun(value: number | undefined): number {
-  const resolved = value ?? 300_000_000;
+  const resolved = value ?? DEFAULT_FEE_LIMIT_SUN;
 
   if (!Number.isInteger(resolved) || resolved <= 0) {
     throw new Error("feeLimitSun must be a positive integer");
@@ -9174,6 +9175,10 @@ function parseTrxAmountToSun(value: unknown, fieldName: string): number {
 }
 
 function extractTxidFromSendTransactionResult(result: unknown): string | null {
+  if (typeof result === "string" && result.trim()) {
+    return result.trim();
+  }
+
   if (!result || typeof result !== "object") {
     return null;
   }
@@ -9251,14 +9256,15 @@ function isResourceSendError(error: unknown): boolean {
   return (
     message.includes("out of energy") ||
     message.includes("account resource insufficient") ||
-    message.includes("bandwidth") ||
-    message.includes("energy") ||
-    message.includes("consume_user_resource_percent") ||
-    message.includes("contract validate error") ||
+    message.includes("insufficient bandwidth") ||
+    message.includes("insufficient energy") ||
+    message.includes("bandwidth limit") ||
+    message.includes("energy limit") ||
     message.includes("fee limit") ||
     code.includes("OUT_OF_ENERGY") ||
     code.includes("BANDWIDTH") ||
-    code.includes("ENERGY")
+    code.includes("ENERGY") ||
+    code.includes("ACCOUNT_RESOURCE")
   );
 }
 
@@ -9303,6 +9309,7 @@ async function getAccountResourceSnapshot(
   const freeNetLimit = Math.max(
     toNumberSafe(account?.freeNetLimit),
     toNumberSafe(resources?.freeNetLimit),
+    toNumberSafe(account?.free_net_limit),
     toNumberSafe(account?.freeNetLimitV2),
     toNumberSafe(resources?.freeNetLimitV2)
   );
@@ -9310,6 +9317,7 @@ async function getAccountResourceSnapshot(
   const freeNetUsed = Math.max(
     toNumberSafe(account?.freeNetUsed),
     toNumberSafe(resources?.freeNetUsed),
+    toNumberSafe(account?.free_net_used),
     toNumberSafe(account?.freeNetUsedV2),
     toNumberSafe(resources?.freeNetUsedV2)
   );
@@ -9318,14 +9326,16 @@ async function getAccountResourceSnapshot(
     toNumberSafe(account?.NetLimit),
     toNumberSafe(resources?.NetLimit),
     toNumberSafe(account?.netLimit),
-    toNumberSafe(resources?.netLimit)
+    toNumberSafe(resources?.netLimit),
+    toNumberSafe(account?.net_limit)
   );
 
   const netUsed = Math.max(
     toNumberSafe(account?.NetUsed),
     toNumberSafe(resources?.NetUsed),
     toNumberSafe(account?.netUsed),
-    toNumberSafe(resources?.netUsed)
+    toNumberSafe(resources?.netUsed),
+    toNumberSafe(account?.net_used)
   );
 
   const calculatedFreeBandwidth = Math.max(0, freeNetLimit - freeNetUsed);
@@ -9343,7 +9353,7 @@ async function getAccountResourceSnapshot(
 }
 
 export class TronControllerClient implements ControllerClient {
-  private static readonly operatorLocks = new Map<string, Promise<void>>();
+  private static readonly operatorLocks = new Map<string, Promise<unknown>>();
 
   private readonly tronWeb: any;
   private readonly contractAddress: string;
@@ -9399,23 +9409,17 @@ export class TronControllerClient implements ControllerClient {
     const operatorAddress = this.getOperatorAddress();
     const previous = TronControllerClient.operatorLocks.get(operatorAddress) ?? Promise.resolve();
 
-    let release!: () => void;
-    const current = new Promise<void>((resolve) => {
-      release = resolve;
-    });
+    const current = previous
+      .catch(() => undefined)
+      .then(async () => {
+        return await fn();
+      });
 
-    TronControllerClient.operatorLocks.set(
-      operatorAddress,
-      previous.then(() => current).catch(() => current)
-    );
-
-    await previous;
+    TronControllerClient.operatorLocks.set(operatorAddress, current);
 
     try {
-      return await fn();
+      return await current;
     } finally {
-      release();
-
       const stored = TronControllerClient.operatorLocks.get(operatorAddress);
       if (stored === current) {
         TronControllerClient.operatorLocks.delete(operatorAddress);
@@ -9660,13 +9664,13 @@ export class TronControllerClient implements ControllerClient {
     );
   }
 
-  private async buildCurrentRequirement(): Promise<ResourceRequirement> {
+  private buildCurrentRequirement(): ResourceRequirement {
     return buildResourceRequirement(this.allocationMinEnergy, this.allocationMinBandwidth);
   }
 
   private async ensureResourcesForAllocation(purchaseId: string): Promise<void> {
     const operatorAddress = this.getOperatorAddress();
-    const requirement = await this.buildCurrentRequirement();
+    const requirement = this.buildCurrentRequirement();
     const before = await getAccountResourceSnapshot(this.tronWeb, operatorAddress);
 
     const missingEnergy = Math.max(0, requirement.targetEnergy - before.energyAvailable);
@@ -9738,7 +9742,7 @@ export class TronControllerClient implements ControllerClient {
   }
 
   private async verifyResourcesStillReadyBeforeSend(): Promise<void> {
-    const requirement = await this.buildCurrentRequirement();
+    const requirement = this.buildCurrentRequirement();
     const operatorAddress = this.getOperatorAddress();
 
     await delay(RESOURCE_RECHECK_BEFORE_SEND_DELAY_MS);
@@ -9833,7 +9837,7 @@ export class TronControllerClient implements ControllerClient {
       const contract = await this.contract();
 
       try {
-        const txid = await withRateLimitRetry("recordVerifiedPurchase.send", async () => {
+        const sendResult = await withRateLimitRetry("recordVerifiedPurchase.send", async () => {
           return await contract
             .recordVerifiedPurchase(
               purchaseId,
@@ -9847,8 +9851,10 @@ export class TronControllerClient implements ControllerClient {
             });
         });
 
+        const txid = extractTxidFromSendTransactionResult(sendResult);
+
         return {
-          txid: assertNonEmpty(txid, "txid")
+          txid: assertNonEmpty(txid || "", "txid")
         };
       } catch (error) {
         if (isRateLimitError(error)) {
