@@ -16,6 +16,7 @@ import {
 import { initPurchaseTables } from "./db/purchases";
 import { prepareAmbassadorWithdrawal } from "./jobs/prepareAmbassadorWithdrawal";
 import { processAmbassadorPendingQueue } from "./jobs/processAmbassadorPendingQueue";
+import { finalizeAmbassadorWithdrawal } from "./jobs/finalizeAmbassadorWithdrawal";
 
 interface EnvConfig {
   port: number;
@@ -959,6 +960,43 @@ async function bootstrap() {
           limit,
           now: Date.now(),
           feeLimitSun,
+          logger: console
+        });
+
+        sendJson(req, res, env, 200, {
+          ok: true,
+          result
+        });
+        return;
+      }
+
+      if (method === "POST" && pathname === "/cabinet/confirm-withdrawal") {
+        const body = await readJsonBody(req);
+        const wallet = normalizeIncomingWallet(body.wallet);
+        const withdrawSessionId = normalizeOptionalString(body.withdrawSessionId);
+        const txid = normalizeOptionalString(body.txid);
+        const limit =
+          body.limit !== undefined
+            ? parsePositiveInteger(String(body.limit), 1000, "limit")
+            : 1000;
+
+        const record = await getAmbassadorRegistryRecordByWallet(wallet);
+
+        if (!record?.privateIdentity?.wallet) {
+          sendJson(req, res, env, 404, {
+            ok: false,
+            error: "Ambassador not found for wallet"
+          });
+          return;
+        }
+
+        const result = await finalizeAmbassadorWithdrawal(worker, {
+          ambassadorWallet: record.privateIdentity.wallet,
+          ambassadorSlug: record.publicProfile.slug,
+          withdrawSessionId,
+          txid,
+          limit,
+          now: Date.now(),
           logger: console
         });
 
