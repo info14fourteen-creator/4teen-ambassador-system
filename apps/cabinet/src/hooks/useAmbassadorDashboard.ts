@@ -349,7 +349,18 @@ export function useAmbassadorDashboard(): UseAmbassadorDashboardResult {
     }));
 
     try {
-      const result = await withdrawRewards();
+      const wallet =
+        state.wallet && state.wallet.trim()
+          ? state.wallet
+          : await getConnectedWalletAddress();
+
+      const withdrawSessionId =
+        state.dashboard?.withdrawalQueue?.withdrawSessionId ?? null;
+
+      const result = await withdrawRewards({
+        wallet,
+        withdrawSessionId
+      });
 
       if (!mountedRef.current) {
         return result;
@@ -380,7 +391,7 @@ export function useAmbassadorDashboard(): UseAmbassadorDashboardResult {
 
       throw error;
     }
-  }, [load]);
+  }, [load, state.wallet, state.dashboard]);
 
   const clearError = useCallback(() => {
     setState((current) => ({
