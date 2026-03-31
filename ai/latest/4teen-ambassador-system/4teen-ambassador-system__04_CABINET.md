@@ -1,6 +1,6 @@
 # 4teen-ambassador-system — CABINET
 
-Generated: 2026-03-31T20:15:03.611Z
+Generated: 2026-03-31T20:18:43.764Z
 Repository: info14fourteen-creator/4teen-ambassador-system
 Branch: main
 
@@ -927,17 +927,33 @@ function assertNonEmpty(value: string, fieldName: string): string {
   return normalized;
 }
 
-function safeString(value: any, fallback = "0"): string {
-  if (value == null) return fallback;
+function safeString(value: unknown, fallback = "0"): string {
+  if (value == null) {
+    return fallback;
+  }
+
   return String(value);
 }
 
-function safeSunString(value: any, fallback = "0"): string {
+function safeSunString(value: unknown, fallback = "0"): string {
   const raw = safeString(value, fallback).trim();
-  return /^\d+$/.test(raw) ? raw : fallback;
+
+  if (!raw) {
+    return fallback;
+  }
+
+  if (/^\d+$/.test(raw)) {
+    return raw;
+  }
+
+  if (/^-?\d+$/.test(raw)) {
+    return raw.startsWith("-") ? fallback : raw;
+  }
+
+  return fallback;
 }
 
-function safeNumber(value: any): number {
+function safeNumber(value: unknown, fallback = 0): number {
   if (typeof value === "number" && Number.isFinite(value)) {
     return value;
   }
@@ -953,21 +969,47 @@ function safeNumber(value: any): number {
     }
   }
 
-  return 0;
+  return fallback;
 }
 
-function safeBoolean(value: any): boolean {
+function safeBoolean(value: unknown): boolean {
+  if (typeof value === "boolean") {
+    return value;
+  }
+
+  if (typeof value === "number") {
+    return value !== 0;
+  }
+
+  if (typeof value === "bigint") {
+    return value !== 0n;
+  }
+
+  if (typeof value === "string") {
+    const normalized = value.trim().toLowerCase();
+
+    if (!normalized) return false;
+    if (normalized === "true") return true;
+    if (normalized === "false") return false;
+    if (normalized === "1") return true;
+    if (normalized === "0") return false;
+  }
+
   return Boolean(value);
 }
 
-function pickTupleValue(source: any, index: number, key?: string): any {
+function pickTupleValue(source: any, index: number, ...keys: string[]): any {
   if (Array.isArray(source)) {
-    return source[index];
+    if (source[index] !== undefined) {
+      return source[index];
+    }
   }
 
   if (source && typeof source === "object") {
-    if (key && key in source) {
-      return source[key];
+    for (const key of keys) {
+      if (key && key in source) {
+        return source[key];
+      }
     }
 
     const numericKey = String(index);
@@ -976,13 +1018,26 @@ function pickTupleValue(source: any, index: number, key?: string): any {
     }
 
     const values = Object.values(source);
-    return values[index];
+    if (values[index] !== undefined) {
+      return values[index];
+    }
   }
 
   return undefined;
 }
 
-export function sunToTrxString(value: any): string {
+function pickFirstDefined(source: any, candidates: Array<{ index: number; keys: string[] }>): any {
+  for (const candidate of candidates) {
+    const value = pickTupleValue(source, candidate.index, ...candidate.keys);
+    if (value !== undefined && value !== null && value !== "") {
+      return value;
+    }
+  }
+
+  return undefined;
+}
+
+export function sunToTrxString(value: unknown): string {
   const raw = safeString(value, "0").trim();
 
   if (!raw || raw === "0") {
@@ -1004,14 +1059,28 @@ export function sunToTrxString(value: any): string {
   return negative ? `-${result}` : result;
 }
 
-function normalizeHex32(value: any): string {
+function normalizeHex32(value: unknown): string {
   const raw = safeString(value, ZERO_BYTES32).trim().toLowerCase();
-  return raw || ZERO_BYTES32;
+
+  if (!raw) {
+    return ZERO_BYTES32;
+  }
+
+  if (/^0x[0-9a-f]{64}$/.test(raw)) {
+    return raw;
+  }
+
+  return ZERO_BYTES32;
 }
 
-function normalizeMetaHash(value: any): string {
+function normalizeMetaHash(value: unknown): string {
   const raw = normalizeHex32(value);
   return raw === ZERO_BYTES32 ? "—" : raw;
+}
+
+function normalizeSlugHash(value: unknown): string {
+  const raw = normalizeHex32(value);
+  return raw || ZERO_BYTES32;
 }
 
 async function getTronWeb(): Promise<any> {
@@ -1045,19 +1114,77 @@ export function levelToLabel(level: number): string {
 }
 
 function mapIdentity(wallet: string, coreRaw: any, profileRaw: any): AmbassadorIdentity {
-  const exists = safeBoolean(pickTupleValue(coreRaw, 0, "exists"));
-  const active = safeBoolean(pickTupleValue(coreRaw, 1, "active"));
-  const effectiveLevel = safeNumber(pickTupleValue(coreRaw, 2, "effectiveLevel"));
-  const rewardPercent = safeNumber(pickTupleValue(coreRaw, 3, "rewardPercent"));
-  const createdAt = safeNumber(pickTupleValue(coreRaw, 4, "createdAt"));
+  const exists = safeBoolean(
+    pickFirstDefined(coreRaw, [
+      { index: 0, keys: ["exists"] }
+    ])
+  );
 
-  const selfRegistered = safeBoolean(pickTupleValue(profileRaw, 0, "selfRegistered"));
-  const manualAssigned = safeBoolean(pickTupleValue(profileRaw, 1, "manualAssigned"));
-  const overrideEnabled = safeBoolean(pickTupleValue(profileRaw, 2, "overrideEnabled"));
-  const currentLevel = safeNumber(pickTupleValue(profileRaw, 3, "currentLevel"));
-  const overrideLevel = safeNumber(pickTupleValue(profileRaw, 4, "overrideLevel"));
-  const slugHash = normalizeHex32(pickTupleValue(profileRaw, 5, "slugHash"));
-  const metaHash = normalizeMetaHash(pickTupleValue(profileRaw, 6, "metaHash"));
+  const active = safeBoolean(
+    pickFirstDefined(coreRaw, [
+      { index: 1, keys: ["active"] }
+    ])
+  );
+
+  const effectiveLevel = safeNumber(
+    pickFirstDefined(coreRaw, [
+      { index: 2, keys: ["effectiveLevel", "level"] }
+    ])
+  );
+
+  const rewardPercent = safeNumber(
+    pickFirstDefined(coreRaw, [
+      { index: 3, keys: ["rewardPercent"] }
+    ])
+  );
+
+  const createdAt = safeNumber(
+    pickFirstDefined(coreRaw, [
+      { index: 4, keys: ["createdAt"] }
+    ])
+  );
+
+  const selfRegistered = safeBoolean(
+    pickFirstDefined(profileRaw, [
+      { index: 0, keys: ["selfRegistered"] }
+    ])
+  );
+
+  const manualAssigned = safeBoolean(
+    pickFirstDefined(profileRaw, [
+      { index: 1, keys: ["manualAssigned"] }
+    ])
+  );
+
+  const overrideEnabled = safeBoolean(
+    pickFirstDefined(profileRaw, [
+      { index: 2, keys: ["overrideEnabled"] }
+    ])
+  );
+
+  const currentLevel = safeNumber(
+    pickFirstDefined(profileRaw, [
+      { index: 3, keys: ["currentLevel"] }
+    ])
+  );
+
+  const overrideLevel = safeNumber(
+    pickFirstDefined(profileRaw, [
+      { index: 4, keys: ["overrideLevel"] }
+    ])
+  );
+
+  const slugHash = normalizeSlugHash(
+    pickFirstDefined(profileRaw, [
+      { index: 5, keys: ["slugHash"] }
+    ])
+  );
+
+  const metaHash = normalizeMetaHash(
+    pickFirstDefined(profileRaw, [
+      { index: 6, keys: ["metaHash"] }
+    ])
+  );
 
   return {
     wallet,
@@ -1078,24 +1205,37 @@ function mapIdentity(wallet: string, coreRaw: any, profileRaw: any): AmbassadorI
 }
 
 function mapStats(statsRaw: any): AmbassadorStats {
-  const totalBuyers = safeNumber(pickTupleValue(statsRaw, 0, "totalBuyers"));
+  const totalBuyers = safeNumber(
+    pickFirstDefined(statsRaw, [
+      { index: 0, keys: ["totalBuyers", "buyersCount"] }
+    ])
+  );
+
   const trackedVolumeSun = safeSunString(
-    pickTupleValue(statsRaw, 1, "totalVolumeSun") ??
-      pickTupleValue(statsRaw, 1, "trackedVolumeSun"),
+    pickFirstDefined(statsRaw, [
+      { index: 1, keys: ["trackedVolumeSun", "totalVolumeSun"] }
+    ]),
     "0"
   );
+
   const lifetimeRewardsSun = safeSunString(
-    pickTupleValue(statsRaw, 2, "totalRewardsAccruedSun") ??
-      pickTupleValue(statsRaw, 2, "lifetimeRewardsSun"),
+    pickFirstDefined(statsRaw, [
+      { index: 2, keys: ["lifetimeRewardsSun", "totalRewardsAccruedSun"] }
+    ]),
     "0"
   );
+
   const withdrawnRewardsSun = safeSunString(
-    pickTupleValue(statsRaw, 3, "totalRewardsClaimedSun") ??
-      pickTupleValue(statsRaw, 3, "withdrawnRewardsSun"),
+    pickFirstDefined(statsRaw, [
+      { index: 3, keys: ["withdrawnRewardsSun", "totalRewardsClaimedSun"] }
+    ]),
     "0"
   );
+
   const claimableRewardsSun = safeSunString(
-    pickTupleValue(statsRaw, 4, "claimableRewardsSun"),
+    pickFirstDefined(statsRaw, [
+      { index: 4, keys: ["claimableRewardsSun", "availableOnChainSun"] }
+    ]),
     "0"
   );
 
@@ -1112,48 +1252,104 @@ function mapStats(statsRaw: any): AmbassadorStats {
   };
 }
 
-function mapProgress(progressRaw: any): AmbassadorLevelProgress {
+function mapProgress(progressRaw: any, identity?: AmbassadorIdentity): AmbassadorLevelProgress {
+  const currentLevel = safeNumber(
+    pickFirstDefined(progressRaw, [
+      { index: 0, keys: ["currentLevel", "level"] }
+    ]),
+    identity?.currentLevel ?? identity?.effectiveLevel ?? 0
+  );
+
+  const buyersCount = safeNumber(
+    pickFirstDefined(progressRaw, [
+      { index: 1, keys: ["buyersCount", "totalBuyers"] }
+    ]),
+    0
+  );
+
+  const nextThreshold = safeNumber(
+    pickFirstDefined(progressRaw, [
+      { index: 2, keys: ["nextThreshold"] }
+    ]),
+    0
+  );
+
+  const remainingToNextLevel = safeNumber(
+    pickFirstDefined(progressRaw, [
+      { index: 3, keys: ["remainingToNextLevel"] }
+    ]),
+    0
+  );
+
   return {
-    currentLevel: safeNumber(pickTupleValue(progressRaw, 0, "currentLevel")),
-    buyersCount: safeNumber(pickTupleValue(progressRaw, 1, "buyersCount")),
-    nextThreshold: safeNumber(pickTupleValue(progressRaw, 2, "nextThreshold")),
-    remainingToNextLevel: safeNumber(pickTupleValue(progressRaw, 3, "remainingToNextLevel"))
+    currentLevel,
+    buyersCount,
+    nextThreshold,
+    remainingToNextLevel
   };
 }
 
 function mapWithdrawalQueue(raw: any, stats: AmbassadorStats): AmbassadorWithdrawalQueue {
   const availableOnChainSun = safeSunString(
-    pickTupleValue(raw, 0, "availableOnChainSun") ?? stats.claimableRewardsSun,
-    "0"
+    pickFirstDefined(raw, [
+      { index: 0, keys: ["availableOnChainSun", "claimableRewardsSun"] }
+    ]),
+    stats.claimableRewardsSun
   );
+
   const pendingBackendSyncSun = safeSunString(
-    pickTupleValue(raw, 1, "pendingBackendSyncSun"),
+    pickFirstDefined(raw, [
+      { index: 1, keys: ["pendingBackendSyncSun"] }
+    ]),
     "0"
   );
+
   const requestedForProcessingSun = safeSunString(
-    pickTupleValue(raw, 2, "requestedForProcessingSun"),
+    pickFirstDefined(raw, [
+      { index: 2, keys: ["requestedForProcessingSun"] }
+    ]),
     "0"
   );
 
   const availableOnChainCount = safeNumber(
-    pickTupleValue(raw, 3, "availableOnChainCount")
+    pickFirstDefined(raw, [
+      { index: 3, keys: ["availableOnChainCount"] }
+    ]),
+    0
   );
+
   const pendingBackendSyncCount = safeNumber(
-    pickTupleValue(raw, 4, "pendingBackendSyncCount")
+    pickFirstDefined(raw, [
+      { index: 4, keys: ["pendingBackendSyncCount"] }
+    ]),
+    0
   );
+
   const requestedForProcessingCount = safeNumber(
-    pickTupleValue(raw, 5, "requestedForProcessingCount")
+    pickFirstDefined(raw, [
+      { index: 5, keys: ["requestedForProcessingCount"] }
+    ]),
+    0
   );
+
   const hasProcessingWithdrawal = safeBoolean(
-    pickTupleValue(raw, 6, "hasProcessingWithdrawal")
+    pickFirstDefined(raw, [
+      { index: 6, keys: ["hasProcessingWithdrawal"] }
+    ])
   );
 
   const allocatedInDbSun = safeSunString(
-    pickTupleValue(raw, 7, "allocatedInDbSun"),
+    pickFirstDefined(raw, [
+      { index: 7, keys: ["allocatedInDbSun"] }
+    ]),
     "0"
   );
+
   const allocatedInDbCount = safeNumber(
-    pickTupleValue(raw, 8, "allocatedInDbCount")
+    pickFirstDefined(raw, [
+      { index: 8, keys: ["allocatedInDbCount"] }
+    ]),
+    0
   );
 
   return {
@@ -1181,7 +1377,7 @@ function buildFallbackWithdrawalQueue(stats: AmbassadorStats): AmbassadorWithdra
   return {
     availableOnChainSun: stats.claimableRewardsSun,
     availableOnChainTrx: stats.claimableRewardsTrx,
-    availableOnChainCount: 0,
+    availableOnChainCount: stats.claimableRewardsSun !== "0" ? 1 : 0,
 
     allocatedInDbSun: "0",
     allocatedInDbTrx: "0",
@@ -1233,9 +1429,10 @@ export async function readAmbassadorLevelProgress(
     : await getConnectedWalletAddress();
 
   const contract = await getControllerContractInstance();
+  const identity = await readAmbassadorIdentity(resolvedWallet);
   const raw = await contract.getAmbassadorLevelProgress(resolvedWallet).call();
 
-  return mapProgress(raw);
+  return mapProgress(raw, identity);
 }
 
 export async function readAmbassadorWithdrawalQueue(
@@ -1281,13 +1478,30 @@ export async function readAmbassadorDashboard(wallet?: string): Promise<Ambassad
     ? assertNonEmpty(wallet, "wallet")
     : await getConnectedWalletAddress();
 
-  const [identity, stats, progress] = await Promise.all([
-    readAmbassadorIdentity(resolvedWallet),
-    readAmbassadorStats(resolvedWallet),
-    readAmbassadorLevelProgress(resolvedWallet)
+  const contract = await getControllerContractInstance();
+
+  const [coreRaw, profileRaw, statsRaw, progressRaw] = await Promise.all([
+    contract.getDashboardCore(resolvedWallet).call(),
+    contract.getDashboardProfile(resolvedWallet).call(),
+    contract.getDashboardStats(resolvedWallet).call(),
+    contract.getAmbassadorLevelProgress(resolvedWallet).call()
   ]);
 
-  const withdrawalQueue = await readAmbassadorWithdrawalQueue(resolvedWallet, stats);
+  const identity = mapIdentity(resolvedWallet, coreRaw, profileRaw);
+  const stats = mapStats(statsRaw);
+  const progress = mapProgress(progressRaw, identity);
+
+  let withdrawalQueue: AmbassadorWithdrawalQueue;
+
+  if (typeof contract.getAmbassadorWithdrawalQueue === "function") {
+    const raw = await contract.getAmbassadorWithdrawalQueue(resolvedWallet).call();
+    withdrawalQueue = mapWithdrawalQueue(raw, stats);
+  } else if (typeof contract.getDashboardWithdrawalQueue === "function") {
+    const raw = await contract.getDashboardWithdrawalQueue(resolvedWallet).call();
+    withdrawalQueue = mapWithdrawalQueue(raw, stats);
+  } else {
+    withdrawalQueue = buildFallbackWithdrawalQueue(stats);
+  }
 
   return {
     identity,
