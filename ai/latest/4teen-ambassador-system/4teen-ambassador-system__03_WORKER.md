@@ -1,6 +1,6 @@
 # 4teen-ambassador-system — ALLOCATION WORKER
 
-Generated: 2026-03-31T10:02:04.612Z
+Generated: 2026-03-31T10:11:20.907Z
 Repository: info14fourteen-creator/4teen-ambassador-system
 Branch: main
 
@@ -2885,7 +2885,8 @@ export type AllocationAttemptStatus =
   | "retryable-failed"
   | "final-failed"
   | "skipped-already-final"
-  | "skipped-no-ambassador-wallet";
+  | "skipped-no-ambassador-wallet"
+  | "stopped-on-resource-shortage";
 
 export interface AllocationAttemptResult {
   status: AllocationAttemptStatus;
@@ -2923,11 +2924,14 @@ export interface AllocatePendingBatchInput {
   feeLimitSun?: number;
   limit?: number;
   allocationMode?: AllocationMode;
+  stopOnFirstDeferred?: boolean;
 }
 
 export interface AllocatePendingBatchResult {
   ambassadorWallet: string;
   processed: AllocationAttemptResult[];
+  stoppedEarly: boolean;
+  stopReason: string | null;
 }
 
 type AllocationErrorKind = "resource" | "retryable" | "final" | "unknown";
@@ -3011,7 +3015,11 @@ function isResourceInsufficientMessage(message: string): boolean {
     value.includes("bandwidth limit") ||
     value.includes("account resources are insufficient") ||
     value.includes("not enough energy") ||
-    value.includes("not enough bandwidth")
+    value.includes("not enough bandwidth") ||
+    value.includes("gasstation service balance") ||
+    value.includes("gasstation balance") ||
+    value.includes("top-up") ||
+    value.includes("top up")
   );
 }
 
@@ -3078,15 +3086,33 @@ function isKnownRetryableCode(lowerCode: string): boolean {
     lowerCode.includes("gasstation_topup_failed") ||
     lowerCode.includes("gasstation_fetch_failed") ||
     lowerCode.includes("gasstation_invalid_response") ||
+    lowerCode.includes("gasstation_timeout") ||
     lowerCode.includes("gasstation_http_5") ||
     lowerCode.includes("gasstation_error_100003")
   );
 }
 
+function isKnownResourceCode(lowerCode: string): boolean {
+  return (
+    lowerCode.includes("out_of_energy") ||
+    lowerCode.includes("insufficient") ||
+    lowerCode.includes("bandwidth") ||
+    lowerCode.includes("energy") ||
+    lowerCode.includes("account_resource") ||
+    lowerCode.includes("gasstation_operator_balance_low") ||
+    lowerCode.includes("gasstation_service_balance_low") ||
+    lowerCode.includes("gasstation_topup_not_settled") ||
+    lowerCode.includes("gasstation_topup_transfer_failed") ||
+    lowerCode.includes("gasstation_topup_failed") ||
+    lowerCode.includes("account_resource_consumed_before_send") ||
+    lowerCode.includes("account_resource_insufficient_during_send")
+  );
+}
+
 function isKnownFinalCode(lowerCode: string): boolean {
   return (
-    lowerCode.includes("gasstation_operator_balance_low") ||
-    lowerCode.includes("gasstation_service_balance_low")
+    lowerCode.includes("invalid_status") ||
+    lowerCode.includes("no_ambassador_wallet")
   );
 }
 
@@ -3095,15 +3121,11 @@ function classifyAllocationError(error: unknown): ClassifiedAllocationError {
   const code = extractErrorCode(error);
   const lowerCode = toLowerSafe(code);
 
-  if (
-    isResourceInsufficientMessage(message) ||
-    lowerCode.includes("out_of_energy") ||
-    lowerCode.includes("insufficient")
-  ) {
+  if (isKnownResourceCode(lowerCode) || isResourceInsufficientMessage(message)) {
     return {
       kind: "resource",
       code,
-      reason: "Account resource insufficient error.",
+      reason: message,
       message
     };
   }
@@ -3132,7 +3154,8 @@ function classifyAllocationError(error: unknown): ClassifiedAllocationError {
     lowerCode.includes("econnreset") ||
     lowerCode.includes("temporar") ||
     lowerCode.includes("gasstation_fetch_failed") ||
-    lowerCode.includes("gasstation_invalid_response")
+    lowerCode.includes("gasstation_invalid_response") ||
+    lowerCode.includes("gasstation_timeout")
   ) {
     return {
       kind: "retryable",
@@ -3142,30 +3165,7 @@ function classifyAllocationError(error: unknown): ClassifiedAllocationError {
     };
   }
 
-  if (
-    lowerCode.includes("gasstation_topup_transfer_failed") ||
-    lowerCode.includes("gasstation_topup_not_settled") ||
-    lowerCode.includes("gasstation_topup_failed") ||
-    lowerCode.includes("gasstation_order_failed")
-  ) {
-    return {
-      kind: "retryable",
-      code,
-      reason: message,
-      message
-    };
-  }
-
-  if (isKnownFinalCode(lowerCode)) {
-    return {
-      kind: "final",
-      code,
-      reason: message,
-      message
-    };
-  }
-
-  if (isFinalMessage(message)) {
+  if (isKnownFinalCode(lowerCode) || isFinalMessage(message)) {
     return {
       kind: "final",
       code,
@@ -3203,6 +3203,7 @@ function classifyAllocationError(error: unknown): ClassifiedAllocationError {
 function isFinalPurchaseStatus(status: PurchaseRecord["status"]): boolean {
   return (
     status === "allocated" ||
+    status === "withdraw_completed" ||
     status === "ignored" ||
     status === "allocation_failed_final"
   );
@@ -3348,6 +3349,9 @@ export class AllocationService {
     });
 
     const processed: AllocationAttemptResult[] = [];
+    let stoppedEarly = false;
+    let stopReason: string | null = null;
+    const stopOnFirstDeferred = input.stopOnFirstDeferred !== false;
 
     for (const purchase of pending) {
       const result = await this.tryAllocatePurchaseRecord(purchase, {
@@ -3356,11 +3360,24 @@ export class AllocationService {
       });
 
       processed.push(result);
+
+      if (
+        stopOnFirstDeferred &&
+        (result.status === "deferred" || result.status === "stopped-on-resource-shortage")
+      ) {
+        stoppedEarly = true;
+        stopReason =
+          result.reason ||
+          "Allocation stopped because resources were not sufficient.";
+        break;
+      }
     }
 
     return {
       ambassadorWallet,
-      processed
+      processed,
+      stoppedEarly,
+      stopReason
     };
   }
 
@@ -3495,7 +3512,10 @@ export class AllocationService {
         });
 
         return {
-          status: "deferred",
+          status:
+            allocationMode === "claim-first"
+              ? "stopped-on-resource-shortage"
+              : "deferred",
           purchase: deferred,
           txid: null,
           reason: classified.reason,
