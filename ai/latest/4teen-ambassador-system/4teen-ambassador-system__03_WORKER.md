@@ -1,6 +1,6 @@
 # 4teen-ambassador-system — ALLOCATION WORKER
 
-Generated: 2026-03-31T20:24:13.812Z
+Generated: 2026-03-31T20:39:59.455Z
 Repository: info14fourteen-creator/4teen-ambassador-system
 Branch: main
 
@@ -4075,10 +4075,13 @@ export interface AllocationWorkerProcessor {
       feeLimitSun?: number;
       limit?: number;
       allocationMode?: AllocationMode;
+      stopOnFirstDeferred?: boolean;
     }
   ): Promise<{
     ambassadorWallet: string;
     processed: Awaited<ReturnType<AllocationService["tryAllocateVerifiedPurchase"]>>[];
+    stoppedEarly: boolean;
+    stopReason: string | null;
   }>;
 }
 
@@ -4191,7 +4194,10 @@ function mapAllocationAttemptToApiResult(
     };
   }
 
-  if (result.status === "deferred") {
+  if (
+    result.status === "deferred" ||
+    result.status === "stopped-on-resource-shortage"
+  ) {
     return {
       status: "deferred",
       purchase: result.purchase,
@@ -4640,23 +4646,29 @@ class AllocationWorkerProcessorImpl implements AllocationWorkerProcessor {
       feeLimitSun?: number;
       limit?: number;
       allocationMode?: AllocationMode;
+      stopOnFirstDeferred?: boolean;
     }
   ): Promise<{
     ambassadorWallet: string;
     processed: Awaited<ReturnType<AllocationService["tryAllocateVerifiedPurchase"]>>[];
+    stoppedEarly: boolean;
+    stopReason: string | null;
   }> {
     const result = await this.allocation.allocatePendingBatch({
       ambassadorWallet: input.ambassadorWallet,
       feeLimitSun: input.feeLimitSun,
       limit: input.limit,
-      allocationMode: input.allocationMode
+      allocationMode: input.allocationMode,
+      stopOnFirstDeferred: input.stopOnFirstDeferred
     });
 
     return {
       ambassadorWallet: result.ambassadorWallet,
       processed: result.processed as Awaited<
         ReturnType<AllocationService["tryAllocateVerifiedPurchase"]>
-      >[]
+      >[],
+      stoppedEarly: result.stoppedEarly,
+      stopReason: result.stopReason
     };
   }
 }
