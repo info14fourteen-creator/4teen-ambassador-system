@@ -177,9 +177,8 @@ function loadEnv(): EnvConfig {
       168502,
       "ALLOCATION_MIN_ENERGY"
     ),
-    gasStationServiceChargeType: String(
-      process.env.GASSTATION_SERVICE_CHARGE_TYPE || "10010"
-    ).trim() || "10010"
+    gasStationServiceChargeType:
+      String(process.env.GASSTATION_SERVICE_CHARGE_TYPE || "10010").trim() || "10010"
   };
 
   const controllerContractAddress = process.env.FOURTEEN_CONTROLLER_CONTRACT?.trim();
@@ -312,9 +311,15 @@ function extractErrorCode(error: unknown): string | null {
   ];
 
   for (const candidate of candidates) {
-    if (candidate == null) continue;
+    if (candidate == null) {
+      continue;
+    }
+
     const code = String(candidate).trim();
-    if (code) return code;
+
+    if (code) {
+      return code;
+    }
   }
 
   return null;
@@ -431,6 +436,28 @@ function classifyHttpStatus(error: unknown): number {
   return 500;
 }
 
+function parseAllocationMode(value: unknown): "eager" | "claim-first" | undefined {
+  const normalized = String(value ?? "").trim().toLowerCase();
+
+  if (normalized === "eager") {
+    return "eager";
+  }
+
+  if (normalized === "claim-first" || normalized === "claim") {
+    return "claim-first";
+  }
+
+  return undefined;
+}
+
+function createGasStationClientOrThrow(env: EnvConfig) {
+  if (!env.gasStationEnabled) {
+    throw new Error("GasStation is disabled");
+  }
+
+  return createGasStationClientFromEnv();
+}
+
 async function bootstrap() {
   const env = loadEnv();
   const TronWeb = getTronWebConstructor();
@@ -513,7 +540,7 @@ async function bootstrap() {
       }
 
       if (method === "GET" && pathname === "/debug/gasstation/balance") {
-        const client = createGasStationClientFromEnv();
+        const client = createGasStationClientOrThrow(env);
         const gasBalance = await client.getBalance();
 
         const operatorAddress = normalizeAddress(
@@ -571,7 +598,7 @@ async function bootstrap() {
       }
 
       if (method === "GET" && pathname === "/debug/gasstation/order-check") {
-        const client = createGasStationClientFromEnv();
+        const client = createGasStationClientOrThrow(env);
 
         const operatorAddress = normalizeAddress(
           tronWeb?.defaultAddress?.base58 || tronWeb?.defaultAddress?.hex || "",
@@ -853,8 +880,16 @@ async function bootstrap() {
       if (method === "POST" && pathname === "/cabinet/replay-pending") {
         const body = await readJsonBody(req);
         const wallet = normalizeIncomingWallet(body.wallet);
+        const feeLimitSun =
+          body.feeLimitSun !== undefined
+            ? parsePositiveInteger(String(body.feeLimitSun), 1, "feeLimitSun")
+            : undefined;
 
-        const result = await cabinetService.replayPendingByWallet(wallet, Date.now());
+        const result = await cabinetService.replayPendingByWallet(
+          wallet,
+          Date.now(),
+          feeLimitSun
+        );
 
         sendJson(req, res, env, 200, {
           ok: true,
@@ -927,7 +962,7 @@ async function bootstrap() {
           logger: console
         });
 
-        sendJson(req, res, env, isResourceLikeError({ message: result.stopReason }) ? 409 : 200, {
+        sendJson(req, res, env, 200, {
           ok: true,
           result
         });
@@ -967,10 +1002,7 @@ async function bootstrap() {
           "buyerWallet"
         );
         const slug = normalizeIncomingSlug(body.slug);
-        const allocationMode =
-          body.allocationMode === "claim" || body.allocationMode === "eager"
-            ? body.allocationMode
-            : undefined;
+        const allocationMode = parseAllocationMode(body.allocationMode);
 
         const feeLimitSun =
           body.feeLimitSun !== undefined
