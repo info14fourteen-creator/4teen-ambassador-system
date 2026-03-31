@@ -1,6 +1,6 @@
 # 4teen-ambassador-system — CABINET
 
-Generated: 2026-03-31T20:21:04.809Z
+Generated: 2026-03-31T20:24:13.813Z
 Repository: info14fourteen-creator/4teen-ambassador-system
 Branch: main
 
@@ -106,7 +106,13 @@ function formatDate(timestamp: number): string {
 
   try {
     const normalized = timestamp > 1_000_000_000_000 ? timestamp : timestamp * 1000;
-    return new Date(normalized).toLocaleString();
+    const date = new Date(normalized);
+
+    if (!Number.isFinite(date.getTime())) {
+      return "—";
+    }
+
+    return date.toLocaleString();
   } catch {
     return "—";
   }
@@ -199,6 +205,11 @@ export default function AmbassadorPage() {
     handleWithdrawRewards
   } = useAmbassadorDashboard();
 
+  const identity = dashboard?.identity ?? null;
+  const stats = dashboard?.stats ?? null;
+  const progress = dashboard?.progress ?? null;
+  const withdrawalQueue = dashboard?.withdrawalQueue ?? null;
+
   const walletExplorerUrl = useMemo(() => {
     if (!wallet) return "";
     return buildWalletExplorerUrl(wallet);
@@ -208,6 +219,45 @@ export default function AmbassadorPage() {
     if (!lastWithdrawTxid) return "";
     return buildTronscanTransactionUrl(lastWithdrawTxid);
   }, [lastWithdrawTxid]);
+
+  const effectiveLevel = identity?.effectiveLevel ?? identity?.level ?? 0;
+  const currentLevel = progress?.currentLevel ?? identity?.currentLevel ?? effectiveLevel;
+
+  const trackedVolumeSun = stats?.trackedVolumeSun ?? "0";
+  const trackedVolumeTrx = stats?.trackedVolumeTrx ?? sunToTrxString(trackedVolumeSun);
+
+  const claimableRewardsSun =
+    withdrawalQueue?.availableOnChainSun ??
+    stats?.claimableRewardsSun ??
+    "0";
+  const claimableRewardsTrx =
+    withdrawalQueue?.availableOnChainTrx ??
+    stats?.claimableRewardsTrx ??
+    sunToTrxString(claimableRewardsSun);
+
+  const lifetimeRewardsSun = stats?.lifetimeRewardsSun ?? "0";
+  const lifetimeRewardsTrx =
+    stats?.lifetimeRewardsTrx ?? sunToTrxString(lifetimeRewardsSun);
+
+  const withdrawnRewardsSun = stats?.withdrawnRewardsSun ?? "0";
+  const withdrawnRewardsTrx =
+    stats?.withdrawnRewardsTrx ?? sunToTrxString(withdrawnRewardsSun);
+
+  const allocatedInDbSun = withdrawalQueue?.allocatedInDbSun ?? "0";
+  const allocatedInDbTrx =
+    withdrawalQueue?.allocatedInDbTrx ?? sunToTrxString(allocatedInDbSun);
+
+  const availableOnChainSun = withdrawalQueue?.availableOnChainSun ?? "0";
+  const availableOnChainTrx =
+    withdrawalQueue?.availableOnChainTrx ?? sunToTrxString(availableOnChainSun);
+
+  const pendingBackendSyncSun = withdrawalQueue?.pendingBackendSyncSun ?? "0";
+  const pendingBackendSyncTrx =
+    withdrawalQueue?.pendingBackendSyncTrx ?? sunToTrxString(pendingBackendSyncSun);
+
+  const requestedForProcessingSun = withdrawalQueue?.requestedForProcessingSun ?? "0";
+  const requestedForProcessingTrx =
+    withdrawalQueue?.requestedForProcessingTrx ?? sunToTrxString(requestedForProcessingSun);
 
   const primaryActionLabel = useMemo(
     () =>
@@ -269,34 +319,6 @@ export default function AmbassadorPage() {
     );
   }
 
-  const identity = dashboard?.identity ?? null;
-  const stats = dashboard?.stats ?? null;
-  const progress = dashboard?.progress ?? null;
-  const withdrawalQueue = dashboard?.withdrawalQueue ?? null;
-
-  const effectiveLevel = identity?.effectiveLevel ?? identity?.level ?? 0;
-  const currentLevel = progress?.currentLevel ?? effectiveLevel;
-
-  const trackedVolumeSun = stats?.trackedVolumeSun ?? "0";
-  const trackedVolumeTrx = stats?.trackedVolumeTrx ?? sunToTrxString(trackedVolumeSun);
-
-  const claimableRewardsSun =
-    stats?.claimableRewardsSun ?? withdrawalQueue?.availableOnChainSun ?? "0";
-  const claimableRewardsTrx =
-    stats?.claimableRewardsTrx ?? sunToTrxString(claimableRewardsSun);
-
-  const lifetimeRewardsSun = stats?.lifetimeRewardsSun ?? "0";
-  const lifetimeRewardsTrx =
-    stats?.lifetimeRewardsTrx ?? sunToTrxString(lifetimeRewardsSun);
-
-  const withdrawnRewardsSun = stats?.withdrawnRewardsSun ?? "0";
-  const withdrawnRewardsTrx =
-    stats?.withdrawnRewardsTrx ?? sunToTrxString(withdrawnRewardsSun);
-
-  const allocatedInDbSun = withdrawalQueue?.allocatedInDbSun ?? "0";
-  const allocatedInDbTrx =
-    withdrawalQueue?.allocatedInDbTrx ?? sunToTrxString(allocatedInDbSun);
-
   return (
     <main className="min-h-screen bg-[#111] px-6 py-10 text-white">
       <div className="mx-auto max-w-6xl space-y-6">
@@ -342,36 +364,36 @@ export default function AmbassadorPage() {
         <section className="grid gap-4 md:grid-cols-4">
           <StatusCard
             label="Available on-chain now"
-            trxValue={sunToTrxString(statusCards.availableOnChainSun)}
-            sunValue={statusCards.availableOnChainSun}
-            count={statusCards.availableOnChainCount}
+            trxValue={availableOnChainTrx}
+            sunValue={availableOnChainSun}
+            count={withdrawalQueue?.availableOnChainCount ?? 0}
             accentClass="border-emerald-500/20 bg-emerald-500/10"
             hint="Real withdrawable amount from contract state."
           />
 
           <StatusCard
             label="Allocated in DB"
-            trxValue={sunToTrxString(statusCards.allocatedInDbSun)}
-            sunValue={statusCards.allocatedInDbSun}
-            count={statusCards.allocatedInDbCount}
+            trxValue={allocatedInDbTrx}
+            sunValue={allocatedInDbSun}
+            count={withdrawalQueue?.allocatedInDbCount ?? 0}
             accentClass="border-violet-500/20 bg-violet-500/10"
             hint="Backend accounting only. Not guaranteed withdrawable now."
           />
 
           <StatusCard
             label="Pending backend sync"
-            trxValue={sunToTrxString(statusCards.pendingBackendSyncSun)}
-            sunValue={statusCards.pendingBackendSyncSun}
-            count={statusCards.pendingBackendSyncCount}
+            trxValue={pendingBackendSyncTrx}
+            sunValue={pendingBackendSyncSun}
+            count={withdrawalQueue?.pendingBackendSyncCount ?? 0}
             accentClass="border-amber-500/20 bg-amber-500/10"
             hint="Verified rewards that still need backend and on-chain sync."
           />
 
           <StatusCard
             label="Requested for processing"
-            trxValue={sunToTrxString(statusCards.requestedForProcessingSun)}
-            sunValue={statusCards.requestedForProcessingSun}
-            count={statusCards.requestedForProcessingCount}
+            trxValue={requestedForProcessingTrx}
+            sunValue={requestedForProcessingSun}
+            count={withdrawalQueue?.requestedForProcessingCount ?? 0}
             accentClass="border-sky-500/20 bg-sky-500/10"
             hint="Already included in withdrawal preparation or processing queue."
           />
@@ -435,7 +457,7 @@ export default function AmbassadorPage() {
           <ValueCard
             label="Current level"
             value={levelToLabel(currentLevel)}
-            hint={`Current buyers: ${progress?.buyersCount ?? 0}`}
+            hint={`Current buyers: ${progress?.buyersCount ?? stats?.totalBuyers ?? 0}`}
           />
           <ValueCard
             label="Next threshold"
