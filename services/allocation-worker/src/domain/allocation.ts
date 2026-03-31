@@ -213,6 +213,34 @@ function isFinalMessage(message: string): boolean {
   );
 }
 
+function isKnownRetryableCode(lowerCode: string): boolean {
+  return (
+    lowerCode === "429" ||
+    lowerCode.includes("rate_limit") ||
+    lowerCode.includes("rate limited") ||
+    lowerCode.includes("too_many_requests") ||
+    lowerCode.includes("timeout") ||
+    lowerCode.includes("network") ||
+    lowerCode.includes("econnreset") ||
+    lowerCode.includes("temporar") ||
+    lowerCode.includes("gasstation_rate_limit") ||
+    lowerCode.includes("tron_rate_limit") ||
+    lowerCode.includes("gasstation_order_failed") ||
+    lowerCode.includes("gasstation_topup_transfer_failed") ||
+    lowerCode.includes("gasstation_topup_not_settled") ||
+    lowerCode.includes("gasstation_topup_failed") ||
+    lowerCode.includes("gasstation_fetch_failed") ||
+    lowerCode.includes("gasstation_invalid_response")
+  );
+}
+
+function isKnownFinalCode(lowerCode: string): boolean {
+  return (
+    lowerCode.includes("gasstation_operator_balance_low") ||
+    lowerCode.includes("gasstation_service_balance_low")
+  );
+}
+
 function classifyAllocationError(error: unknown): ClassifiedAllocationError {
   const message = toErrorMessage(error);
   const code = extractErrorCode(error);
@@ -236,7 +264,9 @@ function classifyAllocationError(error: unknown): ClassifiedAllocationError {
     lowerCode === "429" ||
     lowerCode.includes("rate_limit") ||
     lowerCode.includes("rate limited") ||
-    lowerCode.includes("too_many_requests")
+    lowerCode.includes("too_many_requests") ||
+    lowerCode.includes("gasstation_rate_limit") ||
+    lowerCode.includes("tron_rate_limit")
   ) {
     return {
       kind: "retryable",
@@ -251,12 +281,37 @@ function classifyAllocationError(error: unknown): ClassifiedAllocationError {
     lowerCode.includes("timeout") ||
     lowerCode.includes("network") ||
     lowerCode.includes("econnreset") ||
-    lowerCode.includes("temporar")
+    lowerCode.includes("temporar") ||
+    lowerCode.includes("gasstation_fetch_failed") ||
+    lowerCode.includes("gasstation_invalid_response")
   ) {
     return {
       kind: "retryable",
       code,
       reason: "Temporary allocation transport error.",
+      message
+    };
+  }
+
+  if (
+    lowerCode.includes("gasstation_topup_transfer_failed") ||
+    lowerCode.includes("gasstation_topup_not_settled") ||
+    lowerCode.includes("gasstation_topup_failed") ||
+    lowerCode.includes("gasstation_order_failed")
+  ) {
+    return {
+      kind: "retryable",
+      code,
+      reason: message,
+      message
+    };
+  }
+
+  if (isKnownFinalCode(lowerCode)) {
+    return {
+      kind: "final",
+      code,
+      reason: message,
       message
     };
   }
@@ -270,12 +325,18 @@ function classifyAllocationError(error: unknown): ClassifiedAllocationError {
     };
   }
 
-  if (
-    lowerCode === "err_bad_request" &&
-    !isRateLimitedMessage(message)
-  ) {
+  if (lowerCode === "err_bad_request" && !isRateLimitedMessage(message)) {
     return {
       kind: "final",
+      code,
+      reason: message,
+      message
+    };
+  }
+
+  if (isKnownRetryableCode(lowerCode)) {
+    return {
+      kind: "retryable",
       code,
       reason: message,
       message
