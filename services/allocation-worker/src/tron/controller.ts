@@ -69,6 +69,13 @@ interface GasStationBalanceSnapshot {
   depositAddress: string;
 }
 
+interface ResourceRequirement {
+  requiredEnergy: number;
+  requiredBandwidth: number;
+  targetEnergy: number;
+  targetBandwidth: number;
+}
+
 const TRON_HEX_ZERO_ADDRESS = "410000000000000000000000000000000000000000";
 const DEFAULT_SERVICE_CHARGE_TYPE = "10010";
 const DEFAULT_TRON_RETRY_ATTEMPTS = 4;
@@ -84,6 +91,17 @@ const GASSTATION_TOPUP_POLL_ATTEMPTS = 12;
 
 const RESOURCE_DELIVERY_POLL_INTERVAL_MS = 5000;
 const RESOURCE_DELIVERY_POLL_ATTEMPTS = 18;
+
+const RESOURCE_STABILIZATION_DELAY_MS = 2500;
+const RESOURCE_RECHECK_BEFORE_SEND_DELAY_MS = 1500;
+
+const MIN_ENERGY_ORDER_FLOOR = 64_400;
+const MIN_BANDWIDTH_ORDER_FLOOR = 5_000;
+
+const ENERGY_MARGIN_PERCENT = 20;
+const BANDWIDTH_MARGIN_PERCENT = 20;
+const MIN_ENERGY_MARGIN = 12_000;
+const MIN_BANDWIDTH_MARGIN = 1_500;
 
 function assertNonEmpty(value: string, fieldName: string): string {
   const normalized = String(value || "").trim();
@@ -440,6 +458,51 @@ function normalizePriceItems(source: unknown): Array<{
     .filter((item) => item.service_charge_type && item.price);
 }
 
+function calculateMargin(baseValue: number, percent: number, minValue: number): number {
+  if (baseValue <= 0) {
+    return 0;
+  }
+
+  return Math.max(minValue, Math.ceil((baseValue * percent) / 100));
+}
+
+function buildResourceRequirement(
+  requiredEnergy: number,
+  requiredBandwidth: number
+): ResourceRequirement {
+  const energyMargin = calculateMargin(requiredEnergy, ENERGY_MARGIN_PERCENT, MIN_ENERGY_MARGIN);
+  const bandwidthMargin = calculateMargin(
+    requiredBandwidth,
+    BANDWIDTH_MARGIN_PERCENT,
+    MIN_BANDWIDTH_MARGIN
+  );
+
+  return {
+    requiredEnergy,
+    requiredBandwidth,
+    targetEnergy: requiredEnergy > 0 ? requiredEnergy + energyMargin : 0,
+    targetBandwidth: requiredBandwidth > 0 ? requiredBandwidth + bandwidthMargin : 0
+  };
+}
+
+function isResourceSendError(error: unknown): boolean {
+  const message = getErrorMessage(error).toLowerCase();
+  const code = String(extractErrorCode(error) || "").toUpperCase();
+
+  return (
+    message.includes("out of energy") ||
+    message.includes("account resource insufficient") ||
+    message.includes("bandwidth") ||
+    message.includes("energy") ||
+    message.includes("consume_user_resource_percent") ||
+    message.includes("contract validate error") ||
+    message.includes("fee limit") ||
+    code.includes("OUT_OF_ENERGY") ||
+    code.includes("BANDWIDTH") ||
+    code.includes("ENERGY")
+  );
+}
+
 async function getContract(tronWeb: any, contractAddress: string): Promise<any> {
   if (!tronWeb || typeof tronWeb.contract !== "function") {
     throw new Error("Valid tronWeb instance is required");
@@ -510,11 +573,7 @@ async function getAccountResourceSnapshot(
   const calculatedPaidBandwidth = Math.max(0, netLimit - netUsed);
   const calculatedBandwidth = calculatedFreeBandwidth + calculatedPaidBandwidth;
 
-  const bandwidthAvailable = Math.max(
-    0,
-    toNumberSafe(bandwidthRaw),
-    calculatedBandwidth
-  );
+  const bandwidthAvailable = Math.max(0, toNumberSafe(bandwidthRaw), calculatedBandwidth);
 
   return {
     address: normalizedAddress,
@@ -525,6 +584,8 @@ async function getAccountResourceSnapshot(
 }
 
 export class TronControllerClient implements ControllerClient {
+  private static readonly operatorLocks = new Map<string, Promise<void>>();
+
   private readonly tronWeb: any;
   private readonly contractAddress: string;
   private readonly gasStationClient: GasStationClient | null;
@@ -573,6 +634,34 @@ export class TronControllerClient implements ControllerClient {
       "";
 
     return normalizeAddress(operatorAddress, "operatorAddress");
+  }
+
+  private async runWithOperatorLock<T>(fn: () => Promise<T>): Promise<T> {
+    const operatorAddress = this.getOperatorAddress();
+    const previous = TronControllerClient.operatorLocks.get(operatorAddress) ?? Promise.resolve();
+
+    let release!: () => void;
+    const current = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+
+    TronControllerClient.operatorLocks.set(
+      operatorAddress,
+      previous.then(() => current).catch(() => current)
+    );
+
+    await previous;
+
+    try {
+      return await fn();
+    } finally {
+      release();
+
+      const stored = TronControllerClient.operatorLocks.get(operatorAddress);
+      if (stored === current) {
+        TronControllerClient.operatorLocks.delete(operatorAddress);
+      }
+    }
   }
 
   private async estimateRentalCostSun(input: {
@@ -767,10 +856,9 @@ export class TronControllerClient implements ControllerClient {
     }
   }
 
-  private async waitForRequiredResources(input: {
-    requiredEnergy: number;
-    requiredBandwidth: number;
-  }): Promise<AccountResourceSnapshot> {
+  private async waitForRequiredResources(
+    requirement: ResourceRequirement
+  ): Promise<AccountResourceSnapshot> {
     let lastSnapshot: AccountResourceSnapshot | null = null;
     const operatorAddress = this.getOperatorAddress();
 
@@ -780,28 +868,50 @@ export class TronControllerClient implements ControllerClient {
       const snapshot = await getAccountResourceSnapshot(this.tronWeb, operatorAddress);
       lastSnapshot = snapshot;
 
-      if (
-        snapshot.energyAvailable >= input.requiredEnergy &&
-        snapshot.bandwidthAvailable >= input.requiredBandwidth
-      ) {
-        return snapshot;
+      const energyOk =
+        requirement.targetEnergy <= 0 || snapshot.energyAvailable >= requirement.targetEnergy;
+      const bandwidthOk =
+        requirement.targetBandwidth <= 0 ||
+        snapshot.bandwidthAvailable >= requirement.targetBandwidth;
+
+      if (energyOk && bandwidthOk) {
+        await delay(RESOURCE_STABILIZATION_DELAY_MS);
+
+        const stableSnapshot = await getAccountResourceSnapshot(this.tronWeb, operatorAddress);
+        const stableEnergyOk =
+          requirement.targetEnergy <= 0 ||
+          stableSnapshot.energyAvailable >= requirement.targetEnergy;
+        const stableBandwidthOk =
+          requirement.targetBandwidth <= 0 ||
+          stableSnapshot.bandwidthAvailable >= requirement.targetBandwidth;
+
+        if (stableEnergyOk && stableBandwidthOk) {
+          return stableSnapshot;
+        }
+
+        lastSnapshot = stableSnapshot;
       }
     }
 
     throw createTaggedError(
-      `Account resource insufficient after rental. Energy=${lastSnapshot?.energyAvailable ?? 0}, Bandwidth=${lastSnapshot?.bandwidthAvailable ?? 0}, RequiredEnergy=${input.requiredEnergy}, RequiredBandwidth=${input.requiredBandwidth}`,
+      `Account resource insufficient after rental. Energy=${lastSnapshot?.energyAvailable ?? 0}, Bandwidth=${lastSnapshot?.bandwidthAvailable ?? 0}, RequiredEnergy=${requirement.requiredEnergy}, RequiredBandwidth=${requirement.requiredBandwidth}, TargetEnergy=${requirement.targetEnergy}, TargetBandwidth=${requirement.targetBandwidth}`,
       {
         code: "ACCOUNT_RESOURCE_INSUFFICIENT_AFTER_RENTAL"
       }
     );
   }
 
+  private async buildCurrentRequirement(): Promise<ResourceRequirement> {
+    return buildResourceRequirement(this.allocationMinEnergy, this.allocationMinBandwidth);
+  }
+
   private async ensureResourcesForAllocation(purchaseId: string): Promise<void> {
     const operatorAddress = this.getOperatorAddress();
+    const requirement = await this.buildCurrentRequirement();
     const before = await getAccountResourceSnapshot(this.tronWeb, operatorAddress);
 
-    const missingEnergy = Math.max(0, this.allocationMinEnergy - before.energyAvailable);
-    const missingBandwidth = Math.max(0, this.allocationMinBandwidth - before.bandwidthAvailable);
+    const missingEnergy = Math.max(0, requirement.targetEnergy - before.energyAvailable);
+    const missingBandwidth = Math.max(0, requirement.targetBandwidth - before.bandwidthAvailable);
 
     if (missingEnergy <= 0 && missingBandwidth <= 0) {
       return;
@@ -809,7 +919,7 @@ export class TronControllerClient implements ControllerClient {
 
     if (!this.gasStationEnabled || !this.gasStationClient) {
       throw createTaggedError(
-        `Account resource insufficient. Energy=${before.energyAvailable}, Bandwidth=${before.bandwidthAvailable}, RequiredEnergy=${this.allocationMinEnergy}, RequiredBandwidth=${this.allocationMinBandwidth}`,
+        `Account resource insufficient. Energy=${before.energyAvailable}, Bandwidth=${before.bandwidthAvailable}, RequiredEnergy=${requirement.requiredEnergy}, RequiredBandwidth=${requirement.requiredBandwidth}, TargetEnergy=${requirement.targetEnergy}, TargetBandwidth=${requirement.targetBandwidth}`,
         {
           code: "ACCOUNT_RESOURCE_INSUFFICIENT"
         }
@@ -818,12 +928,12 @@ export class TronControllerClient implements ControllerClient {
 
     const energyToBuy =
       missingEnergy > 0
-        ? Math.max(this.gasStationMinEnergy, missingEnergy, 64400)
+        ? Math.max(this.gasStationMinEnergy, missingEnergy, MIN_ENERGY_ORDER_FLOOR)
         : 0;
 
     const bandwidthToBuy =
       missingBandwidth > 0
-        ? Math.max(this.gasStationMinBandwidth, missingBandwidth, 5000)
+        ? Math.max(this.gasStationMinBandwidth, missingBandwidth, MIN_BANDWIDTH_ORDER_FLOOR)
         : 0;
 
     const estimatedRentalCostSun = await this.estimateRentalCostSun({
@@ -865,10 +975,31 @@ export class TronControllerClient implements ControllerClient {
       );
     }
 
-    await this.waitForRequiredResources({
-      requiredEnergy: this.allocationMinEnergy,
-      requiredBandwidth: this.allocationMinBandwidth
-    });
+    await this.waitForRequiredResources(requirement);
+  }
+
+  private async verifyResourcesStillReadyBeforeSend(): Promise<void> {
+    const requirement = await this.buildCurrentRequirement();
+    const operatorAddress = this.getOperatorAddress();
+
+    await delay(RESOURCE_RECHECK_BEFORE_SEND_DELAY_MS);
+
+    const snapshot = await getAccountResourceSnapshot(this.tronWeb, operatorAddress);
+
+    const energyOk =
+      requirement.requiredEnergy <= 0 || snapshot.energyAvailable >= requirement.requiredEnergy;
+    const bandwidthOk =
+      requirement.requiredBandwidth <= 0 ||
+      snapshot.bandwidthAvailable >= requirement.requiredBandwidth;
+
+    if (!energyOk || !bandwidthOk) {
+      throw createTaggedError(
+        `Account resources dropped before contract send. Energy=${snapshot.energyAvailable}, Bandwidth=${snapshot.bandwidthAvailable}, RequiredEnergy=${requirement.requiredEnergy}, RequiredBandwidth=${requirement.requiredBandwidth}`,
+        {
+          code: "ACCOUNT_RESOURCE_CONSUMED_BEFORE_SEND"
+        }
+      );
+    }
   }
 
   async getAmbassadorBySlugHash(slugHash: string): Promise<ResolveAmbassadorBySlugHashResult> {
@@ -936,34 +1067,48 @@ export class TronControllerClient implements ControllerClient {
     const ownerShareSun = normalizeSunAmount(input.ownerShareSun, "ownerShareSun");
     const feeLimitSun = normalizeFeeLimitSun(input.feeLimitSun);
 
-    await this.ensureResourcesForAllocation(purchaseId);
+    return this.runWithOperatorLock(async () => {
+      await this.ensureResourcesForAllocation(purchaseId);
+      await this.verifyResourcesStillReadyBeforeSend();
 
-    const contract = await this.contract();
+      const contract = await this.contract();
 
-    try {
-      const txid = await withRateLimitRetry("recordVerifiedPurchase.send", async () => {
-        return await contract
-          .recordVerifiedPurchase(
-            purchaseId,
-            buyerWallet,
-            ambassadorWallet,
-            purchaseAmountSun,
-            ownerShareSun
-          )
-          .send({
-            feeLimit: feeLimitSun
-          });
-      });
+      try {
+        const txid = await withRateLimitRetry("recordVerifiedPurchase.send", async () => {
+          return await contract
+            .recordVerifiedPurchase(
+              purchaseId,
+              buyerWallet,
+              ambassadorWallet,
+              purchaseAmountSun,
+              ownerShareSun
+            )
+            .send({
+              feeLimit: feeLimitSun
+            });
+        });
 
-      return {
-        txid: assertNonEmpty(txid, "txid")
-      };
-    } catch (error) {
-      if (isRateLimitError(error)) {
-        throw wrapAsRateLimitError(error, "TRON_RATE_LIMIT");
+        return {
+          txid: assertNonEmpty(txid, "txid")
+        };
+      } catch (error) {
+        if (isRateLimitError(error)) {
+          throw wrapAsRateLimitError(error, "TRON_RATE_LIMIT");
+        }
+
+        if (isResourceSendError(error)) {
+          throw createTaggedError(
+            `Contract send failed because resources were still not sufficient at execution time. ${getErrorMessage(error)}`,
+            {
+              code: "ACCOUNT_RESOURCE_INSUFFICIENT_DURING_SEND",
+              cause: error
+            }
+          );
+        }
+
+        throw error;
       }
-      throw error;
-    }
+    });
   }
 }
 
