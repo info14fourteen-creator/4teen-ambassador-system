@@ -1,6 +1,6 @@
 # 4teen-ambassador-system — ALLOCATION WORKER
 
-Generated: 2026-03-31T20:39:59.455Z
+Generated: 2026-03-31T20:41:27.630Z
 Repository: info14fourteen-creator/4teen-ambassador-system
 Branch: main
 
@@ -5644,7 +5644,8 @@ export async function processAmbassadorPendingQueue(
         ambassadorSlug,
         ambassadorWallet,
         scanned: result.scanned,
-        limit
+        limit,
+        now
       })
     );
 
