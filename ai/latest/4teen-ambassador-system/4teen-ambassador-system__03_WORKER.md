@@ -1,6 +1,6 @@
 # 4teen-ambassador-system — ALLOCATION WORKER
 
-Generated: 2026-03-31T00:44:30.082Z
+Generated: 2026-03-31T00:51:14.697Z
 Repository: info14fourteen-creator/4teen-ambassador-system
 Branch: main
 
@@ -7880,14 +7880,18 @@ export interface GasStationEstimateResult {
 }
 
 export interface GasStationPriceItem {
-  expire_min: string;
+  expire_min: string | number;
   service_charge_type: string;
-  price: string;
-  remaining_number: string;
+  price: string | number;
+  remaining_number: string | number;
 }
 
 export interface GasStationPriceResult {
-  list: GasStationPriceItem[];
+  list?: GasStationPriceItem[];
+  price_builder_list?: GasStationPriceItem[];
+  resource_type?: string;
+  min_number?: number;
+  max_number?: number;
 }
 
 export interface GasStationCreateOrderResult {
