@@ -109,7 +109,7 @@ function normalizeTxHashFromEvent(event: any): string {
   const value =
     pickObjectValue(event, ["transaction_id", "transactionId", "txHash", "txid"]) ?? "";
 
-  return assertNonEmpty(String(value), "event.txHash");
+  return assertNonEmpty(String(value), "event.txHash").toLowerCase();
 }
 
 function normalizeFingerprintFromEvent(event: any): string | null {
@@ -253,6 +253,18 @@ function extractNextFingerprint(payload: any): string | null {
   return null;
 }
 
+function isFinalPurchaseStatus(status: string): boolean {
+  return (
+    status === "allocated" ||
+    status === "ignored" ||
+    status === "allocation_failed_final"
+  );
+}
+
+function shouldApplyRetryCooldown(status: string): boolean {
+  return status === "deferred" || status === "allocation_failed_retryable";
+}
+
 export class BuyTokensScanner {
   private readonly tronWeb: any;
   private readonly processor: AttributionProcessor;
@@ -341,13 +353,13 @@ export class BuyTokensScanner {
             ? String((error as { message?: unknown }).message || "").trim()
             : "";
 
-          processed.push({
-            status: "event-parse-failed",
-            event: null,
-            purchaseId: null,
-            reason: message || "Failed to parse BuyTokens event",
-            rawResult: rawEvent
-          });
+        processed.push({
+          status: "event-parse-failed",
+          event: null,
+          purchaseId: null,
+          reason: message || "Failed to parse BuyTokens event",
+          rawResult: rawEvent
+        });
       }
     }
 
@@ -383,11 +395,7 @@ export class BuyTokensScanner {
       };
     }
 
-    if (
-      localPurchase.status === "allocated" ||
-      localPurchase.status === "ignored" ||
-      localPurchase.status === "allocation_failed_final"
-    ) {
+    if (isFinalPurchaseStatus(localPurchase.status)) {
       return {
         status: "skipped-already-final",
         event,
@@ -398,7 +406,10 @@ export class BuyTokensScanner {
 
     const now = Date.now();
 
-    if (!isPurchaseReadyForAllocationRetry(localPurchase, now)) {
+    if (
+      shouldApplyRetryCooldown(localPurchase.status) &&
+      !isPurchaseReadyForAllocationRetry(localPurchase, now)
+    ) {
       const retryAt = getAllocationRetryReadyAt(localPurchase);
       const retryInMs = Math.max(0, retryAt - now);
 
