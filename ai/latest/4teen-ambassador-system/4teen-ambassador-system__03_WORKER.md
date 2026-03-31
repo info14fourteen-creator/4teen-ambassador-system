@@ -1,6 +1,6 @@
 # 4teen-ambassador-system — ALLOCATION WORKER
 
-Generated: 2026-03-31T20:41:27.630Z
+Generated: 2026-03-31T20:43:18.325Z
 Repository: info14fourteen-creator/4teen-ambassador-system
 Branch: main
 
@@ -5200,6 +5200,7 @@ async function loadCandidatePurchases(
 
   return pending.filter((purchase) => {
     const reward = BigInt(String(purchase.ownerShareSun || "0"));
+
     return (
       purchase.status === "allocated" &&
       !purchase.withdrawSessionId &&
@@ -5214,8 +5215,6 @@ async function markPreparedForWithdrawal(
   withdrawSessionId: string,
   now: number
 ): Promise<any> {
-  await worker.store.assignWithdrawSession(purchaseId, withdrawSessionId, now);
-
   if (typeof (worker.store as any).markWithdrawIncluded === "function") {
     return (worker.store as any).markWithdrawIncluded(purchaseId, {
       withdrawSessionId,
@@ -5223,6 +5222,7 @@ async function markPreparedForWithdrawal(
     });
   }
 
+  await worker.store.assignWithdrawSession(purchaseId, withdrawSessionId, now);
   return worker.store.getByPurchaseId(purchaseId);
 }
 
