@@ -12,12 +12,17 @@ import {
 
 export interface AmbassadorDashboardStatusCards {
   availableOnChainSun: string;
+  allocatedInDbSun: string;
   pendingBackendSyncSun: string;
   requestedForProcessingSun: string;
+
   availableOnChainCount: number;
+  allocatedInDbCount: number;
   pendingBackendSyncCount: number;
   requestedForProcessingCount: number;
+
   hasAvailableOnChain: boolean;
+  hasAllocatedInDb: boolean;
   hasPendingBackendSync: boolean;
   hasRequestedForProcessing: boolean;
 }
@@ -44,12 +49,17 @@ export interface UseAmbassadorDashboardResult extends AmbassadorDashboardState {
 
 const EMPTY_STATUS_CARDS: AmbassadorDashboardStatusCards = {
   availableOnChainSun: "0",
+  allocatedInDbSun: "0",
   pendingBackendSyncSun: "0",
   requestedForProcessingSun: "0",
+
   availableOnChainCount: 0,
+  allocatedInDbCount: 0,
   pendingBackendSyncCount: 0,
   requestedForProcessingCount: 0,
+
   hasAvailableOnChain: false,
+  hasAllocatedInDb: false,
   hasPendingBackendSync: false,
   hasRequestedForProcessing: false
 };
@@ -96,6 +106,16 @@ function isPositiveSun(value: string): boolean {
   }
 }
 
+function safeSun(value: unknown): string {
+  const raw = String(value ?? "0").trim();
+  return /^\d+$/.test(raw) ? raw : "0";
+}
+
+function safeCount(value: unknown): number {
+  const parsed = Number(value ?? 0);
+  return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : 0;
+}
+
 function buildStatusCards(
   withdrawalQueue: AmbassadorWithdrawalQueue | null | undefined
 ): AmbassadorDashboardStatusCards {
@@ -103,26 +123,39 @@ function buildStatusCards(
     return EMPTY_STATUS_CARDS;
   }
 
-  const availableOnChainSun = withdrawalQueue.availableOnChainSun || "0";
-  const pendingBackendSyncSun = withdrawalQueue.pendingBackendSyncSun || "0";
-  const requestedForProcessingSun = withdrawalQueue.requestedForProcessingSun || "0";
+  const availableOnChainSun = safeSun(withdrawalQueue.availableOnChainSun);
+  const allocatedInDbSun = safeSun((withdrawalQueue as any).allocatedInDbSun);
+  const pendingBackendSyncSun = safeSun(withdrawalQueue.pendingBackendSyncSun);
+  const requestedForProcessingSun = safeSun(withdrawalQueue.requestedForProcessingSun);
 
-  const availableOnChainCount = withdrawalQueue.availableOnChainCount || 0;
-  const pendingBackendSyncCount = withdrawalQueue.pendingBackendSyncCount || 0;
-  const requestedForProcessingCount = withdrawalQueue.requestedForProcessingCount || 0;
+  const availableOnChainCount = safeCount(withdrawalQueue.availableOnChainCount);
+  const allocatedInDbCount = safeCount((withdrawalQueue as any).allocatedInDbCount);
+  const pendingBackendSyncCount = safeCount(withdrawalQueue.pendingBackendSyncCount);
+  const requestedForProcessingCount = safeCount(withdrawalQueue.requestedForProcessingCount);
 
   return {
     availableOnChainSun,
+    allocatedInDbSun,
     pendingBackendSyncSun,
     requestedForProcessingSun,
+
     availableOnChainCount,
+    allocatedInDbCount,
     pendingBackendSyncCount,
     requestedForProcessingCount,
-    hasAvailableOnChain: isPositiveSun(availableOnChainSun) || availableOnChainCount > 0,
+
+    hasAvailableOnChain:
+      isPositiveSun(availableOnChainSun) || availableOnChainCount > 0,
+
+    hasAllocatedInDb:
+      isPositiveSun(allocatedInDbSun) || allocatedInDbCount > 0,
+
     hasPendingBackendSync:
       isPositiveSun(pendingBackendSyncSun) || pendingBackendSyncCount > 0,
+
     hasRequestedForProcessing:
-      isPositiveSun(requestedForProcessingSun) || requestedForProcessingCount > 0
+      isPositiveSun(requestedForProcessingSun) ||
+      requestedForProcessingCount > 0
   };
 }
 
@@ -162,7 +195,7 @@ export function useAmbassadorDashboard(): UseAmbassadorDashboardResult {
         statusCards,
         hasProcessingWithdrawal,
         isConnected: true,
-        isRegistered: dashboard.identity.exists,
+        isRegistered: Boolean((dashboard.identity as any)?.exists),
         isLoading: false,
         isRefreshing: false,
         error: null
