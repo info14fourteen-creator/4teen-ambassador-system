@@ -456,7 +456,7 @@ async function getAccountResourceSnapshot(
 ): Promise<AccountResourceSnapshot> {
   const normalizedAddress = normalizeAddress(address, "address");
 
-  const [resources, account, balanceSunRaw] = await Promise.all([
+  const [resources, account, balanceSunRaw, bandwidthRaw] = await Promise.all([
     withRateLimitRetry("trx.getAccountResources", async () => {
       return await tronWeb.trx.getAccountResources(normalizedAddress);
     }),
@@ -465,21 +465,56 @@ async function getAccountResourceSnapshot(
     }),
     withRateLimitRetry("trx.getBalance", async () => {
       return await tronWeb.trx.getBalance(normalizedAddress);
+    }),
+    withRateLimitRetry("trx.getBandwidth", async () => {
+      if (typeof tronWeb?.trx?.getBandwidth !== "function") {
+        return 0;
+      }
+      return await tronWeb.trx.getBandwidth(normalizedAddress);
     })
   ]);
 
-  const energyLimit = toNumberSafe(resources?.EnergyLimit);
-  const energyUsed = toNumberSafe(resources?.EnergyUsed);
+  const energyLimit = toNumberSafe(resources?.EnergyLimit ?? account?.EnergyLimit);
+  const energyUsed = toNumberSafe(resources?.EnergyUsed ?? account?.EnergyUsed);
   const energyAvailable = Math.max(0, energyLimit - energyUsed);
 
-  const freeNetLimit = toNumberSafe(account?.freeNetLimit);
-  const freeNetUsed = toNumberSafe(account?.freeNetUsed);
-  const netLimit = toNumberSafe(account?.NetLimit);
-  const netUsed = toNumberSafe(account?.NetUsed);
+  const freeNetLimit = Math.max(
+    toNumberSafe(account?.freeNetLimit),
+    toNumberSafe(resources?.freeNetLimit),
+    toNumberSafe(account?.freeNetLimitV2),
+    toNumberSafe(resources?.freeNetLimitV2)
+  );
 
-  const freeBandwidthAvailable = Math.max(0, freeNetLimit - freeNetUsed);
-  const paidBandwidthAvailable = Math.max(0, netLimit - netUsed);
-  const bandwidthAvailable = freeBandwidthAvailable + paidBandwidthAvailable;
+  const freeNetUsed = Math.max(
+    toNumberSafe(account?.freeNetUsed),
+    toNumberSafe(resources?.freeNetUsed),
+    toNumberSafe(account?.freeNetUsedV2),
+    toNumberSafe(resources?.freeNetUsedV2)
+  );
+
+  const netLimit = Math.max(
+    toNumberSafe(account?.NetLimit),
+    toNumberSafe(resources?.NetLimit),
+    toNumberSafe(account?.netLimit),
+    toNumberSafe(resources?.netLimit)
+  );
+
+  const netUsed = Math.max(
+    toNumberSafe(account?.NetUsed),
+    toNumberSafe(resources?.NetUsed),
+    toNumberSafe(account?.netUsed),
+    toNumberSafe(resources?.netUsed)
+  );
+
+  const calculatedFreeBandwidth = Math.max(0, freeNetLimit - freeNetUsed);
+  const calculatedPaidBandwidth = Math.max(0, netLimit - netUsed);
+  const calculatedBandwidth = calculatedFreeBandwidth + calculatedPaidBandwidth;
+
+  const bandwidthAvailable = Math.max(
+    0,
+    toNumberSafe(bandwidthRaw),
+    calculatedBandwidth
+  );
 
   return {
     address: normalizedAddress,
