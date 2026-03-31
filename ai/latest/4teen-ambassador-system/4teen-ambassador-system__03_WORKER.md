@@ -1,6 +1,6 @@
 # 4teen-ambassador-system — ALLOCATION WORKER
 
-Generated: 2026-03-31T00:04:20.878Z
+Generated: 2026-03-31T00:10:49.618Z
 Repository: info14fourteen-creator/4teen-ambassador-system
 Branch: main
 
@@ -8208,15 +8208,24 @@ interface AccountResourceSnapshot {
   trxBalanceSun: number;
 }
 
+interface GasStationBalanceSnapshot {
+  balanceSun: number;
+  depositAddress: string;
+}
+
 const TRON_HEX_ZERO_ADDRESS = "410000000000000000000000000000000000000000";
 const DEFAULT_SERVICE_CHARGE_TYPE = "10010";
 const DEFAULT_WAIT_AFTER_ORDER_MS = 2500;
-const DEFAULT_WAIT_AFTER_TOPUP_MS = 5000;
 const DEFAULT_TRON_RETRY_ATTEMPTS = 4;
 
 const SUN_PER_TRX = 1_000_000;
-const MIN_OPERATOR_REMAINING_BALANCE_SUN = 2 * SUN_PER_TRX;
-const MIN_GASSTATION_TOPUP_SUN = 8_500_000;
+
+const GASSTATION_LOW_BALANCE_SUN = 8_500_000; // 8.5 TRX
+const OPERATOR_MIN_BALANCE_FOR_TOPUP_SUN = 11_000_000; // 11 TRX
+const OPERATOR_REMAINING_RESERVE_SUN = 2_000_000; // keep 2 TRX on operator
+
+const GASSTATION_TOPUP_POLL_INTERVAL_MS = 4000;
+const GASSTATION_TOPUP_POLL_ATTEMPTS = 12;
 
 function assertNonEmpty(value: string, fieldName: string): string {
   const normalized = String(value || "").trim();
@@ -8529,6 +8538,26 @@ function parseTrxAmountToSun(value: unknown, fieldName: string): number {
   return Number(totalSun);
 }
 
+function extractTxidFromSendTransactionResult(result: unknown): string | null {
+  if (!result || typeof result !== "object") {
+    return null;
+  }
+
+  const candidates = [
+    (result as any).txid,
+    (result as any).transaction?.txID,
+    (result as any).txID
+  ];
+
+  for (const candidate of candidates) {
+    if (typeof candidate === "string" && candidate.trim()) {
+      return candidate.trim();
+    }
+  }
+
+  return null;
+}
+
 async function getContract(tronWeb: any, contractAddress: string): Promise<any> {
   if (!tronWeb || typeof tronWeb.contract !== "function") {
     throw new Error("Valid tronWeb instance is required");
@@ -8671,16 +8700,16 @@ export class TronControllerClient implements ControllerClient {
     return Math.ceil(totalTrx * SUN_PER_TRX);
   }
 
-  private async getGasStationBalanceSnapshot(): Promise<{
-    balanceSun: number;
-    depositAddress: string;
-  }> {
+  private async getGasStationBalanceSnapshot(): Promise<GasStationBalanceSnapshot> {
     if (!this.gasStationClient) {
       throw new Error("GasStation client is not configured");
     }
 
     const result = await this.gasStationClient.getBalance();
-    const depositAddress = normalizeAddress(result.deposit_address, "deposit_address");
+    const depositAddress = normalizeAddress(
+      (result as any).deposit_address,
+      "deposit_address"
+    );
     const balanceSun = parseTrxAmountToSun(result.balance, "gasStation.balance");
 
     return {
@@ -8689,42 +8718,112 @@ export class TronControllerClient implements ControllerClient {
     };
   }
 
+  private async waitForGasStationBalanceIncrease(input: {
+    beforeBalanceSun: number;
+    minimumExpectedBalanceSun: number;
+  }): Promise<GasStationBalanceSnapshot> {
+    let lastSnapshot: GasStationBalanceSnapshot | null = null;
+
+    for (let attempt = 0; attempt < GASSTATION_TOPUP_POLL_ATTEMPTS; attempt += 1) {
+      await delay(GASSTATION_TOPUP_POLL_INTERVAL_MS);
+
+      const snapshot = await this.getGasStationBalanceSnapshot();
+      lastSnapshot = snapshot;
+
+      if (
+        snapshot.balanceSun > input.beforeBalanceSun &&
+        snapshot.balanceSun >= input.minimumExpectedBalanceSun
+      ) {
+        return snapshot;
+      }
+    }
+
+    throw createTaggedError(
+      `GasStation service balance was low, auto top-up transfer was sent but the balance did not update in time. ExpectedAtLeastSun=${input.minimumExpectedBalanceSun}, LastBalanceSun=${lastSnapshot?.balanceSun ?? 0}`,
+      {
+        code: "GASSTATION_TOPUP_NOT_SETTLED"
+      }
+    );
+  }
+
   private async topUpGasStationFromOperatorIfNeeded(requiredSun: number): Promise<void> {
     if (!this.gasStationClient) {
       throw new Error("GasStation client is not configured");
     }
 
-    const { balanceSun, depositAddress } = await this.getGasStationBalanceSnapshot();
+    const requiredServiceBalanceSun = Math.max(requiredSun, GASSTATION_LOW_BALANCE_SUN);
+    const beforeGasStation = await this.getGasStationBalanceSnapshot();
 
-    if (balanceSun >= requiredSun) {
+    if (beforeGasStation.balanceSun >= requiredServiceBalanceSun) {
       return;
     }
 
     const operatorAddress = this.getOperatorAddress();
     const operatorSnapshot = await getAccountResourceSnapshot(this.tronWeb, operatorAddress);
 
-    const transferableSun = operatorSnapshot.trxBalanceSun - MIN_OPERATOR_REMAINING_BALANCE_SUN;
+    const availableToTopUpSun = Math.max(
+      0,
+      operatorSnapshot.trxBalanceSun - MIN_OPERATOR_REMAINING_BALANCE_SUN
+    );
 
-    if (transferableSun < MIN_GASSTATION_TOPUP_SUN) {
-      throw new Error(
-        `Operator wallet top-up is too small. AvailableToTopUpSun=${Math.max(
-          0,
-          transferableSun
-        )}, RequiredMinimumSun=${MIN_GASSTATION_TOPUP_SUN}, OperatorBalanceSun=${operatorSnapshot.trxBalanceSun}`
+    if (
+      operatorSnapshot.trxBalanceSun < OPERATOR_MIN_BALANCE_FOR_TOPUP_SUN ||
+      availableToTopUpSun < GASSTATION_LOW_BALANCE_SUN
+    ) {
+      throw createTaggedError(
+        `GasStation service balance is low and auto top-up was skipped because operator wallet balance is below 11 TRX. OperatorBalanceSun=${operatorSnapshot.trxBalanceSun}, AvailableToTopUpSun=${availableToTopUpSun}, RequiredServiceBalanceSun=${requiredServiceBalanceSun}`,
+        {
+          code: "GASSTATION_OPERATOR_BALANCE_LOW"
+        }
       );
     }
 
-    await withRateLimitRetry("trx.sendTransaction", async () => {
-      return await this.tronWeb.trx.sendTransaction(depositAddress, transferableSun);
-    });
+    let transferResult: unknown;
 
-    await delay(DEFAULT_WAIT_AFTER_TOPUP_MS);
+    try {
+      transferResult = await withRateLimitRetry("trx.sendTransaction", async () => {
+        return await this.tronWeb.trx.sendTransaction(
+          beforeGasStation.depositAddress,
+          availableToTopUpSun
+        );
+      });
+    } catch (error) {
+      throw createTaggedError(
+        `GasStation service balance was low, auto top-up transfer failed. ${getErrorMessage(error)}`,
+        {
+          code: "GASSTATION_TOPUP_TRANSFER_FAILED",
+          cause: error
+        }
+      );
+    }
 
-    const afterTopUp = await this.getGasStationBalanceSnapshot();
+    const txid = extractTxidFromSendTransactionResult(transferResult);
 
-    if (afterTopUp.balanceSun <= balanceSun) {
-      throw new Error(
-        `GasStation balance did not increase after top-up. BeforeSun=${balanceSun}, AfterSun=${afterTopUp.balanceSun}`
+    try {
+      await this.waitForGasStationBalanceIncrease({
+        beforeBalanceSun: beforeGasStation.balanceSun,
+        minimumExpectedBalanceSun: requiredServiceBalanceSun
+      });
+    } catch (error) {
+      if (
+        error &&
+        typeof error === "object" &&
+        (error as any).code === "GASSTATION_TOPUP_NOT_SETTLED"
+      ) {
+        throw error instanceof Error
+          ? error
+          : createTaggedError("GasStation top-up settlement check failed", {
+              code: "GASSTATION_TOPUP_NOT_SETTLED",
+              cause: error
+            });
+      }
+
+      throw createTaggedError(
+        `GasStation service balance was low, auto top-up failed after transfer${txid ? ` (${txid})` : ""}. ${getErrorMessage(error)}`,
+        {
+          code: "GASSTATION_TOPUP_FAILED",
+          cause: error
+        }
       );
     }
   }
@@ -8741,8 +8840,11 @@ export class TronControllerClient implements ControllerClient {
     }
 
     if (!this.gasStationEnabled || !this.gasStationClient) {
-      throw new Error(
-        `Account resource insufficient. Energy=${before.energyAvailable}, Bandwidth=${before.bandwidthAvailable}, RequiredEnergy=${this.allocationMinEnergy}, RequiredBandwidth=${this.allocationMinBandwidth}`
+      throw createTaggedError(
+        `Account resource insufficient. Energy=${before.energyAvailable}, Bandwidth=${before.bandwidthAvailable}, RequiredEnergy=${this.allocationMinEnergy}, RequiredBandwidth=${this.allocationMinBandwidth}`,
+        {
+          code: "ACCOUNT_RESOURCE_INSUFFICIENT"
+        }
       );
     }
 
@@ -8785,7 +8887,14 @@ export class TronControllerClient implements ControllerClient {
       if (isRateLimitError(error)) {
         throw wrapAsRateLimitError(error, "GASSTATION_RATE_LIMIT");
       }
-      throw error;
+
+      throw createTaggedError(
+        `GasStation balance topped up or was already sufficient, but resource order failed. ${getErrorMessage(error)}`,
+        {
+          code: "GASSTATION_ORDER_FAILED",
+          cause: error
+        }
+      );
     }
 
     await delay(DEFAULT_WAIT_AFTER_ORDER_MS);
@@ -8796,8 +8905,11 @@ export class TronControllerClient implements ControllerClient {
       after.energyAvailable < this.allocationMinEnergy ||
       after.bandwidthAvailable < this.allocationMinBandwidth
     ) {
-      throw new Error(
-        `Account resource insufficient after rental. Energy=${after.energyAvailable}, Bandwidth=${after.bandwidthAvailable}, RequiredEnergy=${this.allocationMinEnergy}, RequiredBandwidth=${this.allocationMinBandwidth}`
+      throw createTaggedError(
+        `Account resource insufficient after rental. Energy=${after.energyAvailable}, Bandwidth=${after.bandwidthAvailable}, RequiredEnergy=${this.allocationMinEnergy}, RequiredBandwidth=${this.allocationMinBandwidth}`,
+        {
+          code: "ACCOUNT_RESOURCE_INSUFFICIENT_AFTER_RENTAL"
+        }
       );
     }
   }
