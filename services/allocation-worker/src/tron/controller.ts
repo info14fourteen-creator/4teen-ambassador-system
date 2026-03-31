@@ -76,9 +76,9 @@ const DEFAULT_TRON_RETRY_ATTEMPTS = 4;
 
 const SUN_PER_TRX = 1_000_000;
 
-const GASSTATION_LOW_BALANCE_SUN = 8_500_000; // 8.5 TRX
-const OPERATOR_MIN_BALANCE_FOR_TOPUP_SUN = 11_000_000; // 11 TRX
-const OPERATOR_REMAINING_RESERVE_SUN = 2_000_000; // keep 2 TRX on operator
+const GASSTATION_LOW_BALANCE_SUN = 8_500_000;
+const OPERATOR_MIN_BALANCE_FOR_TOPUP_SUN = 11_000_000;
+const OPERATOR_REMAINING_RESERVE_SUN = 2_000_000;
 
 const GASSTATION_TOPUP_POLL_INTERVAL_MS = 4000;
 const GASSTATION_TOPUP_POLL_ATTEMPTS = 12;
@@ -414,6 +414,30 @@ function extractTxidFromSendTransactionResult(result: unknown): string | null {
   return null;
 }
 
+function normalizePriceItems(source: unknown): Array<{
+  expire_min: string;
+  service_charge_type: string;
+  price: string;
+  remaining_number: string;
+}> {
+  if (!Array.isArray(source)) {
+    return [];
+  }
+
+  return source
+    .filter((item) => item && typeof item === "object")
+    .map((item) => {
+      const value = item as Record<string, unknown>;
+      return {
+        expire_min: String(value.expire_min ?? "").trim(),
+        service_charge_type: String(value.service_charge_type ?? "").trim(),
+        price: String(value.price ?? "").trim(),
+        remaining_number: String(value.remaining_number ?? "").trim()
+      };
+    })
+    .filter((item) => item.service_charge_type && item.price);
+}
+
 async function getContract(tronWeb: any, contractAddress: string): Promise<any> {
   if (!tronWeb || typeof tronWeb.contract !== "function") {
     throw new Error("Valid tronWeb instance is required");
@@ -525,14 +549,24 @@ export class TronControllerClient implements ControllerClient {
     let totalTrx = 0;
 
     if (input.energyToBuy > 0) {
-      const energyEstimate = await this.gasStationClient.estimateEnergyOrder({
-        receiveAddress: this.getOperatorAddress(),
-        addressTo: this.getOperatorAddress(),
-        contractAddress: this.contractAddress,
-        serviceChargeType: this.gasStationServiceChargeType
-      });
+      try {
+        const energyEstimate = await this.gasStationClient.estimateEnergyOrder({
+          receiveAddress: this.getOperatorAddress(),
+          addressTo: this.getOperatorAddress(),
+          contractAddress: this.contractAddress,
+          serviceChargeType: this.gasStationServiceChargeType
+        });
 
-      totalTrx += toNumberSafe(energyEstimate.amount);
+        totalTrx += toNumberSafe(energyEstimate.amount);
+      } catch (error) {
+        const code = String(extractErrorCode(error) || "").toUpperCase();
+
+        if (code.includes("GASSTATION_ERROR_100003")) {
+          totalTrx += GASSTATION_LOW_BALANCE_SUN / SUN_PER_TRX;
+        } else {
+          throw error;
+        }
+      }
     }
 
     if (input.bandwidthToBuy > 0) {
@@ -541,10 +575,14 @@ export class TronControllerClient implements ControllerClient {
         resourceValue: input.bandwidthToBuy
       });
 
+      const items = normalizePriceItems(
+        bandwidthPrice.list?.length ? bandwidthPrice.list : bandwidthPrice.price_builder_list
+      );
+
       const matched =
-        bandwidthPrice.list?.find(
+        items.find(
           (item) => item.service_charge_type === this.gasStationServiceChargeType
-        ) ?? bandwidthPrice.list?.[0];
+        ) ?? items[0];
 
       if (!matched) {
         throw new Error("GasStation bandwidth price is unavailable");
@@ -563,7 +601,7 @@ export class TronControllerClient implements ControllerClient {
 
     const result = await this.gasStationClient.getBalance();
     const depositAddress = normalizeAddress(
-      (result as any).deposit_address,
+      String(result.deposit_address || "").trim(),
       "deposit_address"
     );
     const balanceSun = parseTrxAmountToSun(result.balance, "gasStation.balance");
