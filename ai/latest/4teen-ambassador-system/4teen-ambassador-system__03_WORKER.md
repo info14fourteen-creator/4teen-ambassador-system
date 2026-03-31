@@ -1,6 +1,6 @@
 # 4teen-ambassador-system — ALLOCATION WORKER
 
-Generated: 2026-03-31T10:17:43.272Z
+Generated: 2026-03-31T10:21:39.247Z
 Repository: info14fourteen-creator/4teen-ambassador-system
 Branch: main
 
@@ -6415,6 +6415,8 @@ import {
   isSlugTaken
 } from "./db/ambassadors";
 import { initPurchaseTables } from "./db/purchases";
+import { prepareAmbassadorWithdrawal } from "./jobs/prepareAmbassadorWithdrawal";
+import { processAmbassadorPendingQueue } from "./jobs/processAmbassadorPendingQueue";
 
 interface EnvConfig {
   port: number;
@@ -6698,6 +6700,27 @@ function toErrorMessage(error: unknown): string {
   return "Unknown error";
 }
 
+function extractErrorCode(error: unknown): string | null {
+  if (!error || typeof error !== "object") {
+    return null;
+  }
+
+  const candidates = [
+    (error as any).code,
+    (error as any).errorCode,
+    (error as any).status,
+    (error as any).statusCode
+  ];
+
+  for (const candidate of candidates) {
+    if (candidate == null) continue;
+    const code = String(candidate).trim();
+    if (code) return code;
+  }
+
+  return null;
+}
+
 function normalizeIncomingSlug(value: unknown): string {
   const raw = assertNonEmpty(normalizeOptionalString(value), "slug");
   return assertValidSlug(normalizeSlug(raw));
@@ -6779,35 +6802,34 @@ function toNumberSafe(value: unknown): number {
   return Number.isFinite(parsed) ? parsed : 0;
 }
 
-function extractErrorDetails(error: unknown): {
-  message: string;
-  code: string | null;
-} {
-  const message = toErrorMessage(error);
+function isResourceLikeError(error: unknown): boolean {
+  const message = toErrorMessage(error).toLowerCase();
+  const code = String(extractErrorCode(error) || "").toLowerCase();
 
-  if (!error || typeof error !== "object") {
-    return { message, code: null };
-  }
+  return (
+    message.includes("resource insufficient") ||
+    message.includes("out of energy") ||
+    message.includes("insufficient energy") ||
+    message.includes("insufficient bandwidth") ||
+    message.includes("bandwidth") ||
+    message.includes("energy") ||
+    code.includes("resource") ||
+    code.includes("energy") ||
+    code.includes("bandwidth") ||
+    code.includes("gasstation_operator_balance_low") ||
+    code.includes("gasstation_service_balance_low")
+  );
+}
 
-  const candidates = [
-    (error as any).code,
-    (error as any).errorCode,
-    (error as any).status,
-    (error as any).statusCode
-  ];
+function classifyHttpStatus(error: unknown): number {
+  const code = String(extractErrorCode(error) || "").toLowerCase();
 
-  for (const candidate of candidates) {
-    if (candidate == null) {
-      continue;
-    }
+  if (code === "invalid_status") return 400;
+  if (code.includes("not_found")) return 404;
+  if (code.includes("rate_limit") || code === "429") return 429;
+  if (isResourceLikeError(error)) return 409;
 
-    const code = String(candidate).trim();
-    if (code) {
-      return { message, code };
-    }
-  }
-
-  return { message, code: null };
+  return 500;
 }
 
 async function bootstrap() {
@@ -6976,10 +6998,22 @@ async function bootstrap() {
         const energyUsed = toNumberSafe(accountResources?.EnergyUsed);
         const energyAvailable = Math.max(0, energyLimit - energyUsed);
 
-        const freeNetLimit = toNumberSafe(accountInfo?.freeNetLimit);
-        const freeNetUsed = toNumberSafe(accountInfo?.freeNetUsed);
-        const netLimit = toNumberSafe(accountInfo?.NetLimit);
-        const netUsed = toNumberSafe(accountInfo?.NetUsed);
+        const freeNetLimit = Math.max(
+          toNumberSafe(accountInfo?.freeNetLimit),
+          toNumberSafe(accountInfo?.free_net_limit)
+        );
+        const freeNetUsed = Math.max(
+          toNumberSafe(accountInfo?.freeNetUsed),
+          toNumberSafe(accountInfo?.free_net_used)
+        );
+        const netLimit = Math.max(
+          toNumberSafe(accountInfo?.NetLimit),
+          toNumberSafe(accountInfo?.net_limit)
+        );
+        const netUsed = Math.max(
+          toNumberSafe(accountInfo?.NetUsed),
+          toNumberSafe(accountInfo?.net_used)
+        );
 
         const freeBandwidthAvailable = Math.max(0, freeNetLimit - freeNetUsed);
         const paidBandwidthAvailable = Math.max(0, netLimit - netUsed);
@@ -7020,7 +7054,10 @@ async function bootstrap() {
               serviceChargeType: env.gasStationServiceChargeType
             });
           } catch (error) {
-            energyEstimateError = extractErrorDetails(error);
+            energyEstimateError = {
+              message: toErrorMessage(error),
+              code: extractErrorCode(error)
+            };
           }
         }
 
@@ -7034,7 +7071,10 @@ async function bootstrap() {
               resourceValue: bandwidthToBuy
             });
           } catch (error) {
-            bandwidthPriceError = extractErrorDetails(error);
+            bandwidthPriceError = {
+              message: toErrorMessage(error),
+              code: extractErrorCode(error)
+            };
           }
         }
 
@@ -7224,6 +7264,77 @@ async function bootstrap() {
         return;
       }
 
+      if (method === "POST" && pathname === "/cabinet/prepare-withdrawal") {
+        const body = await readJsonBody(req);
+        const wallet = normalizeIncomingWallet(body.wallet);
+        const limit =
+          body.limit !== undefined
+            ? parsePositiveInteger(String(body.limit), 500, "limit")
+            : 500;
+
+        const record = await getAmbassadorRegistryRecordByWallet(wallet);
+
+        if (!record?.privateIdentity?.wallet) {
+          sendJson(req, res, env, 404, {
+            ok: false,
+            error: "Ambassador not found for wallet"
+          });
+          return;
+        }
+
+        const result = await prepareAmbassadorWithdrawal(worker, {
+          ambassadorWallet: record.privateIdentity.wallet,
+          ambassadorSlug: record.publicProfile.slug,
+          limit,
+          now: Date.now(),
+          logger: console
+        });
+
+        sendJson(req, res, env, 200, {
+          ok: true,
+          result
+        });
+        return;
+      }
+
+      if (method === "POST" && pathname === "/cabinet/process-withdrawal-queue") {
+        const body = await readJsonBody(req);
+        const wallet = normalizeIncomingWallet(body.wallet);
+        const limit =
+          body.limit !== undefined
+            ? parsePositiveInteger(String(body.limit), 100, "limit")
+            : 100;
+        const feeLimitSun =
+          body.feeLimitSun !== undefined
+            ? parsePositiveInteger(String(body.feeLimitSun), 1, "feeLimitSun")
+            : undefined;
+
+        const record = await getAmbassadorRegistryRecordByWallet(wallet);
+
+        if (!record?.privateIdentity?.wallet) {
+          sendJson(req, res, env, 404, {
+            ok: false,
+            error: "Ambassador not found for wallet"
+          });
+          return;
+        }
+
+        const result = await processAmbassadorPendingQueue(worker, {
+          ambassadorWallet: record.privateIdentity.wallet,
+          ambassadorSlug: record.publicProfile.slug,
+          limit,
+          now: Date.now(),
+          feeLimitSun,
+          logger: console
+        });
+
+        sendJson(req, res, env, isResourceLikeError({ message: result.stopReason }) ? 409 : 200, {
+          ok: true,
+          result
+        });
+        return;
+      }
+
       if (method === "GET" && pathname === "/ambassador/profile") {
         const slug = normalizeIncomingSlug(requestUrl.searchParams.get("slug"));
         const profile = await getAmbassadorPublicProfileBySlug(slug);
@@ -7343,9 +7454,12 @@ async function bootstrap() {
         error: "Not found"
       });
     } catch (error) {
-      sendJson(req, res, env, 500, {
+      const status = classifyHttpStatus(error);
+
+      sendJson(req, res, env, status, {
         ok: false,
-        error: toErrorMessage(error)
+        error: toErrorMessage(error),
+        code: extractErrorCode(error)
       });
     }
   });
