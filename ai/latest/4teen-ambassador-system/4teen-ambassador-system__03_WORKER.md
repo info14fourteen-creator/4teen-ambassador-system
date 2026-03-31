@@ -1,6 +1,6 @@
 # 4teen-ambassador-system — ALLOCATION WORKER
 
-Generated: 2026-03-31T08:58:52.646Z
+Generated: 2026-03-31T09:05:27.385Z
 Repository: info14fourteen-creator/4teen-ambassador-system
 Branch: main
 
@@ -683,6 +683,8 @@ export type PurchaseProcessingStatus =
   | "allocated"
   | "allocation_failed_retryable"
   | "allocation_failed_final"
+  | "withdraw_included"
+  | "withdraw_completed"
   | "ignored";
 
 export type PurchaseSource =
@@ -733,15 +735,34 @@ export interface AmbassadorStoreRecord {
 export interface CabinetStatsRecord {
   totalBuyers: number;
   trackedVolumeSun: string;
+
+  /**
+   * These fields are intentionally always zero in DB-derived stats.
+   * Real withdrawable/claimable rewards must come from blockchain reads,
+   * not from purchase-table aggregation.
+   */
   claimableRewardsSun: string;
+  availableOnChainSun: string;
+  availableOnChainCount: number;
+
+  /**
+   * Backend operational accounting only.
+   * These values are safe to show as non-blockchain backend queue/accounting.
+   */
+  allocatedInDbSun: string;
+  allocatedInDbCount: number;
+  pendingBackendSyncSun: string;
+  pendingBackendSyncCount: number;
+  requestedForProcessingSun: string;
+  requestedForProcessingCount: number;
+
+  /**
+   * Historical accounting only.
+   * This is DB-derived lifecycle accounting, not contract truth.
+   */
   lifetimeRewardsSun: string;
   withdrawnRewardsSun: string;
-  availableOnChainSun: string;
-  pendingBackendSyncSun: string;
-  requestedForProcessingSun: string;
-  availableOnChainCount: number;
-  pendingBackendSyncCount: number;
-  requestedForProcessingCount: number;
+
   hasProcessingWithdrawal: boolean;
 }
 
@@ -904,6 +925,22 @@ export interface PurchaseStore {
     }
   ): Promise<PurchaseRecord>;
 
+  markWithdrawIncluded(
+    purchaseId: string,
+    input: {
+      withdrawSessionId: string;
+      now?: number;
+    }
+  ): Promise<PurchaseRecord>;
+
+  markWithdrawCompleted(
+    purchaseId: string,
+    input?: {
+      withdrawSessionId?: string | null;
+      now?: number;
+    }
+  ): Promise<PurchaseRecord>;
+
   markFailed(
     purchaseId: string,
     reason: string,
@@ -959,6 +996,29 @@ const RATE_LIMIT_MESSAGE_PARTS = [
   "too many requests",
   "rate limit",
   "rate limited"
+];
+
+const RESOURCE_ERROR_CODES = new Set([
+  "ACCOUNT_RESOURCE_INSUFFICIENT",
+  "ACCOUNT_RESOURCE_INSUFFICIENT_AFTER_RENTAL",
+  "ACCOUNT_RESOURCE_CONSUMED_BEFORE_SEND",
+  "ACCOUNT_RESOURCE_INSUFFICIENT_DURING_SEND",
+  "GASSTATION_OPERATOR_BALANCE_LOW",
+  "GASSTATION_TOPUP_NOT_SETTLED",
+  "GASSTATION_TOPUP_TRANSFER_FAILED",
+  "GASSTATION_TOPUP_FAILED",
+  "GASSTATION_SERVICE_BALANCE_LOW_AFTER_TOPUP",
+  "GASSTATION_ORDER_FAILED"
+]);
+
+const RESOURCE_MESSAGE_PARTS = [
+  "out of energy",
+  "resource insufficient",
+  "bandwidth",
+  "energy",
+  "gasstation",
+  "top-up",
+  "top up"
 ];
 
 function assertNonEmpty(value: string, fieldName: string): string {
@@ -1091,9 +1151,11 @@ function emptyCabinetStatsRecord(): CabinetStatsRecord {
     lifetimeRewardsSun: "0",
     withdrawnRewardsSun: "0",
     availableOnChainSun: "0",
+    availableOnChainCount: 0,
+    allocatedInDbSun: "0",
+    allocatedInDbCount: 0,
     pendingBackendSyncSun: "0",
     requestedForProcessingSun: "0",
-    availableOnChainCount: 0,
     pendingBackendSyncCount: 0,
     requestedForProcessingCount: 0,
     hasProcessingWithdrawal: false
@@ -1107,14 +1169,36 @@ export function isRateLimitedAllocationFailure(record: PurchaseRecord): boolean 
   ).toLowerCase();
 
   if (RATE_LIMIT_ERROR_CODES.has(code)) {
-    return RATE_LIMIT_MESSAGE_PARTS.some((part) => message.includes(part)) || code !== "ERR_BAD_REQUEST";
+    return (
+      RATE_LIMIT_MESSAGE_PARTS.some((part) => message.includes(part)) ||
+      code !== "ERR_BAD_REQUEST"
+    );
   }
 
   return RATE_LIMIT_MESSAGE_PARTS.some((part) => message.includes(part));
 }
 
+export function isResourceLimitedAllocationFailure(record: PurchaseRecord): boolean {
+  const code = String(record.lastAllocationErrorCode || "").trim().toUpperCase();
+  const message = String(
+    record.lastAllocationErrorMessage ||
+      record.deferredReason ||
+      record.failureReason ||
+      ""
+  ).toLowerCase();
+
+  if (RESOURCE_ERROR_CODES.has(code)) {
+    return true;
+  }
+
+  return RESOURCE_MESSAGE_PARTS.some((part) => message.includes(part));
+}
+
 export function computeAllocationRetryDelayMs(record: PurchaseRecord): number {
-  if (record.status !== "allocation_failed_retryable" && record.status !== "deferred") {
+  if (
+    record.status !== "allocation_failed_retryable" &&
+    record.status !== "deferred"
+  ) {
     return 0;
   }
 
@@ -1124,6 +1208,14 @@ export function computeAllocationRetryDelayMs(record: PurchaseRecord): number {
     if (attempts <= 1) return 30_000;
     if (attempts === 2) return 60_000;
     if (attempts === 3) return 180_000;
+    if (attempts === 4) return 600_000;
+    return 1_800_000;
+  }
+
+  if (isResourceLimitedAllocationFailure(record)) {
+    if (attempts <= 1) return 60_000;
+    if (attempts === 2) return 180_000;
+    if (attempts === 3) return 300_000;
     if (attempts === 4) return 600_000;
     return 1_800_000;
   }
@@ -1176,7 +1268,9 @@ function createRecord(input: CreatePurchaseRecordInput): PurchaseRecord {
   const allocatedAt =
     input.allocatedAt !== undefined
       ? normalizeTimestamp(input.allocatedAt, "allocatedAt")
-      : status === "allocated"
+      : status === "allocated" ||
+          status === "withdraw_included" ||
+          status === "withdraw_completed"
         ? now
         : null;
 
@@ -1224,7 +1318,9 @@ function mergeRecord(
   const nextAllocatedAt =
     input.allocatedAt !== undefined
       ? normalizeTimestamp(input.allocatedAt, "allocatedAt")
-      : nextStatus === "allocated"
+      : nextStatus === "allocated" ||
+          nextStatus === "withdraw_included" ||
+          nextStatus === "withdraw_completed"
         ? current.allocatedAt ?? now
         : current.allocatedAt;
 
@@ -1317,15 +1413,26 @@ function rowToCabinetStatsRecord(row: any): CabinetStatsRecord {
   return {
     totalBuyers: Number(row.total_buyers || 0),
     trackedVolumeSun: String(row.tracked_volume_sun || "0"),
-    claimableRewardsSun: String(row.claimable_rewards_sun || "0"),
+
+    /**
+     * These remain zero by design.
+     * Contract-derived cabinet service must populate real on-chain fields later.
+     */
+    claimableRewardsSun: "0",
+    availableOnChainSun: "0",
+    availableOnChainCount: 0,
+
+    allocatedInDbSun: String(row.allocated_in_db_sun || "0"),
+    allocatedInDbCount: Number(row.allocated_in_db_count || 0),
+
     lifetimeRewardsSun: String(row.lifetime_rewards_sun || "0"),
     withdrawnRewardsSun: String(row.withdrawn_rewards_sun || "0"),
-    availableOnChainSun: String(row.available_on_chain_sun || "0"),
+
     pendingBackendSyncSun: String(row.pending_backend_sync_sun || "0"),
     requestedForProcessingSun: String(row.requested_for_processing_sun || "0"),
-    availableOnChainCount: Number(row.available_on_chain_count || 0),
     pendingBackendSyncCount: Number(row.pending_backend_sync_count || 0),
     requestedForProcessingCount: requestedCount,
+
     hasProcessingWithdrawal: requestedCount > 0
   };
 }
@@ -1968,6 +2075,41 @@ export class PostgresPurchaseStore implements PurchaseStore {
     });
   }
 
+  async markWithdrawIncluded(
+    purchaseId: string,
+    input: {
+      withdrawSessionId: string;
+      now?: number;
+    }
+  ): Promise<PurchaseRecord> {
+    const now = input.now ?? Date.now();
+
+    return this.update(purchaseId, {
+      status: "withdraw_included",
+      withdrawSessionId: assertNonEmpty(input.withdrawSessionId, "withdrawSessionId"),
+      now
+    });
+  }
+
+  async markWithdrawCompleted(
+    purchaseId: string,
+    input?: {
+      withdrawSessionId?: string | null;
+      now?: number;
+    }
+  ): Promise<PurchaseRecord> {
+    const now = input?.now ?? Date.now();
+
+    return this.update(purchaseId, {
+      status: "withdraw_completed",
+      withdrawSessionId:
+        input?.withdrawSessionId !== undefined
+          ? normalizeOptionalString(input.withdrawSessionId)
+          : null,
+      now
+    });
+  }
+
   async markFailed(
     purchaseId: string,
     reason: string,
@@ -2080,18 +2222,12 @@ export class PostgresPurchaseStore implements PurchaseStore {
               'allocation_in_progress',
               'allocated',
               'allocation_failed_retryable',
-              'allocation_failed_final'
+              'allocation_failed_final',
+              'withdraw_included',
+              'withdraw_completed'
             ) THEN purchase_amount_sun::numeric
             ELSE 0
           END)::text, '0') AS tracked_volume_sun,
-
-          COALESCE(SUM(CASE
-            WHEN status = 'allocated'
-              AND withdraw_session_id IS NULL
-              AND owner_share_sun::numeric > 0
-            THEN owner_share_sun::numeric
-            ELSE 0
-          END)::text, '0') AS claimable_rewards_sun,
 
           COALESCE(SUM(CASE
             WHEN status IN (
@@ -2100,13 +2236,15 @@ export class PostgresPurchaseStore implements PurchaseStore {
               'allocation_in_progress',
               'allocated',
               'allocation_failed_retryable',
-              'allocation_failed_final'
+              'allocation_failed_final',
+              'withdraw_included',
+              'withdraw_completed'
             ) THEN owner_share_sun::numeric
             ELSE 0
           END)::text, '0') AS lifetime_rewards_sun,
 
           COALESCE(SUM(CASE
-            WHEN withdraw_session_id IS NOT NULL THEN owner_share_sun::numeric
+            WHEN status = 'withdraw_completed' THEN owner_share_sun::numeric
             ELSE 0
           END)::text, '0') AS withdrawn_rewards_sun,
 
@@ -2116,7 +2254,13 @@ export class PostgresPurchaseStore implements PurchaseStore {
               AND owner_share_sun::numeric > 0
             THEN owner_share_sun::numeric
             ELSE 0
-          END)::text, '0') AS available_on_chain_sun,
+          END)::text, '0') AS allocated_in_db_sun,
+
+          COUNT(*) FILTER (
+            WHERE status = 'allocated'
+              AND withdraw_session_id IS NULL
+              AND owner_share_sun::numeric > 0
+          ) AS allocated_in_db_count,
 
           COALESCE(SUM(CASE
             WHEN status IN (
@@ -2131,17 +2275,6 @@ export class PostgresPurchaseStore implements PurchaseStore {
             ELSE 0
           END)::text, '0') AS pending_backend_sync_sun,
 
-          COALESCE(SUM(CASE
-            WHEN withdraw_session_id IS NOT NULL THEN owner_share_sun::numeric
-            ELSE 0
-          END)::text, '0') AS requested_for_processing_sun,
-
-          COUNT(*) FILTER (
-            WHERE status = 'allocated'
-              AND withdraw_session_id IS NULL
-              AND owner_share_sun::numeric > 0
-          ) AS available_on_chain_count,
-
           COUNT(*) FILTER (
             WHERE status IN (
               'verified',
@@ -2153,8 +2286,17 @@ export class PostgresPurchaseStore implements PurchaseStore {
               AND owner_share_sun::numeric > 0
           ) AS pending_backend_sync_count,
 
+          COALESCE(SUM(CASE
+            WHEN status IN ('withdraw_included')
+              AND withdraw_session_id IS NOT NULL
+              AND owner_share_sun::numeric > 0
+            THEN owner_share_sun::numeric
+            ELSE 0
+          END)::text, '0') AS requested_for_processing_sun,
+
           COUNT(*) FILTER (
-            WHERE withdraw_session_id IS NOT NULL
+            WHERE status IN ('withdraw_included')
+              AND withdraw_session_id IS NOT NULL
               AND owner_share_sun::numeric > 0
           ) AS requested_for_processing_count
         FROM purchases
@@ -2176,6 +2318,7 @@ export class PostgresPurchaseStore implements PurchaseStore {
 
     return (
       record.status === "allocated" ||
+      record.status === "withdraw_completed" ||
       record.status === "ignored" ||
       record.status === "allocation_failed_final"
     );
@@ -2453,6 +2596,37 @@ export class InMemoryPurchaseStore implements PurchaseStore {
     });
   }
 
+  async markWithdrawIncluded(
+    purchaseId: string,
+    input: {
+      withdrawSessionId: string;
+      now?: number;
+    }
+  ): Promise<PurchaseRecord> {
+    return this.update(purchaseId, {
+      status: "withdraw_included",
+      withdrawSessionId: assertNonEmpty(input.withdrawSessionId, "withdrawSessionId"),
+      now: input.now
+    });
+  }
+
+  async markWithdrawCompleted(
+    purchaseId: string,
+    input?: {
+      withdrawSessionId?: string | null;
+      now?: number;
+    }
+  ): Promise<PurchaseRecord> {
+    return this.update(purchaseId, {
+      status: "withdraw_completed",
+      withdrawSessionId:
+        input?.withdrawSessionId !== undefined
+          ? normalizeOptionalString(input.withdrawSessionId)
+          : null,
+      now: input?.now
+    });
+  }
+
   async markFailed(
     purchaseId: string,
     reason: string,
@@ -2554,14 +2728,13 @@ export class InMemoryPurchaseStore implements PurchaseStore {
     const buyers = new Set<string>();
 
     let trackedVolumeSun = "0";
-    let claimableRewardsSun = "0";
     let lifetimeRewardsSun = "0";
     let withdrawnRewardsSun = "0";
-    let availableOnChainSun = "0";
+    let allocatedInDbSun = "0";
     let pendingBackendSyncSun = "0";
     let requestedForProcessingSun = "0";
 
-    let availableOnChainCount = 0;
+    let allocatedInDbCount = 0;
     let pendingBackendSyncCount = 0;
     let requestedForProcessingCount = 0;
 
@@ -2578,22 +2751,27 @@ export class InMemoryPurchaseStore implements PurchaseStore {
         row.status === "allocation_in_progress" ||
         row.status === "allocated" ||
         row.status === "allocation_failed_retryable" ||
-        row.status === "allocation_failed_final";
+        row.status === "allocation_failed_final" ||
+        row.status === "withdraw_included" ||
+        row.status === "withdraw_completed";
 
       if (contributesVolume) {
         trackedVolumeSun = sumSunStrings(trackedVolumeSun, row.purchaseAmountSun);
         lifetimeRewardsSun = sumSunStrings(lifetimeRewardsSun, row.ownerShareSun);
       }
 
-      const isAvailableOnChain =
+      if (row.status === "withdraw_completed" && rewardAmount > 0n) {
+        withdrawnRewardsSun = sumSunStrings(withdrawnRewardsSun, row.ownerShareSun);
+      }
+
+      const isAllocatedInDb =
         row.status === "allocated" &&
         !row.withdrawSessionId &&
         rewardAmount > 0n;
 
-      if (isAvailableOnChain) {
-        claimableRewardsSun = sumSunStrings(claimableRewardsSun, row.ownerShareSun);
-        availableOnChainSun = sumSunStrings(availableOnChainSun, row.ownerShareSun);
-        availableOnChainCount += 1;
+      if (isAllocatedInDb) {
+        allocatedInDbSun = sumSunStrings(allocatedInDbSun, row.ownerShareSun);
+        allocatedInDbCount += 1;
       }
 
       const isPendingBackendSync =
@@ -2610,10 +2788,11 @@ export class InMemoryPurchaseStore implements PurchaseStore {
       }
 
       const isRequestedForProcessing =
-        !!row.withdrawSessionId && rewardAmount > 0n;
+        row.status === "withdraw_included" &&
+        !!row.withdrawSessionId &&
+        rewardAmount > 0n;
 
       if (isRequestedForProcessing) {
-        withdrawnRewardsSun = sumSunStrings(withdrawnRewardsSun, row.ownerShareSun);
         requestedForProcessingSun = sumSunStrings(
           requestedForProcessingSun,
           row.ownerShareSun
@@ -2625,15 +2804,17 @@ export class InMemoryPurchaseStore implements PurchaseStore {
     return {
       totalBuyers: buyers.size,
       trackedVolumeSun,
-      claimableRewardsSun,
-      lifetimeRewardsSun,
-      withdrawnRewardsSun,
-      availableOnChainSun,
+      claimableRewardsSun: "0",
+      availableOnChainSun: "0",
+      availableOnChainCount: 0,
+      allocatedInDbSun,
+      allocatedInDbCount,
       pendingBackendSyncSun,
       requestedForProcessingSun,
-      availableOnChainCount,
       pendingBackendSyncCount,
       requestedForProcessingCount,
+      lifetimeRewardsSun,
+      withdrawnRewardsSun,
       hasProcessingWithdrawal: requestedForProcessingCount > 0
     };
   }
@@ -2647,6 +2828,7 @@ export class InMemoryPurchaseStore implements PurchaseStore {
 
     return (
       record.status === "allocated" ||
+      record.status === "withdraw_completed" ||
       record.status === "ignored" ||
       record.status === "allocation_failed_final"
     );
