@@ -1,6 +1,6 @@
 # 4teen-ambassador-system — CABINET
 
-Generated: 2026-03-31T21:09:50.462Z
+Generated: 2026-03-31T21:28:16.448Z
 Repository: info14fourteen-creator/4teen-ambassador-system
 Branch: main
 
@@ -948,6 +948,8 @@ declare global {
 const ZERO_BYTES32 =
   "0x0000000000000000000000000000000000000000000000000000000000000000";
 
+const DEFAULT_CONFIRM_WITHDRAWAL_ENDPOINT = "/cabinet/confirm-withdrawal";
+
 export interface AmbassadorIdentity {
   wallet: string;
   exists: boolean;
@@ -1002,6 +1004,7 @@ export interface AmbassadorWithdrawalQueue {
   requestedForProcessingCount: number;
 
   hasProcessingWithdrawal: boolean;
+  withdrawSessionId: string | null;
 }
 
 export interface AmbassadorDashboard {
@@ -1013,6 +1016,12 @@ export interface AmbassadorDashboard {
 
 export interface WithdrawResult {
   txid: string;
+}
+
+export interface ConfirmWithdrawalInput {
+  wallet: string;
+  txid: string;
+  withdrawSessionId?: string | null;
 }
 
 function assertBrowser(): void {
@@ -1130,7 +1139,10 @@ function pickTupleValue(source: any, index: number, ...keys: string[]): any {
   return undefined;
 }
 
-function pickFirstDefined(source: any, candidates: Array<{ index: number; keys: string[] }>): any {
+function pickFirstDefined(
+  source: any,
+  candidates: Array<{ index: number; keys: string[] }>
+): any {
   for (const candidate of candidates) {
     const value = pickTupleValue(source, candidate.index, ...candidate.keys);
     if (value !== undefined && value !== null && value !== "") {
@@ -1187,6 +1199,39 @@ function normalizeSlugHash(value: unknown): string {
   return raw || ZERO_BYTES32;
 }
 
+function normalizeOptionalString(value: unknown): string | null {
+  if (value == null) {
+    return null;
+  }
+
+  const normalized = String(value).trim();
+  return normalized || null;
+}
+
+function getBackendBaseUrl(): string {
+  const candidates = [
+    process.env.NEXT_PUBLIC_ALLOCATION_WORKER_URL,
+    process.env.NEXT_PUBLIC_BACKEND_BASE_URL
+  ];
+
+  for (const candidate of candidates) {
+    const normalized = String(candidate || "").trim().replace(/\/+$/, "");
+    if (normalized) {
+      return normalized;
+    }
+  }
+
+  return "";
+}
+
+async function readJson(response: Response): Promise<any> {
+  try {
+    return await response.json();
+  } catch {
+    return null;
+  }
+}
+
 async function getTronWeb(): Promise<any> {
   assertBrowser();
 
@@ -1219,75 +1264,51 @@ export function levelToLabel(level: number): string {
 
 function mapIdentity(wallet: string, coreRaw: any, profileRaw: any): AmbassadorIdentity {
   const exists = safeBoolean(
-    pickFirstDefined(coreRaw, [
-      { index: 0, keys: ["exists"] }
-    ])
+    pickFirstDefined(coreRaw, [{ index: 0, keys: ["exists"] }])
   );
 
   const active = safeBoolean(
-    pickFirstDefined(coreRaw, [
-      { index: 1, keys: ["active"] }
-    ])
+    pickFirstDefined(coreRaw, [{ index: 1, keys: ["active"] }])
   );
 
   const effectiveLevel = safeNumber(
-    pickFirstDefined(coreRaw, [
-      { index: 2, keys: ["effectiveLevel", "level"] }
-    ])
+    pickFirstDefined(coreRaw, [{ index: 2, keys: ["effectiveLevel", "level"] }])
   );
 
   const rewardPercent = safeNumber(
-    pickFirstDefined(coreRaw, [
-      { index: 3, keys: ["rewardPercent"] }
-    ])
+    pickFirstDefined(coreRaw, [{ index: 3, keys: ["rewardPercent"] }])
   );
 
   const createdAt = safeNumber(
-    pickFirstDefined(coreRaw, [
-      { index: 4, keys: ["createdAt"] }
-    ])
+    pickFirstDefined(coreRaw, [{ index: 4, keys: ["createdAt"] }])
   );
 
   const selfRegistered = safeBoolean(
-    pickFirstDefined(profileRaw, [
-      { index: 0, keys: ["selfRegistered"] }
-    ])
+    pickFirstDefined(profileRaw, [{ index: 0, keys: ["selfRegistered"] }])
   );
 
   const manualAssigned = safeBoolean(
-    pickFirstDefined(profileRaw, [
-      { index: 1, keys: ["manualAssigned"] }
-    ])
+    pickFirstDefined(profileRaw, [{ index: 1, keys: ["manualAssigned"] }])
   );
 
   const overrideEnabled = safeBoolean(
-    pickFirstDefined(profileRaw, [
-      { index: 2, keys: ["overrideEnabled"] }
-    ])
+    pickFirstDefined(profileRaw, [{ index: 2, keys: ["overrideEnabled"] }])
   );
 
   const currentLevel = safeNumber(
-    pickFirstDefined(profileRaw, [
-      { index: 3, keys: ["currentLevel"] }
-    ])
+    pickFirstDefined(profileRaw, [{ index: 3, keys: ["currentLevel"] }])
   );
 
   const overrideLevel = safeNumber(
-    pickFirstDefined(profileRaw, [
-      { index: 4, keys: ["overrideLevel"] }
-    ])
+    pickFirstDefined(profileRaw, [{ index: 4, keys: ["overrideLevel"] }])
   );
 
   const slugHash = normalizeSlugHash(
-    pickFirstDefined(profileRaw, [
-      { index: 5, keys: ["slugHash"] }
-    ])
+    pickFirstDefined(profileRaw, [{ index: 5, keys: ["slugHash"] }])
   );
 
   const metaHash = normalizeMetaHash(
-    pickFirstDefined(profileRaw, [
-      { index: 6, keys: ["metaHash"] }
-    ])
+    pickFirstDefined(profileRaw, [{ index: 6, keys: ["metaHash"] }])
   );
 
   return {
@@ -1310,36 +1331,26 @@ function mapIdentity(wallet: string, coreRaw: any, profileRaw: any): AmbassadorI
 
 function mapStats(statsRaw: any): AmbassadorStats {
   const totalBuyers = safeNumber(
-    pickFirstDefined(statsRaw, [
-      { index: 0, keys: ["totalBuyers", "buyersCount"] }
-    ])
+    pickFirstDefined(statsRaw, [{ index: 0, keys: ["totalBuyers", "buyersCount"] }])
   );
 
   const trackedVolumeSun = safeSunString(
-    pickFirstDefined(statsRaw, [
-      { index: 1, keys: ["trackedVolumeSun", "totalVolumeSun"] }
-    ]),
+    pickFirstDefined(statsRaw, [{ index: 1, keys: ["trackedVolumeSun", "totalVolumeSun"] }]),
     "0"
   );
 
   const lifetimeRewardsSun = safeSunString(
-    pickFirstDefined(statsRaw, [
-      { index: 2, keys: ["lifetimeRewardsSun", "totalRewardsAccruedSun"] }
-    ]),
+    pickFirstDefined(statsRaw, [{ index: 2, keys: ["lifetimeRewardsSun", "totalRewardsAccruedSun"] }]),
     "0"
   );
 
   const withdrawnRewardsSun = safeSunString(
-    pickFirstDefined(statsRaw, [
-      { index: 3, keys: ["withdrawnRewardsSun", "totalRewardsClaimedSun"] }
-    ]),
+    pickFirstDefined(statsRaw, [{ index: 3, keys: ["withdrawnRewardsSun", "totalRewardsClaimedSun"] }]),
     "0"
   );
 
   const claimableRewardsSun = safeSunString(
-    pickFirstDefined(statsRaw, [
-      { index: 4, keys: ["claimableRewardsSun", "availableOnChainSun"] }
-    ]),
+    pickFirstDefined(statsRaw, [{ index: 4, keys: ["claimableRewardsSun", "availableOnChainSun"] }]),
     "0"
   );
 
@@ -1358,30 +1369,22 @@ function mapStats(statsRaw: any): AmbassadorStats {
 
 function mapProgress(progressRaw: any, identity?: AmbassadorIdentity): AmbassadorLevelProgress {
   const currentLevel = safeNumber(
-    pickFirstDefined(progressRaw, [
-      { index: 0, keys: ["currentLevel", "level"] }
-    ]),
+    pickFirstDefined(progressRaw, [{ index: 0, keys: ["currentLevel", "level"] }]),
     identity?.currentLevel ?? identity?.effectiveLevel ?? 0
   );
 
   const buyersCount = safeNumber(
-    pickFirstDefined(progressRaw, [
-      { index: 1, keys: ["buyersCount", "totalBuyers"] }
-    ]),
+    pickFirstDefined(progressRaw, [{ index: 1, keys: ["buyersCount", "totalBuyers"] }]),
     0
   );
 
   const nextThreshold = safeNumber(
-    pickFirstDefined(progressRaw, [
-      { index: 2, keys: ["nextThreshold"] }
-    ]),
+    pickFirstDefined(progressRaw, [{ index: 2, keys: ["nextThreshold"] }]),
     0
   );
 
   const remainingToNextLevel = safeNumber(
-    pickFirstDefined(progressRaw, [
-      { index: 3, keys: ["remainingToNextLevel"] }
-    ]),
+    pickFirstDefined(progressRaw, [{ index: 3, keys: ["remainingToNextLevel"] }]),
     0
   );
 
@@ -1395,65 +1398,51 @@ function mapProgress(progressRaw: any, identity?: AmbassadorIdentity): Ambassado
 
 function mapWithdrawalQueue(raw: any, stats: AmbassadorStats): AmbassadorWithdrawalQueue {
   const availableOnChainSun = safeSunString(
-    pickFirstDefined(raw, [
-      { index: 0, keys: ["availableOnChainSun", "claimableRewardsSun"] }
-    ]),
+    pickFirstDefined(raw, [{ index: 0, keys: ["availableOnChainSun", "claimableRewardsSun"] }]),
     stats.claimableRewardsSun
   );
 
   const pendingBackendSyncSun = safeSunString(
-    pickFirstDefined(raw, [
-      { index: 1, keys: ["pendingBackendSyncSun"] }
-    ]),
+    pickFirstDefined(raw, [{ index: 1, keys: ["pendingBackendSyncSun"] }]),
     "0"
   );
 
   const requestedForProcessingSun = safeSunString(
-    pickFirstDefined(raw, [
-      { index: 2, keys: ["requestedForProcessingSun"] }
-    ]),
+    pickFirstDefined(raw, [{ index: 2, keys: ["requestedForProcessingSun"] }]),
     "0"
   );
 
   const availableOnChainCount = safeNumber(
-    pickFirstDefined(raw, [
-      { index: 3, keys: ["availableOnChainCount"] }
-    ]),
+    pickFirstDefined(raw, [{ index: 3, keys: ["availableOnChainCount"] }]),
     0
   );
 
   const pendingBackendSyncCount = safeNumber(
-    pickFirstDefined(raw, [
-      { index: 4, keys: ["pendingBackendSyncCount"] }
-    ]),
+    pickFirstDefined(raw, [{ index: 4, keys: ["pendingBackendSyncCount"] }]),
     0
   );
 
   const requestedForProcessingCount = safeNumber(
-    pickFirstDefined(raw, [
-      { index: 5, keys: ["requestedForProcessingCount"] }
-    ]),
+    pickFirstDefined(raw, [{ index: 5, keys: ["requestedForProcessingCount"] }]),
     0
   );
 
   const hasProcessingWithdrawal = safeBoolean(
-    pickFirstDefined(raw, [
-      { index: 6, keys: ["hasProcessingWithdrawal"] }
-    ])
+    pickFirstDefined(raw, [{ index: 6, keys: ["hasProcessingWithdrawal"] }])
   );
 
   const allocatedInDbSun = safeSunString(
-    pickFirstDefined(raw, [
-      { index: 7, keys: ["allocatedInDbSun"] }
-    ]),
+    pickFirstDefined(raw, [{ index: 7, keys: ["allocatedInDbSun"] }]),
     "0"
   );
 
   const allocatedInDbCount = safeNumber(
-    pickFirstDefined(raw, [
-      { index: 8, keys: ["allocatedInDbCount"] }
-    ]),
+    pickFirstDefined(raw, [{ index: 8, keys: ["allocatedInDbCount"] }]),
     0
+  );
+
+  const withdrawSessionId = normalizeOptionalString(
+    pickFirstDefined(raw, [{ index: 9, keys: ["withdrawSessionId"] }])
   );
 
   return {
@@ -1473,7 +1462,8 @@ function mapWithdrawalQueue(raw: any, stats: AmbassadorStats): AmbassadorWithdra
     requestedForProcessingTrx: sunToTrxString(requestedForProcessingSun),
     requestedForProcessingCount,
 
-    hasProcessingWithdrawal
+    hasProcessingWithdrawal,
+    withdrawSessionId
   };
 }
 
@@ -1495,8 +1485,49 @@ function buildFallbackWithdrawalQueue(stats: AmbassadorStats): AmbassadorWithdra
     requestedForProcessingTrx: "0",
     requestedForProcessingCount: 0,
 
-    hasProcessingWithdrawal: false
+    hasProcessingWithdrawal: false,
+    withdrawSessionId: null
   };
+}
+
+export async function confirmWithdrawal(
+  input: ConfirmWithdrawalInput
+): Promise<unknown> {
+  const baseUrl = getBackendBaseUrl();
+
+  if (!baseUrl) {
+    return null;
+  }
+
+  const wallet = assertNonEmpty(input.wallet, "wallet");
+  const txid = assertNonEmpty(input.txid, "txid");
+
+  const body: Record<string, unknown> = {
+    wallet,
+    txid
+  };
+
+  if (input.withdrawSessionId) {
+    body.withdrawSessionId = input.withdrawSessionId;
+  }
+
+  const response = await fetch(`${baseUrl}${DEFAULT_CONFIRM_WITHDRAWAL_ENDPOINT}`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify(body)
+  });
+
+  const payload = await readJson(response);
+
+  if (!response.ok) {
+    throw new Error(
+      payload?.error || payload?.message || "Failed to confirm withdrawal"
+    );
+  }
+
+  return payload?.result ?? payload ?? null;
 }
 
 export async function readAmbassadorIdentity(wallet?: string): Promise<AmbassadorIdentity> {
@@ -1563,11 +1594,13 @@ export async function readAmbassadorWithdrawalQueue(
   return buildFallbackWithdrawalQueue(stats);
 }
 
-export async function withdrawRewards(): Promise<WithdrawResult> {
+export async function withdrawRewards(
+  input?: { wallet?: string; withdrawSessionId?: string | null }
+): Promise<WithdrawResult> {
   const contract = await getControllerContractInstance();
   const txid = await contract.withdrawRewards().send();
 
-  return {
+  const result: WithdrawResult = {
     txid: assertNonEmpty(
       typeof txid === "string"
         ? txid
@@ -1575,6 +1608,23 @@ export async function withdrawRewards(): Promise<WithdrawResult> {
       "txid"
     )
   };
+
+  const wallet =
+    input?.wallet && input.wallet.trim()
+      ? input.wallet.trim()
+      : await getConnectedWalletAddress();
+
+  try {
+    await confirmWithdrawal({
+      wallet,
+      txid: result.txid,
+      withdrawSessionId: input?.withdrawSessionId ?? null
+    });
+  } catch (error) {
+    console.error("confirmWithdrawal failed:", error);
+  }
+
+  return result;
 }
 
 export async function readAmbassadorDashboard(wallet?: string): Promise<AmbassadorDashboard> {
