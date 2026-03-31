@@ -1,6 +1,6 @@
 # 4teen-ambassador-system — ALLOCATION WORKER
 
-Generated: 2026-03-31T10:11:20.907Z
+Generated: 2026-03-31T10:14:35.345Z
 Repository: info14fourteen-creator/4teen-ambassador-system
 Branch: main
 
@@ -5254,7 +5254,7 @@ export interface ProcessAmbassadorPendingQueueJobItem {
   purchaseAmountSun: string;
   ownerShareSun: string;
   status: string;
-  action: "allocated" | "deferred" | "skipped" | "failed";
+  action: "allocated" | "deferred" | "skipped" | "failed" | "stopped";
   reason: string | null;
   txid: string | null;
 }
@@ -5268,6 +5268,8 @@ export interface ProcessAmbassadorPendingQueueJobResult {
   deferred: number;
   skipped: number;
   failed: number;
+  stoppedEarly: boolean;
+  stopReason: string | null;
   items: ProcessAmbassadorPendingQueueJobItem[];
   startedAt: number;
   finishedAt: number;
@@ -5326,160 +5328,76 @@ function toErrorMessage(error: unknown): string {
   return "Unknown error";
 }
 
-function isResourceError(message: string): boolean {
-  const normalized = message.toLowerCase();
-
-  return (
-    normalized.includes("resource insufficient") ||
-    normalized.includes("account resource insufficient") ||
-    normalized.includes("out of energy") ||
-    normalized.includes("insufficient energy") ||
-    normalized.includes("insufficient bandwidth") ||
-    normalized.includes("bandwidth") ||
-    normalized.includes("energy")
-  );
-}
-
-async function listPendingQueuePurchases(
+async function resolveAmbassadorWallet(
   worker: AllocationWorker,
-  options: {
+  input: {
     ambassadorSlug?: string;
     ambassadorWallet?: string;
-    limit: number;
   }
-): Promise<any[]> {
-  const storeAny = worker.store as any;
+): Promise<{
+  ambassadorSlug: string | null;
+  ambassadorWallet: string | null;
+}> {
+  const ambassadorWallet = normalizeOptionalString(input.ambassadorWallet) ?? null;
+  const ambassadorSlug = normalizeOptionalString(input.ambassadorSlug) ?? null;
 
-  if (typeof storeAny.listPendingAmbassadorWithdrawalPurchases === "function") {
-    return storeAny.listPendingAmbassadorWithdrawalPurchases({
-      ambassadorSlug: options.ambassadorSlug,
-      ambassadorWallet: options.ambassadorWallet,
-      limit: options.limit
-    });
-  }
-
-  if (typeof storeAny.listQueuedWithdrawalPurchases === "function") {
-    return storeAny.listQueuedWithdrawalPurchases({
-      ambassadorSlug: options.ambassadorSlug,
-      ambassadorWallet: options.ambassadorWallet,
-      limit: options.limit
-    });
+  if (ambassadorWallet) {
+    return {
+      ambassadorSlug,
+      ambassadorWallet
+    };
   }
 
-  if (typeof storeAny.listPurchasesByStatus === "function") {
-    return storeAny.listPurchasesByStatus("pending_ambassador_withdrawal", {
-      ambassadorSlug: options.ambassadorSlug,
-      ambassadorWallet: options.ambassadorWallet,
-      limit: options.limit
-    });
+  if (!ambassadorSlug) {
+    throw new Error("ambassadorWallet or ambassadorSlug is required");
   }
 
-  throw new Error(
-    "Purchase store does not support listing pending ambassador withdrawal queue"
-  );
+  const record = await worker.store.getAmbassadorBySlug(ambassadorSlug);
+
+  if (!record?.wallet) {
+    throw new Error(`Ambassador wallet not found for slug: ${ambassadorSlug}`);
+  }
+
+  return {
+    ambassadorSlug,
+    ambassadorWallet: record.wallet
+  };
 }
 
-async function markDeferred(
-  worker: AllocationWorker,
-  purchaseId: string,
-  reason: string,
-  now: number
-): Promise<void> {
-  const storeAny = worker.store as any;
+function mapProcessedItem(attempt: any): ProcessAmbassadorPendingQueueJobItem {
+  const purchase = attempt?.purchase ?? {};
 
-  if (typeof storeAny.markPurchaseDeferred === "function") {
-    await storeAny.markPurchaseDeferred(purchaseId, reason, now);
-    return;
+  let action: "allocated" | "deferred" | "skipped" | "failed" | "stopped" = "failed";
+  const status = String(attempt?.status || "").trim();
+
+  if (status === "allocated") {
+    action = "allocated";
+  } else if (status === "deferred") {
+    action = "deferred";
+  } else if (status === "stopped-on-resource-shortage") {
+    action = "stopped";
+  } else if (
+    status === "skipped-already-final" ||
+    status === "skipped-no-ambassador-wallet"
+  ) {
+    action = "skipped";
+  } else if (status === "retryable-failed" || status === "final-failed") {
+    action = "failed";
   }
 
-  if (typeof storeAny.updatePurchaseStatus === "function") {
-    await storeAny.updatePurchaseStatus(
-      purchaseId,
-      "deferred",
-      reason,
-      now
-    );
-    return;
-  }
-
-  throw new Error("Purchase store does not support deferred status updates");
-}
-
-async function markFailed(
-  worker: AllocationWorker,
-  purchaseId: string,
-  reason: string,
-  now: number
-): Promise<void> {
-  const storeAny = worker.store as any;
-
-  if (typeof storeAny.markPurchaseFailed === "function") {
-    await storeAny.markPurchaseFailed(purchaseId, reason, now);
-    return;
-  }
-
-  if (typeof storeAny.updatePurchaseStatus === "function") {
-    await storeAny.updatePurchaseStatus(
-      purchaseId,
-      "failed",
-      reason,
-      now
-    );
-    return;
-  }
-
-  throw new Error("Purchase store does not support failure status updates");
-}
-
-async function canAllocateNow(
-  worker: AllocationWorker,
-  purchase: any,
-  feeLimitSun: number | undefined
-): Promise<{ ok: boolean; reason: string | null }> {
-  const processorAny = worker.processor as any;
-
-  if (typeof processorAny.checkAllocationResources === "function") {
-    const result = await processorAny.checkAllocationResources({
-      purchaseId: purchase.purchaseId,
-      buyerWallet: purchase.buyerWallet,
-      ambassadorWallet: purchase.ambassadorWallet,
-      purchaseAmountSun: purchase.purchaseAmountSun,
-      ownerShareSun: purchase.ownerShareSun,
-      feeLimitSun
-    });
-
-    if (result && typeof result === "object") {
-      return {
-        ok: Boolean((result as any).ok),
-        reason: normalizeOptionalString((result as any).reason) ?? null
-      };
-    }
-  }
-
-  return { ok: true, reason: null };
-}
-
-async function replayOnePurchase(
-  worker: AllocationWorker,
-  purchaseId: string,
-  feeLimitSun: number | undefined,
-  now: number
-): Promise<any> {
-  const processorAny = worker.processor as any;
-
-  if (typeof processorAny.replayFailedAllocation === "function") {
-    return processorAny.replayFailedAllocation(purchaseId, feeLimitSun, now);
-  }
-
-  if (typeof processorAny.processPendingPurchaseAllocation === "function") {
-    return processorAny.processPendingPurchaseAllocation({
-      purchaseId,
-      feeLimitSun,
-      now
-    });
-  }
-
-  throw new Error("Allocation processor does not support replaying pending purchases");
+  return {
+    purchaseId: String(purchase.purchaseId || "").trim(),
+    txHash: String(purchase.txHash || "").trim(),
+    buyerWallet: String(purchase.buyerWallet || "").trim(),
+    ambassadorSlug: String(purchase.ambassadorSlug || "").trim(),
+    ambassadorWallet: String(purchase.ambassadorWallet || "").trim(),
+    purchaseAmountSun: String(purchase.purchaseAmountSun ?? "0"),
+    ownerShareSun: String(purchase.ownerShareSun ?? "0"),
+    status: String(purchase.status || status || "unknown"),
+    action,
+    reason: attempt?.reason ? String(attempt.reason) : null,
+    txid: attempt?.txid ? String(attempt.txid) : null
+  };
 }
 
 export async function processAmbassadorPendingQueue(
@@ -5492,8 +5410,13 @@ export async function processAmbassadorPendingQueue(
   const limit = toPositiveInteger(options.limit, 100);
   const feeLimitSun = toOptionalPositiveInteger(options.feeLimitSun);
 
-  const ambassadorSlug = normalizeOptionalString(options.ambassadorSlug) ?? null;
-  const ambassadorWallet = normalizeOptionalString(options.ambassadorWallet) ?? null;
+  const resolved = await resolveAmbassadorWallet(worker, {
+    ambassadorSlug: options.ambassadorSlug,
+    ambassadorWallet: options.ambassadorWallet
+  });
+
+  const ambassadorSlug = resolved.ambassadorSlug;
+  const ambassadorWallet = resolved.ambassadorWallet;
 
   const result: ProcessAmbassadorPendingQueueJobResult = {
     ok: true,
@@ -5504,25 +5427,26 @@ export async function processAmbassadorPendingQueue(
     deferred: 0,
     skipped: 0,
     failed: 0,
+    stoppedEarly: false,
+    stopReason: null,
     items: [],
     startedAt,
     finishedAt: startedAt
   };
 
   try {
-    const purchases = await listPendingQueuePurchases(worker, {
-      ambassadorSlug: ambassadorSlug ?? undefined,
-      ambassadorWallet: ambassadorWallet ?? undefined,
+    const prepared = await worker.processor.prepareWithdrawBatch({
+      ambassadorWallet: ambassadorWallet || "",
       limit
     });
 
-    result.scanned = purchases.length;
+    result.scanned = prepared.purchases.length;
 
     logger.info?.(
       JSON.stringify({
         ok: true,
         job: "processAmbassadorPendingQueue",
-        message: "Loaded pending ambassador withdrawal queue",
+        message: "Loaded ambassador pending queue",
         ambassadorSlug,
         ambassadorWallet,
         scanned: result.scanned,
@@ -5530,211 +5454,45 @@ export async function processAmbassadorPendingQueue(
       })
     );
 
-    for (const purchase of purchases) {
-      const purchaseId = String(purchase.purchaseId || "").trim();
-      const status = String(purchase.status || "").trim();
+    if (!prepared.purchases.length) {
+      result.finishedAt = Date.now();
 
-      if (!purchaseId) {
-        result.skipped += 1;
-        result.items.push({
-          purchaseId: "",
-          txHash: String(purchase.txHash || ""),
-          buyerWallet: String(purchase.buyerWallet || ""),
-          ambassadorSlug: String(purchase.ambassadorSlug || ""),
-          ambassadorWallet: String(purchase.ambassadorWallet || ""),
-          purchaseAmountSun: String(purchase.purchaseAmountSun ?? "0"),
-          ownerShareSun: String(purchase.ownerShareSun ?? "0"),
-          status: status || "unknown",
-          action: "skipped",
-          reason: "Missing purchaseId",
-          txid: null
-        });
-        continue;
-      }
+      logger.info?.(
+        JSON.stringify({
+          ok: true,
+          job: "processAmbassadorPendingQueue",
+          message: "No pending purchases found",
+          ambassadorSlug,
+          ambassadorWallet,
+          scanned: 0,
+          durationMs: result.finishedAt - result.startedAt
+        })
+      );
 
-      if (
-        status !== "pending_ambassador_withdrawal" &&
-        status !== "queued_for_withdrawal" &&
-        status !== "deferred"
-      ) {
-        result.skipped += 1;
-        result.items.push({
-          purchaseId,
-          txHash: String(purchase.txHash || ""),
-          buyerWallet: String(purchase.buyerWallet || ""),
-          ambassadorSlug: String(purchase.ambassadorSlug || ""),
-          ambassadorWallet: String(purchase.ambassadorWallet || ""),
-          purchaseAmountSun: String(purchase.purchaseAmountSun ?? "0"),
-          ownerShareSun: String(purchase.ownerShareSun ?? "0"),
-          status: status || "unknown",
-          action: "skipped",
-          reason: `Unsupported queue status: ${status || "unknown"}`,
-          txid: null
-        });
-        continue;
-      }
+      return result;
+    }
 
-      const resourceCheck = await canAllocateNow(worker, purchase, feeLimitSun);
+    const allocationResult = await worker.processor.allocatePendingBatch({
+      ambassadorWallet: ambassadorWallet || "",
+      feeLimitSun,
+      limit,
+      allocationMode: "claim-first",
+      stopOnFirstDeferred: true
+    });
 
-      if (!resourceCheck.ok) {
-        const reason = resourceCheck.reason || "Not enough resources for allocation";
+    result.stoppedEarly = Boolean(allocationResult.stoppedEarly);
+    result.stopReason = allocationResult.stopReason ?? null;
+    result.items = allocationResult.processed.map(mapProcessedItem);
 
-        await markDeferred(worker, purchaseId, reason, now);
-
+    for (const item of result.items) {
+      if (item.action === "allocated") {
+        result.allocated += 1;
+      } else if (item.action === "deferred" || item.action === "stopped") {
         result.deferred += 1;
-        result.items.push({
-          purchaseId,
-          txHash: String(purchase.txHash || ""),
-          buyerWallet: String(purchase.buyerWallet || ""),
-          ambassadorSlug: String(purchase.ambassadorSlug || ""),
-          ambassadorWallet: String(purchase.ambassadorWallet || ""),
-          purchaseAmountSun: String(purchase.purchaseAmountSun ?? "0"),
-          ownerShareSun: String(purchase.ownerShareSun ?? "0"),
-          status: "deferred",
-          action: "deferred",
-          reason,
-          txid: null
-        });
-
-        continue;
-      }
-
-      try {
-        const replayResult = await replayOnePurchase(worker, purchaseId, feeLimitSun, now);
-        const replayStatus = String(replayResult?.status || "").trim().toLowerCase();
-        const txid = normalizeOptionalString(replayResult?.txid) ?? null;
-        const reason = normalizeOptionalString(replayResult?.reason) ?? null;
-
-        if (replayStatus === "allocated") {
-          result.allocated += 1;
-          result.items.push({
-            purchaseId,
-            txHash: String(purchase.txHash || ""),
-            buyerWallet: String(purchase.buyerWallet || ""),
-            ambassadorSlug: String(purchase.ambassadorSlug || ""),
-            ambassadorWallet: String(purchase.ambassadorWallet || ""),
-            purchaseAmountSun: String(purchase.purchaseAmountSun ?? "0"),
-            ownerShareSun: String(purchase.ownerShareSun ?? "0"),
-            status: "allocated",
-            action: "allocated",
-            reason: null,
-            txid
-          });
-          continue;
-        }
-
-        if (replayStatus === "deferred") {
-          result.deferred += 1;
-          result.items.push({
-            purchaseId,
-            txHash: String(purchase.txHash || ""),
-            buyerWallet: String(purchase.buyerWallet || ""),
-            ambassadorSlug: String(purchase.ambassadorSlug || ""),
-            ambassadorWallet: String(purchase.ambassadorWallet || ""),
-            purchaseAmountSun: String(purchase.purchaseAmountSun ?? "0"),
-            ownerShareSun: String(purchase.ownerShareSun ?? "0"),
-            status: "deferred",
-            action: "deferred",
-            reason: reason || "Deferred by allocation processor",
-            txid
-          });
-          continue;
-        }
-
-        if (replayStatus === "failed") {
-          const failureReason = reason || "Allocation processor returned failed status";
-
-          if (isResourceError(failureReason)) {
-            await markDeferred(worker, purchaseId, failureReason, now);
-
-            result.deferred += 1;
-            result.items.push({
-              purchaseId,
-              txHash: String(purchase.txHash || ""),
-              buyerWallet: String(purchase.buyerWallet || ""),
-              ambassadorSlug: String(purchase.ambassadorSlug || ""),
-              ambassadorWallet: String(purchase.ambassadorWallet || ""),
-              purchaseAmountSun: String(purchase.purchaseAmountSun ?? "0"),
-              ownerShareSun: String(purchase.ownerShareSun ?? "0"),
-              status: "deferred",
-              action: "deferred",
-              reason: failureReason,
-              txid
-            });
-          } else {
-            await markFailed(worker, purchaseId, failureReason, now);
-
-            result.failed += 1;
-            result.items.push({
-              purchaseId,
-              txHash: String(purchase.txHash || ""),
-              buyerWallet: String(purchase.buyerWallet || ""),
-              ambassadorSlug: String(purchase.ambassadorSlug || ""),
-              ambassadorWallet: String(purchase.ambassadorWallet || ""),
-              purchaseAmountSun: String(purchase.purchaseAmountSun ?? "0"),
-              ownerShareSun: String(purchase.ownerShareSun ?? "0"),
-              status: "failed",
-              action: "failed",
-              reason: failureReason,
-              txid
-            });
-          }
-
-          continue;
-        }
-
+      } else if (item.action === "skipped") {
         result.skipped += 1;
-        result.items.push({
-          purchaseId,
-          txHash: String(purchase.txHash || ""),
-          buyerWallet: String(purchase.buyerWallet || ""),
-          ambassadorSlug: String(purchase.ambassadorSlug || ""),
-          ambassadorWallet: String(purchase.ambassadorWallet || ""),
-          purchaseAmountSun: String(purchase.purchaseAmountSun ?? "0"),
-          ownerShareSun: String(purchase.ownerShareSun ?? "0"),
-          status: replayStatus || "unknown",
-          action: "skipped",
-          reason: reason || `Unexpected replay status: ${replayStatus || "unknown"}`,
-          txid
-        });
-      } catch (error) {
-        const reason = toErrorMessage(error);
-
-        if (isResourceError(reason)) {
-          await markDeferred(worker, purchaseId, reason, now);
-
-          result.deferred += 1;
-          result.items.push({
-            purchaseId,
-            txHash: String(purchase.txHash || ""),
-            buyerWallet: String(purchase.buyerWallet || ""),
-            ambassadorSlug: String(purchase.ambassadorSlug || ""),
-            ambassadorWallet: String(purchase.ambassadorWallet || ""),
-            purchaseAmountSun: String(purchase.purchaseAmountSun ?? "0"),
-            ownerShareSun: String(purchase.ownerShareSun ?? "0"),
-            status: "deferred",
-            action: "deferred",
-            reason,
-            txid: null
-          });
-        } else {
-          await markFailed(worker, purchaseId, reason, now);
-
-          result.failed += 1;
-          result.items.push({
-            purchaseId,
-            txHash: String(purchase.txHash || ""),
-            buyerWallet: String(purchase.buyerWallet || ""),
-            ambassadorSlug: String(purchase.ambassadorSlug || ""),
-            ambassadorWallet: String(purchase.ambassadorWallet || ""),
-            purchaseAmountSun: String(purchase.purchaseAmountSun ?? "0"),
-            ownerShareSun: String(purchase.ownerShareSun ?? "0"),
-            status: "failed",
-            action: "failed",
-            reason,
-            txid: null
-          });
-        }
+      } else {
+        result.failed += 1;
       }
     }
 
@@ -5752,6 +5510,8 @@ export async function processAmbassadorPendingQueue(
         deferred: result.deferred,
         skipped: result.skipped,
         failed: result.failed,
+        stoppedEarly: result.stoppedEarly,
+        stopReason: result.stopReason,
         durationMs: result.finishedAt - result.startedAt
       })
     );
