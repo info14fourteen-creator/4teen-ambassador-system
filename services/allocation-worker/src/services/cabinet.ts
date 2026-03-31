@@ -66,13 +66,20 @@ export interface CabinetProfileStats {
 export interface CabinetProfileWithdrawalQueue {
   availableOnChainSun: string;
   availableOnChainTrx: string;
+  availableOnChainCount: number;
+
+  allocatedInDbSun: string;
+  allocatedInDbTrx: string;
+  allocatedInDbCount: number;
+
   pendingBackendSyncSun: string;
   pendingBackendSyncTrx: string;
+  pendingBackendSyncCount: number;
+
   requestedForProcessingSun: string;
   requestedForProcessingTrx: string;
-  availableOnChainCount: number;
-  pendingBackendSyncCount: number;
   requestedForProcessingCount: number;
+
   hasProcessingWithdrawal: boolean;
 }
 
@@ -109,6 +116,9 @@ const DEFAULT_PENDING_STATUSES: PurchaseProcessingStatus[] = [
   "deferred",
   "allocation_failed_retryable"
 ];
+
+const ZERO_BYTES32 =
+  "0x0000000000000000000000000000000000000000000000000000000000000000";
 
 function assertNonEmpty(value: string, fieldName: string): string {
   const normalized = String(value || "").trim();
@@ -199,17 +209,13 @@ function buildReferralLink(slug: string): string {
 
 function normalizeHex32(value: unknown): string {
   const raw = String(value ?? "").trim().toLowerCase();
-  return raw || "0x0000000000000000000000000000000000000000000000000000000000000000";
+  return raw || ZERO_BYTES32;
 }
 
 function normalizeMetaHash(value: unknown): string | null {
   const raw = String(value ?? "").trim().toLowerCase();
 
-  if (!raw) {
-    return null;
-  }
-
-  if (raw === "0x0000000000000000000000000000000000000000000000000000000000000000") {
+  if (!raw || raw === ZERO_BYTES32) {
     return null;
   }
 
@@ -238,33 +244,65 @@ function pickTupleValue(source: any, index: number, key?: string): unknown {
   return undefined;
 }
 
-function mapStats(stats: CabinetStatsRecord): {
+function mapStats(input: {
+  onChainStats: {
+    totalBuyers: string;
+    trackedVolumeSun: string;
+    claimableRewardsSun: string;
+    lifetimeRewardsSun: string;
+    withdrawnRewardsSun: string;
+  };
+  dbStats: CabinetStatsRecord;
+}): {
   stats: CabinetProfileStats;
   withdrawalQueue: CabinetProfileWithdrawalQueue;
 } {
+  const { onChainStats, dbStats } = input;
+
   return {
     stats: {
-      totalBuyers: stats.totalBuyers,
-      trackedVolumeSun: stats.trackedVolumeSun,
-      trackedVolumeTrx: sunToTrxString(stats.trackedVolumeSun),
-      claimableRewardsSun: stats.claimableRewardsSun,
-      claimableRewardsTrx: sunToTrxString(stats.claimableRewardsSun),
-      lifetimeRewardsSun: stats.lifetimeRewardsSun,
-      lifetimeRewardsTrx: sunToTrxString(stats.lifetimeRewardsSun),
-      withdrawnRewardsSun: stats.withdrawnRewardsSun,
-      withdrawnRewardsTrx: sunToTrxString(stats.withdrawnRewardsSun)
+      totalBuyers: safeNumber(onChainStats.totalBuyers),
+      trackedVolumeSun: onChainStats.trackedVolumeSun,
+      trackedVolumeTrx: sunToTrxString(onChainStats.trackedVolumeSun),
+      claimableRewardsSun: onChainStats.claimableRewardsSun,
+      claimableRewardsTrx: sunToTrxString(onChainStats.claimableRewardsSun),
+      lifetimeRewardsSun: onChainStats.lifetimeRewardsSun,
+      lifetimeRewardsTrx: sunToTrxString(onChainStats.lifetimeRewardsSun),
+      withdrawnRewardsSun: onChainStats.withdrawnRewardsSun,
+      withdrawnRewardsTrx: sunToTrxString(onChainStats.withdrawnRewardsSun)
     },
     withdrawalQueue: {
-      availableOnChainSun: stats.availableOnChainSun,
-      availableOnChainTrx: sunToTrxString(stats.availableOnChainSun),
-      pendingBackendSyncSun: stats.pendingBackendSyncSun,
-      pendingBackendSyncTrx: sunToTrxString(stats.pendingBackendSyncSun),
-      requestedForProcessingSun: stats.requestedForProcessingSun,
-      requestedForProcessingTrx: sunToTrxString(stats.requestedForProcessingSun),
-      availableOnChainCount: stats.availableOnChainCount,
-      pendingBackendSyncCount: stats.pendingBackendSyncCount,
-      requestedForProcessingCount: stats.requestedForProcessingCount,
-      hasProcessingWithdrawal: stats.hasProcessingWithdrawal
+      /**
+       * Real withdrawable now.
+       * This must come only from blockchain contract state.
+       */
+      availableOnChainSun: onChainStats.claimableRewardsSun,
+      availableOnChainTrx: sunToTrxString(onChainStats.claimableRewardsSun),
+      availableOnChainCount: dbStats.availableOnChainCount,
+
+      /**
+       * Backend-derived informational bucket.
+       * Allocated in DB does NOT mean currently withdrawable on-chain.
+       */
+      allocatedInDbSun: dbStats.allocatedInDbSun,
+      allocatedInDbTrx: sunToTrxString(dbStats.allocatedInDbSun),
+      allocatedInDbCount: dbStats.allocatedInDbCount,
+
+      /**
+       * Verified / deferred / retryable purchases that still need backend sync.
+       */
+      pendingBackendSyncSun: dbStats.pendingBackendSyncSun,
+      pendingBackendSyncTrx: sunToTrxString(dbStats.pendingBackendSyncSun),
+      pendingBackendSyncCount: dbStats.pendingBackendSyncCount,
+
+      /**
+       * Queue already included into active withdrawal preparation flow.
+       */
+      requestedForProcessingSun: dbStats.requestedForProcessingSun,
+      requestedForProcessingTrx: sunToTrxString(dbStats.requestedForProcessingSun),
+      requestedForProcessingCount: dbStats.requestedForProcessingCount,
+
+      hasProcessingWithdrawal: dbStats.hasProcessingWithdrawal
     }
   };
 }
@@ -308,6 +346,22 @@ function extractReplayReason(result: unknown): string | null {
   return null;
 }
 
+function toSunString(value: unknown): string {
+  if (typeof value === "bigint") {
+    return value.toString();
+  }
+
+  if (typeof value === "number" && Number.isFinite(value) && value >= 0) {
+    return Math.floor(value).toString();
+  }
+
+  if (typeof value === "string" && /^\d+$/.test(value.trim())) {
+    return value.trim();
+  }
+
+  return "0";
+}
+
 export class CabinetService {
   private readonly store: PurchaseStore;
   private readonly tronWeb: any;
@@ -348,13 +402,21 @@ export class CabinetService {
   private async readOnChainDashboard(wallet: string): Promise<{
     identity: CabinetProfileIdentity;
     progress: CabinetProfileProgress;
+    stats: {
+      totalBuyers: string;
+      trackedVolumeSun: string;
+      claimableRewardsSun: string;
+      lifetimeRewardsSun: string;
+      withdrawnRewardsSun: string;
+    };
   }> {
     const contract = await this.contract();
 
-    const [coreRaw, profileRaw, progressRaw] = await Promise.all([
+    const [coreRaw, profileRaw, progressRaw, statsRaw] = await Promise.all([
       contract.getDashboardCore(wallet).call(),
       contract.getDashboardProfile(wallet).call(),
-      contract.getAmbassadorLevelProgress(wallet).call()
+      contract.getAmbassadorLevelProgress(wallet).call(),
+      contract.getDashboardStats(wallet).call()
     ]);
 
     const active = safeBoolean(pickTupleValue(coreRaw, 1, "active"));
@@ -372,6 +434,18 @@ export class CabinetService {
       pickTupleValue(progressRaw, 3, "remainingToNextLevel")
     );
 
+    const totalBuyers = toSunString(pickTupleValue(statsRaw, 0, "totalBuyers"));
+    const trackedVolumeSun = toSunString(pickTupleValue(statsRaw, 1, "totalVolumeSun"));
+    const lifetimeRewardsSun = toSunString(
+      pickTupleValue(statsRaw, 2, "totalRewardsAccruedSun")
+    );
+    const withdrawnRewardsSun = toSunString(
+      pickTupleValue(statsRaw, 3, "totalRewardsClaimedSun")
+    );
+    const claimableRewardsSun = toSunString(
+      pickTupleValue(statsRaw, 4, "claimableRewardsSun")
+    );
+
     return {
       identity: {
         active,
@@ -387,6 +461,13 @@ export class CabinetService {
         buyersCount,
         nextThreshold,
         remainingToNextLevel
+      },
+      stats: {
+        totalBuyers,
+        trackedVolumeSun,
+        claimableRewardsSun,
+        lifetimeRewardsSun,
+        withdrawnRewardsSun
       }
     };
   }
@@ -403,9 +484,16 @@ export class CabinetService {
     }
 
     const registryWallet = assertNonEmpty(record.privateIdentity.wallet, "registryWallet");
-    const statsRecord = await this.store.getCabinetStatsByAmbassadorWallet(registryWallet);
-    const mapped = mapStats(statsRecord);
-    const onChain = await this.readOnChainDashboard(registryWallet);
+
+    const [dbStatsRecord, onChain] = await Promise.all([
+      this.store.getCabinetStatsByAmbassadorWallet(registryWallet),
+      this.readOnChainDashboard(registryWallet)
+    ]);
+
+    const mapped = mapStats({
+      onChainStats: onChain.stats,
+      dbStats: dbStatsRecord
+    });
 
     return {
       registered: true,
