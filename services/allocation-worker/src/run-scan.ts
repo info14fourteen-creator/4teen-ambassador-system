@@ -34,6 +34,8 @@ export interface BuyTokensEvent {
 
 export type ScanProcessStatus =
   | "allocated"
+  | "deferred"
+  | "failed"
   | "skipped-no-local-attribution"
   | "skipped-missing-slug"
   | "skipped-already-final"
@@ -105,6 +107,27 @@ function pickObjectValue(source: any, keys: string[]): unknown {
   return undefined;
 }
 
+function toErrorMessage(error: unknown): string {
+  if (typeof error === "string" && error.trim()) {
+    return error.trim();
+  }
+
+  if (
+    error &&
+    typeof error === "object" &&
+    "message" in error &&
+    typeof (error as { message?: unknown }).message === "string"
+  ) {
+    const message = String((error as { message: string }).message).trim();
+
+    if (message) {
+      return message;
+    }
+  }
+
+  return "Unknown error";
+}
+
 function normalizeTxHashFromEvent(event: any): string {
   const value =
     pickObjectValue(event, ["transaction_id", "transactionId", "txHash", "txid"]) ?? "";
@@ -139,22 +162,21 @@ function toTronBase58Address(rawAddress: string, tronWeb: any): string {
   }
 
   if (/^0x[0-9a-fA-F]{40}$/.test(raw)) {
-    const hexBody = raw.slice(2);
-    return tronWeb.address.fromHex(`41${hexBody}`);
+    return tronWeb.address.fromHex(`41${raw.slice(2)}`);
   }
 
   if (/^[0-9a-fA-F]{40}$/.test(raw)) {
     return tronWeb.address.fromHex(`41${raw}`);
   }
 
-  return raw;
+  throw new Error(`Unsupported buyer address format: ${raw}`);
 }
 
 function normalizeBuyerWalletFromEvent(event: any, tronWeb: any): string {
   const result = pickObjectValue(event, ["result"]);
   const buyer = pickObjectValue(result, ["buyer"]) ?? pickObjectValue(event, ["buyer"]);
-
   const rawBuyer = assertNonEmpty(String(buyer), "event.result.buyer");
+
   return toTronBase58Address(rawBuyer, tronWeb);
 }
 
@@ -234,9 +256,10 @@ function extractEventArray(payload: any): any[] {
 }
 
 function extractNextFingerprint(payload: any): string | null {
-  const metaFingerprint = pickObjectValue(payload, ["fingerprint"]);
-  if (typeof metaFingerprint === "string" && metaFingerprint.trim()) {
-    return metaFingerprint.trim();
+  const directFingerprint = pickObjectValue(payload, ["fingerprint"]);
+
+  if (typeof directFingerprint === "string" && directFingerprint.trim()) {
+    return directFingerprint.trim();
   }
 
   const meta = pickObjectValue(payload, ["meta"]);
@@ -256,6 +279,8 @@ function extractNextFingerprint(payload: any): string | null {
 function isFinalPurchaseStatus(status: string): boolean {
   return (
     status === "allocated" ||
+    status === "withdraw_included" ||
+    status === "withdraw_completed" ||
     status === "ignored" ||
     status === "allocation_failed_final"
   );
@@ -306,7 +331,8 @@ export class BuyTokensScanner {
 
     console.log(
       JSON.stringify({
-        stage: "scan:getEventResult",
+        scope: "scan",
+        stage: "getEventResult",
         tokenContractAddress: this.tokenContractAddress,
         eventName: this.eventName,
         pageSize: this.pageSize,
@@ -316,8 +342,7 @@ export class BuyTokensScanner {
           ? rawEvents.length
           : Array.isArray(rawEvents?.data)
             ? rawEvents.data.length
-            : null,
-        rawEventsPreview: rawEvents
+            : null
       })
     );
 
@@ -334,30 +359,20 @@ export class BuyTokensScanner {
           const result = await this.processEvent(event);
           processed.push(result);
         } catch (error) {
-          const message =
-            error && typeof error === "object" && "message" in error
-              ? String((error as { message?: unknown }).message || "").trim()
-              : "";
-
           processed.push({
             status: "event-processing-failed",
             event,
             purchaseId: null,
-            reason: message || "Failed to process parsed event",
+            reason: toErrorMessage(error),
             rawResult: error
           });
         }
       } catch (error) {
-        const message =
-          error && typeof error === "object" && "message" in error
-            ? String((error as { message?: unknown }).message || "").trim()
-            : "";
-
         processed.push({
           status: "event-parse-failed",
           event: null,
           purchaseId: null,
-          reason: message || "Failed to parse BuyTokens event",
+          reason: toErrorMessage(error),
           rawResult: rawEvent
         });
       }
@@ -442,21 +457,41 @@ export class BuyTokensScanner {
       };
     }
 
-    if (!result.allocation || result.allocation.status !== "allocated") {
+    if (!result.allocation) {
       return {
         status: "allocation-failed",
         event,
         purchaseId: result.purchaseId,
-        reason: result.allocation?.reason ?? "Allocation did not complete",
+        reason: "Allocation result is missing",
+        rawResult: result
+      };
+    }
+
+    if (result.allocation.status === "allocated") {
+      return {
+        status: "allocated",
+        event,
+        purchaseId: result.purchaseId,
+        reason: null,
+        rawResult: result
+      };
+    }
+
+    if (result.allocation.status === "deferred") {
+      return {
+        status: "deferred",
+        event,
+        purchaseId: result.purchaseId,
+        reason: result.allocation.reason,
         rawResult: result
       };
     }
 
     return {
-      status: "allocated",
+      status: "failed",
       event,
       purchaseId: result.purchaseId,
-      reason: null,
+      reason: result.allocation.reason ?? "Allocation did not complete",
       rawResult: result
     };
   }
