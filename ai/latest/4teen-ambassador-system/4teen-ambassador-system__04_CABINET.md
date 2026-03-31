@@ -1,6 +1,6 @@
 # 4teen-ambassador-system — CABINET
 
-Generated: 2026-03-31T10:25:50.551Z
+Generated: 2026-03-31T10:28:57.308Z
 Repository: info14fourteen-creator/4teen-ambassador-system
 Branch: main
 
@@ -882,6 +882,9 @@ declare global {
   }
 }
 
+const ZERO_BYTES32 =
+  "0x0000000000000000000000000000000000000000000000000000000000000000";
+
 export interface AmbassadorIdentity {
   wallet: string;
   exists: boolean;
@@ -889,6 +892,7 @@ export interface AmbassadorIdentity {
   selfRegistered: boolean;
   manualAssigned: boolean;
   overrideEnabled: boolean;
+  level: number;
   effectiveLevel: number;
   currentLevel: number;
   overrideLevel: number;
@@ -900,23 +904,14 @@ export interface AmbassadorIdentity {
 
 export interface AmbassadorStats {
   totalBuyers: number;
-  totalVolumeSun: string;
-  totalVolumeTrx: string;
-  totalRewardsAccruedSun: string;
-  totalRewardsAccruedTrx: string;
-  totalRewardsClaimedSun: string;
-  totalRewardsClaimedTrx: string;
+  trackedVolumeSun: string;
+  trackedVolumeTrx: string;
   claimableRewardsSun: string;
   claimableRewardsTrx: string;
-}
-
-export interface RewardSummary {
-  availableSun: string;
-  availableTrx: string;
-  withdrawnSun: string;
-  withdrawnTrx: string;
-  lifetimeSun: string;
-  lifetimeTrx: string;
+  lifetimeRewardsSun: string;
+  lifetimeRewardsTrx: string;
+  withdrawnRewardsSun: string;
+  withdrawnRewardsTrx: string;
 }
 
 export interface AmbassadorLevelProgress {
@@ -929,20 +924,26 @@ export interface AmbassadorLevelProgress {
 export interface AmbassadorWithdrawalQueue {
   availableOnChainSun: string;
   availableOnChainTrx: string;
+  availableOnChainCount: number;
+
+  allocatedInDbSun: string;
+  allocatedInDbTrx: string;
+  allocatedInDbCount: number;
+
   pendingBackendSyncSun: string;
   pendingBackendSyncTrx: string;
+  pendingBackendSyncCount: number;
+
   requestedForProcessingSun: string;
   requestedForProcessingTrx: string;
-  availableOnChainCount: number;
-  pendingBackendSyncCount: number;
   requestedForProcessingCount: number;
+
   hasProcessingWithdrawal: boolean;
 }
 
 export interface AmbassadorDashboard {
   identity: AmbassadorIdentity;
   stats: AmbassadorStats;
-  rewards: RewardSummary;
   progress: AmbassadorLevelProgress;
   withdrawalQueue: AmbassadorWithdrawalQueue;
 }
@@ -967,9 +968,14 @@ function assertNonEmpty(value: string, fieldName: string): string {
   return normalized;
 }
 
-function safeString(value: any): string {
-  if (value == null) return "0";
+function safeString(value: any, fallback = "0"): string {
+  if (value == null) return fallback;
   return String(value);
+}
+
+function safeSunString(value: any, fallback = "0"): string {
+  const raw = safeString(value, fallback).trim();
+  return /^\d+$/.test(raw) ? raw : fallback;
 }
 
 function safeNumber(value: any): number {
@@ -1018,7 +1024,7 @@ function pickTupleValue(source: any, index: number, key?: string): any {
 }
 
 export function sunToTrxString(value: any): string {
-  const raw = safeString(value);
+  const raw = safeString(value, "0").trim();
 
   if (!raw || raw === "0") {
     return "0";
@@ -1026,12 +1032,27 @@ export function sunToTrxString(value: any): string {
 
   const negative = raw.startsWith("-");
   const digits = negative ? raw.slice(1) : raw;
+
+  if (!/^\d+$/.test(digits)) {
+    return "0";
+  }
+
   const padded = digits.padStart(7, "0");
   const whole = padded.slice(0, -6) || "0";
   const fraction = padded.slice(-6).replace(/0+$/, "");
   const result = fraction ? `${whole}.${fraction}` : whole;
 
   return negative ? `-${result}` : result;
+}
+
+function normalizeHex32(value: any): string {
+  const raw = safeString(value, ZERO_BYTES32).trim().toLowerCase();
+  return raw || ZERO_BYTES32;
+}
+
+function normalizeMetaHash(value: any): string {
+  const raw = normalizeHex32(value);
+  return raw === ZERO_BYTES32 ? "—" : raw;
 }
 
 async function getTronWeb(): Promise<any> {
@@ -1076,8 +1097,8 @@ function mapIdentity(wallet: string, coreRaw: any, profileRaw: any): AmbassadorI
   const overrideEnabled = safeBoolean(pickTupleValue(profileRaw, 2, "overrideEnabled"));
   const currentLevel = safeNumber(pickTupleValue(profileRaw, 3, "currentLevel"));
   const overrideLevel = safeNumber(pickTupleValue(profileRaw, 4, "overrideLevel"));
-  const slugHash = safeString(pickTupleValue(profileRaw, 5, "slugHash"));
-  const metaHash = safeString(pickTupleValue(profileRaw, 6, "metaHash"));
+  const slugHash = normalizeHex32(pickTupleValue(profileRaw, 5, "slugHash"));
+  const metaHash = normalizeMetaHash(pickTupleValue(profileRaw, 6, "metaHash"));
 
   return {
     wallet,
@@ -1086,6 +1107,7 @@ function mapIdentity(wallet: string, coreRaw: any, profileRaw: any): AmbassadorI
     selfRegistered,
     manualAssigned,
     overrideEnabled,
+    level: effectiveLevel,
     effectiveLevel,
     currentLevel,
     overrideLevel,
@@ -1098,42 +1120,36 @@ function mapIdentity(wallet: string, coreRaw: any, profileRaw: any): AmbassadorI
 
 function mapStats(statsRaw: any): AmbassadorStats {
   const totalBuyers = safeNumber(pickTupleValue(statsRaw, 0, "totalBuyers"));
-  const totalVolumeSun = safeString(pickTupleValue(statsRaw, 1, "totalVolumeSun"));
-  const totalRewardsAccruedSun = safeString(
-    pickTupleValue(statsRaw, 2, "totalRewardsAccruedSun")
+  const trackedVolumeSun = safeSunString(
+    pickTupleValue(statsRaw, 1, "totalVolumeSun") ??
+      pickTupleValue(statsRaw, 1, "trackedVolumeSun"),
+    "0"
   );
-  const totalRewardsClaimedSun = safeString(
-    pickTupleValue(statsRaw, 3, "totalRewardsClaimedSun")
+  const lifetimeRewardsSun = safeSunString(
+    pickTupleValue(statsRaw, 2, "totalRewardsAccruedSun") ??
+      pickTupleValue(statsRaw, 2, "lifetimeRewardsSun"),
+    "0"
   );
-  const claimableRewardsSun = safeString(
-    pickTupleValue(statsRaw, 4, "claimableRewardsSun")
+  const withdrawnRewardsSun = safeSunString(
+    pickTupleValue(statsRaw, 3, "totalRewardsClaimedSun") ??
+      pickTupleValue(statsRaw, 3, "withdrawnRewardsSun"),
+    "0"
+  );
+  const claimableRewardsSun = safeSunString(
+    pickTupleValue(statsRaw, 4, "claimableRewardsSun"),
+    "0"
   );
 
   return {
     totalBuyers,
-    totalVolumeSun,
-    totalVolumeTrx: sunToTrxString(totalVolumeSun),
-    totalRewardsAccruedSun,
-    totalRewardsAccruedTrx: sunToTrxString(totalRewardsAccruedSun),
-    totalRewardsClaimedSun,
-    totalRewardsClaimedTrx: sunToTrxString(totalRewardsClaimedSun),
+    trackedVolumeSun,
+    trackedVolumeTrx: sunToTrxString(trackedVolumeSun),
     claimableRewardsSun,
-    claimableRewardsTrx: sunToTrxString(claimableRewardsSun)
-  };
-}
-
-function mapRewards(payoutRaw: any): RewardSummary {
-  const availableSun = safeString(pickTupleValue(payoutRaw, 0, "claimableRewardsSun"));
-  const lifetimeSun = safeString(pickTupleValue(payoutRaw, 1, "totalRewardsAccruedSun"));
-  const withdrawnSun = safeString(pickTupleValue(payoutRaw, 2, "totalRewardsClaimedSun"));
-
-  return {
-    availableSun,
-    availableTrx: sunToTrxString(availableSun),
-    withdrawnSun,
-    withdrawnTrx: sunToTrxString(withdrawnSun),
-    lifetimeSun,
-    lifetimeTrx: sunToTrxString(lifetimeSun)
+    claimableRewardsTrx: sunToTrxString(claimableRewardsSun),
+    lifetimeRewardsSun,
+    lifetimeRewardsTrx: sunToTrxString(lifetimeRewardsSun),
+    withdrawnRewardsSun,
+    withdrawnRewardsTrx: sunToTrxString(withdrawnRewardsSun)
   };
 }
 
@@ -1146,16 +1162,20 @@ function mapProgress(progressRaw: any): AmbassadorLevelProgress {
   };
 }
 
-function mapWithdrawalQueue(raw: any): AmbassadorWithdrawalQueue {
-  const availableOnChainSun = safeString(
-    pickTupleValue(raw, 0, "availableOnChainSun")
+function mapWithdrawalQueue(raw: any, stats: AmbassadorStats): AmbassadorWithdrawalQueue {
+  const availableOnChainSun = safeSunString(
+    pickTupleValue(raw, 0, "availableOnChainSun") ?? stats.claimableRewardsSun,
+    "0"
   );
-  const pendingBackendSyncSun = safeString(
-    pickTupleValue(raw, 1, "pendingBackendSyncSun")
+  const pendingBackendSyncSun = safeSunString(
+    pickTupleValue(raw, 1, "pendingBackendSyncSun"),
+    "0"
   );
-  const requestedForProcessingSun = safeString(
-    pickTupleValue(raw, 2, "requestedForProcessingSun")
+  const requestedForProcessingSun = safeSunString(
+    pickTupleValue(raw, 2, "requestedForProcessingSun"),
+    "0"
   );
+
   const availableOnChainCount = safeNumber(
     pickTupleValue(raw, 3, "availableOnChainCount")
   );
@@ -1169,31 +1189,53 @@ function mapWithdrawalQueue(raw: any): AmbassadorWithdrawalQueue {
     pickTupleValue(raw, 6, "hasProcessingWithdrawal")
   );
 
+  const allocatedInDbSun = safeSunString(
+    pickTupleValue(raw, 7, "allocatedInDbSun"),
+    "0"
+  );
+  const allocatedInDbCount = safeNumber(
+    pickTupleValue(raw, 8, "allocatedInDbCount")
+  );
+
   return {
     availableOnChainSun,
     availableOnChainTrx: sunToTrxString(availableOnChainSun),
+    availableOnChainCount,
+
+    allocatedInDbSun,
+    allocatedInDbTrx: sunToTrxString(allocatedInDbSun),
+    allocatedInDbCount,
+
     pendingBackendSyncSun,
     pendingBackendSyncTrx: sunToTrxString(pendingBackendSyncSun),
+    pendingBackendSyncCount,
+
     requestedForProcessingSun,
     requestedForProcessingTrx: sunToTrxString(requestedForProcessingSun),
-    availableOnChainCount,
-    pendingBackendSyncCount,
     requestedForProcessingCount,
+
     hasProcessingWithdrawal
   };
 }
 
-function buildFallbackWithdrawalQueue(rewards: RewardSummary): AmbassadorWithdrawalQueue {
+function buildFallbackWithdrawalQueue(stats: AmbassadorStats): AmbassadorWithdrawalQueue {
   return {
-    availableOnChainSun: rewards.availableSun,
-    availableOnChainTrx: rewards.availableTrx,
+    availableOnChainSun: stats.claimableRewardsSun,
+    availableOnChainTrx: stats.claimableRewardsTrx,
+    availableOnChainCount: 0,
+
+    allocatedInDbSun: "0",
+    allocatedInDbTrx: "0",
+    allocatedInDbCount: 0,
+
     pendingBackendSyncSun: "0",
     pendingBackendSyncTrx: "0",
+    pendingBackendSyncCount: 0,
+
     requestedForProcessingSun: "0",
     requestedForProcessingTrx: "0",
-    availableOnChainCount: 0,
-    pendingBackendSyncCount: 0,
     requestedForProcessingCount: 0,
+
     hasProcessingWithdrawal: false
   };
 }
@@ -1224,17 +1266,6 @@ export async function readAmbassadorStats(wallet?: string): Promise<AmbassadorSt
   return mapStats(raw);
 }
 
-export async function readRewardSummary(wallet?: string): Promise<RewardSummary> {
-  const resolvedWallet = wallet
-    ? assertNonEmpty(wallet, "wallet")
-    : await getConnectedWalletAddress();
-
-  const contract = await getControllerContractInstance();
-  const raw = await contract.getAmbassadorPayoutData(resolvedWallet).call();
-
-  return mapRewards(raw);
-}
-
 export async function readAmbassadorLevelProgress(
   wallet?: string
 ): Promise<AmbassadorLevelProgress> {
@@ -1249,26 +1280,27 @@ export async function readAmbassadorLevelProgress(
 }
 
 export async function readAmbassadorWithdrawalQueue(
-  wallet?: string
+  wallet?: string,
+  statsOverride?: AmbassadorStats
 ): Promise<AmbassadorWithdrawalQueue> {
   const resolvedWallet = wallet
     ? assertNonEmpty(wallet, "wallet")
     : await getConnectedWalletAddress();
 
   const contract = await getControllerContractInstance();
+  const stats = statsOverride ?? (await readAmbassadorStats(resolvedWallet));
 
   if (typeof contract.getAmbassadorWithdrawalQueue === "function") {
     const raw = await contract.getAmbassadorWithdrawalQueue(resolvedWallet).call();
-    return mapWithdrawalQueue(raw);
+    return mapWithdrawalQueue(raw, stats);
   }
 
   if (typeof contract.getDashboardWithdrawalQueue === "function") {
     const raw = await contract.getDashboardWithdrawalQueue(resolvedWallet).call();
-    return mapWithdrawalQueue(raw);
+    return mapWithdrawalQueue(raw, stats);
   }
 
-  const rewards = await readRewardSummary(resolvedWallet);
-  return buildFallbackWithdrawalQueue(rewards);
+  return buildFallbackWithdrawalQueue(stats);
 }
 
 export async function withdrawRewards(): Promise<WithdrawResult> {
@@ -1276,7 +1308,12 @@ export async function withdrawRewards(): Promise<WithdrawResult> {
   const txid = await contract.withdrawRewards().send();
 
   return {
-    txid: assertNonEmpty(txid, "txid")
+    txid: assertNonEmpty(
+      typeof txid === "string"
+        ? txid
+        : txid?.txid || txid?.transaction?.txID || txid?.txID || "",
+      "txid"
+    )
   };
 }
 
@@ -1285,18 +1322,17 @@ export async function readAmbassadorDashboard(wallet?: string): Promise<Ambassad
     ? assertNonEmpty(wallet, "wallet")
     : await getConnectedWalletAddress();
 
-  const [identity, stats, rewards, progress, withdrawalQueue] = await Promise.all([
+  const [identity, stats, progress] = await Promise.all([
     readAmbassadorIdentity(resolvedWallet),
     readAmbassadorStats(resolvedWallet),
-    readRewardSummary(resolvedWallet),
-    readAmbassadorLevelProgress(resolvedWallet),
-    readAmbassadorWithdrawalQueue(resolvedWallet)
+    readAmbassadorLevelProgress(resolvedWallet)
   ]);
+
+  const withdrawalQueue = await readAmbassadorWithdrawalQueue(resolvedWallet, stats);
 
   return {
     identity,
     stats,
-    rewards,
     progress,
     withdrawalQueue
   };
