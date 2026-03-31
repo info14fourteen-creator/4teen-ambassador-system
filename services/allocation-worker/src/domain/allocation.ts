@@ -230,7 +230,9 @@ function isKnownRetryableCode(lowerCode: string): boolean {
     lowerCode.includes("gasstation_topup_not_settled") ||
     lowerCode.includes("gasstation_topup_failed") ||
     lowerCode.includes("gasstation_fetch_failed") ||
-    lowerCode.includes("gasstation_invalid_response")
+    lowerCode.includes("gasstation_invalid_response") ||
+    lowerCode.includes("gasstation_http_5") ||
+    lowerCode.includes("gasstation_error_100003")
   );
 }
 
