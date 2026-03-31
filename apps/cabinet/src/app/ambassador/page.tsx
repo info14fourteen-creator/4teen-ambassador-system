@@ -93,12 +93,11 @@ function formatDate(timestamp: number): string {
   }
 }
 
-function buildWithdrawButtonLabel(params: {
+function buildPrimaryActionLabel(params: {
   isRegistered: boolean;
   isWithdrawing: boolean;
   hasProcessingWithdrawal: boolean;
   hasAvailableOnChain: boolean;
-  hasPendingBackendSync: boolean;
   hasRequestedForProcessing: boolean;
 }): string {
   const {
@@ -106,7 +105,6 @@ function buildWithdrawButtonLabel(params: {
     isWithdrawing,
     hasProcessingWithdrawal,
     hasAvailableOnChain,
-    hasPendingBackendSync,
     hasRequestedForProcessing
   } = params;
 
@@ -122,18 +120,14 @@ function buildWithdrawButtonLabel(params: {
     return "Requested for processing";
   }
 
-  if (hasPendingBackendSync && !hasAvailableOnChain) {
-    return "Prepare withdrawal request";
-  }
-
   if (hasAvailableOnChain) {
     return "Withdraw rewards";
   }
 
-  return "No rewards available";
+  return "No on-chain rewards available";
 }
 
-function buildWithdrawHint(params: {
+function buildPrimaryActionHint(params: {
   hasAvailableOnChain: boolean;
   hasAllocatedInDb: boolean;
   hasPendingBackendSync: boolean;
@@ -147,26 +141,26 @@ function buildWithdrawHint(params: {
   } = params;
 
   if (hasRequestedForProcessing) {
-    return "Your withdrawal request was created and is waiting for backend processing.";
+    return "A withdrawal request is already in progress. Wait for backend processing to finish before trying again.";
   }
 
   if (hasAvailableOnChain && hasPendingBackendSync) {
-    return "Part of rewards is really withdrawable now on-chain, and another part is still waiting for backend sync.";
-  }
-
-  if (hasPendingBackendSync && !hasAvailableOnChain) {
-    return "You have rewards in the backend queue, but they are not withdrawable on-chain yet.";
+    return "Part of your rewards is withdrawable on-chain now, and another part is still waiting for backend sync.";
   }
 
   if (hasAvailableOnChain) {
-    return "These rewards are реально available on-chain and can be withdrawn now.";
+    return "These rewards are really available on-chain and can be withdrawn now.";
+  }
+
+  if (hasPendingBackendSync) {
+    return "You have verified rewards in the backend queue, but they are not withdrawable on-chain yet.";
   }
 
   if (hasAllocatedInDb) {
-    return "Some purchases are already allocated in backend accounting, but this does not guarantee they are withdrawable on-chain yet.";
+    return "Some purchases are already allocated in backend accounting, but that does not mean they are withdrawable on-chain yet.";
   }
 
-  return "No rewards available for withdrawal yet.";
+  return "No rewards are currently available for on-chain withdrawal.";
 }
 
 export default function AmbassadorPage() {
@@ -196,14 +190,13 @@ export default function AmbassadorPage() {
     return buildTronscanTransactionUrl(lastWithdrawTxid);
   }, [lastWithdrawTxid]);
 
-  const withdrawButtonLabel = useMemo(
+  const primaryActionLabel = useMemo(
     () =>
-      buildWithdrawButtonLabel({
+      buildPrimaryActionLabel({
         isRegistered,
         isWithdrawing,
         hasProcessingWithdrawal,
         hasAvailableOnChain: statusCards.hasAvailableOnChain,
-        hasPendingBackendSync: statusCards.hasPendingBackendSync,
         hasRequestedForProcessing: statusCards.hasRequestedForProcessing
       }),
     [
@@ -211,14 +204,13 @@ export default function AmbassadorPage() {
       isWithdrawing,
       hasProcessingWithdrawal,
       statusCards.hasAvailableOnChain,
-      statusCards.hasPendingBackendSync,
       statusCards.hasRequestedForProcessing
     ]
   );
 
-  const withdrawHint = useMemo(
+  const primaryActionHint = useMemo(
     () =>
-      buildWithdrawHint({
+      buildPrimaryActionHint({
         hasAvailableOnChain: statusCards.hasAvailableOnChain,
         hasAllocatedInDb: statusCards.hasAllocatedInDb,
         hasPendingBackendSync: statusCards.hasPendingBackendSync,
@@ -237,15 +229,13 @@ export default function AmbassadorPage() {
     if (isWithdrawing) return true;
     if (hasProcessingWithdrawal) return true;
     if (statusCards.hasRequestedForProcessing) return true;
-
-    return !statusCards.hasAvailableOnChain && !statusCards.hasPendingBackendSync;
+    return !statusCards.hasAvailableOnChain;
   }, [
     isRegistered,
     isWithdrawing,
     hasProcessingWithdrawal,
     statusCards.hasRequestedForProcessing,
-    statusCards.hasAvailableOnChain,
-    statusCards.hasPendingBackendSync
+    statusCards.hasAvailableOnChain
   ]);
 
   if (isLoading) {
@@ -265,59 +255,28 @@ export default function AmbassadorPage() {
   const progress = dashboard?.progress ?? null;
   const withdrawalQueue = dashboard?.withdrawalQueue ?? null;
 
-  const effectiveLevel =
-    (identity as any)?.level ??
-    (identity as any)?.effectiveLevel ??
-    0;
+  const effectiveLevel = identity?.effectiveLevel ?? identity?.level ?? 0;
+  const currentLevel = progress?.currentLevel ?? effectiveLevel;
 
-  const currentLevel =
-    (progress as any)?.currentLevel ??
-    effectiveLevel;
-
-  const trackedVolumeSun =
-    (stats as any)?.trackedVolumeSun ??
-    (stats as any)?.totalVolumeSun ??
-    "0";
-
-  const trackedVolumeTrx =
-    (stats as any)?.trackedVolumeTrx ??
-    (stats as any)?.totalVolumeTrx ??
-    sunToTrxString(trackedVolumeSun);
+  const trackedVolumeSun = stats?.trackedVolumeSun ?? "0";
+  const trackedVolumeTrx = stats?.trackedVolumeTrx ?? sunToTrxString(trackedVolumeSun);
 
   const claimableRewardsSun =
-    (stats as any)?.claimableRewardsSun ??
-    (withdrawalQueue as any)?.availableOnChainSun ??
-    "0";
-
+    stats?.claimableRewardsSun ?? withdrawalQueue?.availableOnChainSun ?? "0";
   const claimableRewardsTrx =
-    (stats as any)?.claimableRewardsTrx ??
-    sunToTrxString(claimableRewardsSun);
+    stats?.claimableRewardsTrx ?? sunToTrxString(claimableRewardsSun);
 
-  const lifetimeRewardsSun =
-    (stats as any)?.lifetimeRewardsSun ??
-    (stats as any)?.totalRewardsAccruedSun ??
-    "0";
-
+  const lifetimeRewardsSun = stats?.lifetimeRewardsSun ?? "0";
   const lifetimeRewardsTrx =
-    (stats as any)?.lifetimeRewardsTrx ??
-    (stats as any)?.totalRewardsAccruedTrx ??
-    sunToTrxString(lifetimeRewardsSun);
+    stats?.lifetimeRewardsTrx ?? sunToTrxString(lifetimeRewardsSun);
 
-  const withdrawnRewardsSun =
-    (stats as any)?.withdrawnRewardsSun ??
-    "0";
-
+  const withdrawnRewardsSun = stats?.withdrawnRewardsSun ?? "0";
   const withdrawnRewardsTrx =
-    (stats as any)?.withdrawnRewardsTrx ??
-    sunToTrxString(withdrawnRewardsSun);
+    stats?.withdrawnRewardsTrx ?? sunToTrxString(withdrawnRewardsSun);
 
-  const allocatedInDbSun =
-    (withdrawalQueue as any)?.allocatedInDbSun ??
-    "0";
-
+  const allocatedInDbSun = withdrawalQueue?.allocatedInDbSun ?? "0";
   const allocatedInDbTrx =
-    (withdrawalQueue as any)?.allocatedInDbTrx ??
-    sunToTrxString(allocatedInDbSun);
+    withdrawalQueue?.allocatedInDbTrx ?? sunToTrxString(allocatedInDbSun);
 
   return (
     <main className="min-h-screen bg-[#111] px-6 py-10 text-white">
@@ -330,8 +289,8 @@ export default function AmbassadorPage() {
               </div>
               <h1 className="mt-2 text-3xl font-semibold">Your ambassador dashboard</h1>
               <p className="mt-2 max-w-3xl text-sm text-white/60">
-                Track your ambassador profile, level, buyers, backend reward queue,
-                and the real on-chain amount available for withdrawal.
+                Track your ambassador profile, level, buyer activity, backend reward
+                accounting, and the real on-chain amount available for withdrawal.
               </p>
             </div>
 
@@ -345,13 +304,13 @@ export default function AmbassadorPage() {
               </ActionButton>
 
               <ActionButton onClick={handleWithdrawRewards} disabled={withdrawDisabled}>
-                {withdrawButtonLabel}
+                {primaryActionLabel}
               </ActionButton>
             </div>
           </div>
 
           <div className="mt-4 rounded-2xl border border-white/10 bg-black/20 p-4 text-sm text-white/65">
-            {withdrawHint}
+            {primaryActionHint}
           </div>
 
           {error ? (
@@ -386,7 +345,7 @@ export default function AmbassadorPage() {
             sunValue={statusCards.pendingBackendSyncSun}
             count={statusCards.pendingBackendSyncCount}
             accentClass="border-amber-500/20 bg-amber-500/10"
-            hint="Verified rewards that still need backend/on-chain sync."
+            hint="Verified rewards that still need backend and on-chain sync."
           />
 
           <StatusCard
@@ -395,7 +354,7 @@ export default function AmbassadorPage() {
             sunValue={statusCards.requestedForProcessingSun}
             count={statusCards.requestedForProcessingCount}
             accentClass="border-sky-500/20 bg-sky-500/10"
-            hint="Queue already included in withdrawal preparation."
+            hint="Already included in withdrawal preparation or processing queue."
           />
         </section>
 
@@ -410,19 +369,19 @@ export default function AmbassadorPage() {
             value={isRegistered ? "Registered" : "Not registered"}
             hint={
               identity
-                ? `${(identity as any).active ? "Active" : "Inactive"} • ${levelToLabel(effectiveLevel)}`
+                ? `${identity.active ? "Active" : "Inactive"} • ${levelToLabel(effectiveLevel)}`
                 : "No ambassador profile found"
             }
           />
           <ValueCard
             label="Reward percent"
-            value={`${(identity as any)?.rewardPercent ?? 0}%`}
+            value={`${identity?.rewardPercent ?? 0}%`}
             hint={`Effective level: ${levelToLabel(effectiveLevel)}`}
           />
         </section>
 
         <section className="grid gap-4 md:grid-cols-3">
-          <ValueCard label="Total buyers" value={String((stats as any)?.totalBuyers ?? 0)} />
+          <ValueCard label="Total buyers" value={String(stats?.totalBuyers ?? 0)} />
           <ValueCard
             label="Tracked volume"
             value={`${trackedVolumeTrx} TRX`}
@@ -457,35 +416,35 @@ export default function AmbassadorPage() {
           <ValueCard
             label="Current level"
             value={levelToLabel(currentLevel)}
-            hint={`Current buyers: ${(progress as any)?.buyersCount ?? 0}`}
+            hint={`Current buyers: ${progress?.buyersCount ?? 0}`}
           />
           <ValueCard
             label="Next threshold"
-            value={String((progress as any)?.nextThreshold ?? 0)}
+            value={String(progress?.nextThreshold ?? 0)}
             hint="Buyers needed for next milestone"
           />
           <ValueCard
             label="Remaining"
-            value={String((progress as any)?.remainingToNextLevel ?? 0)}
+            value={String(progress?.remainingToNextLevel ?? 0)}
             hint="Buyers left to next level"
           />
-          <ValueCard label="Created at" value={formatDate((identity as any)?.createdAt ?? 0)} />
+          <ValueCard label="Created at" value={formatDate(identity?.createdAt ?? 0)} />
         </section>
 
         <section className="rounded-3xl border border-white/10 bg-white/5 p-6">
           <h2 className="text-xl font-semibold">On-chain profile</h2>
 
           <div className="mt-4 grid gap-4 md:grid-cols-2">
-            <ValueCard label="Slug hash" value={(identity as any)?.slugHash || "—"} />
-            <ValueCard label="Meta hash" value={(identity as any)?.metaHash || "—"} />
+            <ValueCard label="Slug hash" value={identity?.slugHash || "—"} />
+            <ValueCard label="Meta hash" value={identity?.metaHash || "—"} />
             <ValueCard
               label="Profile active"
-              value={(identity as any)?.active ? "Yes" : "No"}
+              value={identity?.active ? "Yes" : "No"}
             />
             <ValueCard
               label="Level label"
               value={levelToLabel(effectiveLevel)}
-              hint={`Reward percent: ${(identity as any)?.rewardPercent ?? 0}%`}
+              hint={`Reward percent: ${identity?.rewardPercent ?? 0}%`}
             />
           </div>
         </section>
