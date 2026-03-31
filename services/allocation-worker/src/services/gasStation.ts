@@ -6,6 +6,7 @@ export interface GasStationConfig {
   secretKey: string;
   baseUrl?: string;
   proxyUrl?: string;
+  timeoutMs?: number;
 }
 
 export interface GasStationBalanceResult {
@@ -45,6 +46,12 @@ export interface GasStationCreateOrderResult {
   trade_no: string;
 }
 
+const DEFAULT_BASE_URL = "https://openapi.gasstation.ai";
+const DEFAULT_TIMEOUT_MS = 15_000;
+const DEFAULT_SERVICE_CHARGE_TYPE = "10010";
+const MIN_ENERGY_ORDER = 64_400;
+const MIN_BANDWIDTH_ORDER = 5_000;
+
 function assertNonEmpty(value: string | undefined, fieldName: string): string {
   const normalized = String(value || "").trim();
 
@@ -61,7 +68,25 @@ function normalizeOptionalString(value?: string): string | undefined {
 }
 
 function normalizeBaseUrl(value?: string): string {
-  return String(value || "https://openapi.gasstation.ai").trim().replace(/\/+$/, "");
+  return String(value || DEFAULT_BASE_URL).trim().replace(/\/+$/, "");
+}
+
+function normalizeTimeoutMs(value?: number): number {
+  const parsed = Number(value ?? DEFAULT_TIMEOUT_MS);
+
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return DEFAULT_TIMEOUT_MS;
+  }
+
+  return Math.max(Math.floor(parsed), 1_000);
+}
+
+function normalizePositiveInteger(value: number, fieldName: string): number {
+  if (!Number.isFinite(value) || value <= 0) {
+    throw new Error(`${fieldName} must be a positive number`);
+  }
+
+  return Math.ceil(value);
 }
 
 function pkcs7Pad(buffer: Buffer): Buffer {
@@ -160,20 +185,46 @@ function parseRetryAfterMs(value: string | null): number | null {
   return null;
 }
 
-async function requestJson<T>(
-  url: string,
-  init?: RequestInit,
-  proxyUrl?: string
-): Promise<T> {
+function toErrorMessage(error: unknown): string {
+  if (typeof error === "string" && error.trim()) {
+    return error.trim();
+  }
+
+  if (
+    error &&
+    typeof error === "object" &&
+    "message" in error &&
+    typeof (error as { message?: unknown }).message === "string"
+  ) {
+    const message = (error as { message: string }).message.trim();
+    if (message) {
+      return message;
+    }
+  }
+
+  return "Unknown error";
+}
+
+async function requestJson<T>(params: {
+  url: string;
+  method?: "GET" | "POST";
+  proxyUrl?: string;
+  timeoutMs?: number;
+}): Promise<T> {
+  const { url, method = "GET", proxyUrl, timeoutMs = DEFAULT_TIMEOUT_MS } = params;
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+
   const dispatcher = proxyUrl ? new ProxyAgent(proxyUrl) : undefined;
 
   try {
     const response = await fetch(url, {
-      ...init,
+      method,
       headers: {
-        Accept: "application/json",
-        ...(init?.headers || {})
+        Accept: "application/json"
       },
+      signal: controller.signal,
       dispatcher
     } as RequestInit & { dispatcher?: ProxyAgent });
 
@@ -249,25 +300,30 @@ async function requestJson<T>(
 
     return parsed.data as T;
   } catch (error) {
-    if (error instanceof Error && error.message) {
+    if ((error as any)?.name === "AbortError") {
+      throw createTaggedError("GasStation request timed out", {
+        code: "GASSTATION_TIMEOUT",
+        cause: error
+      });
+    }
+
+    if (error instanceof Error) {
       throw error;
     }
 
-    throw createTaggedError("GasStation fetch failed", {
+    throw createTaggedError(`GasStation fetch failed: ${toErrorMessage(error)}`, {
       code: "GASSTATION_FETCH_FAILED",
       cause: error
     });
   } finally {
-    await dispatcher?.close();
-  }
-}
+    clearTimeout(timer);
 
-function normalizePositiveInteger(value: number, fieldName: string): number {
-  if (!Number.isFinite(value) || value <= 0) {
-    throw new Error(`${fieldName} must be a positive number`);
+    try {
+      await dispatcher?.close();
+    } catch {
+      // ignore proxy close errors
+    }
   }
-
-  return Math.ceil(value);
 }
 
 export class GasStationClient {
@@ -275,12 +331,14 @@ export class GasStationClient {
   private readonly secretKey: string;
   private readonly baseUrl: string;
   private readonly proxyUrl?: string;
+  private readonly timeoutMs: number;
 
   constructor(config: GasStationConfig) {
     this.appId = assertNonEmpty(config.appId, "appId");
     this.secretKey = assertNonEmpty(config.secretKey, "secretKey");
     this.baseUrl = normalizeBaseUrl(config.baseUrl);
     this.proxyUrl = normalizeOptionalString(config.proxyUrl);
+    this.timeoutMs = normalizeTimeoutMs(config.timeoutMs);
   }
 
   private buildEncryptedUrl(path: string, payload: Record<string, unknown>): string {
@@ -290,7 +348,23 @@ export class GasStationClient {
     const url = new URL(`${this.baseUrl}${path}`);
     url.searchParams.set("app_id", this.appId);
     url.searchParams.set("data", encrypted);
+
     return url.toString();
+  }
+
+  private async getJson<T>(
+    path: string,
+    payload: Record<string, unknown>,
+    method: "GET" | "POST" = "GET"
+  ): Promise<T> {
+    const url = this.buildEncryptedUrl(path, payload);
+
+    return requestJson<T>({
+      url,
+      method,
+      proxyUrl: this.proxyUrl,
+      timeoutMs: this.timeoutMs
+    });
   }
 
   async getBalance(time?: string): Promise<GasStationBalanceResult> {
@@ -298,14 +372,10 @@ export class GasStationClient {
       time: time ?? String(Math.floor(Date.now() / 1000))
     };
 
-    const url = this.buildEncryptedUrl("/api/mpc/tron/gas/balance", payload);
-
-    return requestJson<GasStationBalanceResult>(
-      url,
-      {
-        method: "GET"
-      },
-      this.proxyUrl
+    return this.getJson<GasStationBalanceResult>(
+      "/api/mpc/tron/gas/balance",
+      payload,
+      "GET"
     );
   }
 
@@ -326,14 +396,10 @@ export class GasStationClient {
       payload.value = normalizePositiveInteger(input.resourceValue, "resourceValue");
     }
 
-    const url = this.buildEncryptedUrl("/api/tron/gas/order/price", payload);
-
-    return requestJson<GasStationPriceResult>(
-      url,
-      {
-        method: "GET"
-      },
-      this.proxyUrl
+    return this.getJson<GasStationPriceResult>(
+      "/api/tron/gas/order/price",
+      payload,
+      "GET"
     );
   }
 
@@ -348,19 +414,15 @@ export class GasStationClient {
       address_to: assertNonEmpty(input.addressTo, "addressTo"),
       contract_address: assertNonEmpty(input.contractAddress, "contractAddress"),
       service_charge_type: assertNonEmpty(
-        input.serviceChargeType ?? "10010",
+        input.serviceChargeType ?? DEFAULT_SERVICE_CHARGE_TYPE,
         "serviceChargeType"
       )
     };
 
-    const url = this.buildEncryptedUrl("/api/tron/gas/estimate", payload);
-
-    return requestJson<GasStationEstimateResult>(
-      url,
-      {
-        method: "GET"
-      },
-      this.proxyUrl
+    return this.getJson<GasStationEstimateResult>(
+      "/api/tron/gas/estimate",
+      payload,
+      "GET"
     );
   }
 
@@ -372,8 +434,8 @@ export class GasStationClient {
   }): Promise<GasStationCreateOrderResult> {
     const energyNum = normalizePositiveInteger(input.energyNum, "energyNum");
 
-    if (energyNum < 64400) {
-      throw new Error("energyNum must be at least 64400");
+    if (energyNum < MIN_ENERGY_ORDER) {
+      throw new Error(`energyNum must be at least ${MIN_ENERGY_ORDER}`);
     }
 
     const payload = {
@@ -381,20 +443,16 @@ export class GasStationClient {
       receive_address: assertNonEmpty(input.receiveAddress, "receiveAddress"),
       buy_type: 0,
       service_charge_type: assertNonEmpty(
-        input.serviceChargeType ?? "10010",
+        input.serviceChargeType ?? DEFAULT_SERVICE_CHARGE_TYPE,
         "serviceChargeType"
       ),
       energy_num: energyNum
     };
 
-    const url = this.buildEncryptedUrl("/api/tron/gas/create_order", payload);
-
-    return requestJson<GasStationCreateOrderResult>(
-      url,
-      {
-        method: "POST"
-      },
-      this.proxyUrl
+    return this.getJson<GasStationCreateOrderResult>(
+      "/api/tron/gas/create_order",
+      payload,
+      "POST"
     );
   }
 
@@ -406,8 +464,8 @@ export class GasStationClient {
   }): Promise<GasStationCreateOrderResult> {
     const netNum = normalizePositiveInteger(input.netNum, "netNum");
 
-    if (netNum < 5000) {
-      throw new Error("netNum must be at least 5000");
+    if (netNum < MIN_BANDWIDTH_ORDER) {
+      throw new Error(`netNum must be at least ${MIN_BANDWIDTH_ORDER}`);
     }
 
     const payload = {
@@ -415,20 +473,16 @@ export class GasStationClient {
       receive_address: assertNonEmpty(input.receiveAddress, "receiveAddress"),
       buy_type: 0,
       service_charge_type: assertNonEmpty(
-        input.serviceChargeType ?? "10010",
+        input.serviceChargeType ?? DEFAULT_SERVICE_CHARGE_TYPE,
         "serviceChargeType"
       ),
       net_num: netNum
     };
 
-    const url = this.buildEncryptedUrl("/api/tron/gas/create_order", payload);
-
-    return requestJson<GasStationCreateOrderResult>(
-      url,
-      {
-        method: "POST"
-      },
-      this.proxyUrl
+    return this.getJson<GasStationCreateOrderResult>(
+      "/api/tron/gas/create_order",
+      payload,
+      "POST"
     );
   }
 }
@@ -447,6 +501,7 @@ export function createGasStationClientFromEnv(): GasStationClient {
     proxyUrl:
       process.env.QUOTAGUARDSTATIC_URL ??
       process.env.QUOTAGUARD_URL ??
-      process.env.FIXIE_URL
+      process.env.FIXIE_URL,
+    timeoutMs: Number(process.env.GASSTATION_TIMEOUT_MS || DEFAULT_TIMEOUT_MS)
   });
 }
