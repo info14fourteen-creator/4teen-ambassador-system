@@ -138,6 +138,7 @@ async function loadCandidatePurchases(
 
   return pending.filter((purchase) => {
     const reward = BigInt(String(purchase.ownerShareSun || "0"));
+
     return (
       purchase.status === "allocated" &&
       !purchase.withdrawSessionId &&
@@ -152,8 +153,6 @@ async function markPreparedForWithdrawal(
   withdrawSessionId: string,
   now: number
 ): Promise<any> {
-  await worker.store.assignWithdrawSession(purchaseId, withdrawSessionId, now);
-
   if (typeof (worker.store as any).markWithdrawIncluded === "function") {
     return (worker.store as any).markWithdrawIncluded(purchaseId, {
       withdrawSessionId,
@@ -161,6 +160,7 @@ async function markPreparedForWithdrawal(
     });
   }
 
+  await worker.store.assignWithdrawSession(purchaseId, withdrawSessionId, now);
   return worker.store.getByPurchaseId(purchaseId);
 }
 
