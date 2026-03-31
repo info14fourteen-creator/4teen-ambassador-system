@@ -1,6 +1,6 @@
 # 4teen-ambassador-system — ALLOCATION WORKER
 
-Generated: 2026-03-31T00:33:05.072Z
+Generated: 2026-03-31T00:43:57.591Z
 Repository: info14fourteen-creator/4teen-ambassador-system
 Branch: main
 
@@ -6393,6 +6393,7 @@ type TronWebConstructor = new (config: {
 }) => any;
 
 const DEFAULT_CONTROLLER_CONTRACT = "TF8yhohRfMxsdVRr7fFrYLh5fxK8sAFkeZ";
+
 const SUN_PER_TRX = 1_000_000;
 const GASSTATION_LOW_BALANCE_SUN = 8_500_000;
 const OPERATOR_MIN_BALANCE_FOR_TOPUP_SUN = 11_000_000;
@@ -6725,6 +6726,42 @@ function sunToTrxString(value: number): string {
   return fraction ? `${whole}.${fraction}` : String(whole);
 }
 
+function toNumberSafe(value: unknown): number {
+  const parsed = Number(value ?? 0);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function extractErrorDetails(error: unknown): {
+  message: string;
+  code: string | null;
+} {
+  const message = toErrorMessage(error);
+
+  if (!error || typeof error !== "object") {
+    return { message, code: null };
+  }
+
+  const candidates = [
+    (error as any).code,
+    (error as any).errorCode,
+    (error as any).status,
+    (error as any).statusCode
+  ];
+
+  for (const candidate of candidates) {
+    if (candidate == null) {
+      continue;
+    }
+
+    const code = String(candidate).trim();
+    if (code) {
+      return { message, code };
+    }
+  }
+
+  return { message, code: null };
+}
+
 async function bootstrap() {
   const env = loadEnv();
   const TronWeb = getTronWebConstructor();
@@ -6815,17 +6852,10 @@ async function bootstrap() {
           "operatorAddress"
         );
 
-        const operatorBalanceSun = Number(
-          await tronWeb.trx.getBalance(operatorAddress)
-        );
-
-        const serviceBalanceSun = parseTrxAmountToSun(
-          gasBalance.balance,
-          "gasStation.balance"
-        );
-
+        const operatorBalanceSun = Number(await tronWeb.trx.getBalance(operatorAddress));
+        const serviceBalanceSun = parseTrxAmountToSun(gasBalance.balance, "gasStation.balance");
         const depositAddress = normalizeAddress(
-          (gasBalance as any).deposit_address,
+          String((gasBalance as any).deposit_address || ""),
           "deposit_address"
         );
 
@@ -6865,6 +6895,155 @@ async function bootstrap() {
               canTopUp,
               recommendedTopUpSun,
               recommendedTopUpTrx: sunToTrxString(recommendedTopUpSun)
+            }
+          }
+        });
+        return;
+      }
+
+      if (method === "GET" && pathname === "/debug/gasstation/order-check") {
+        const client = createGasStationClientFromEnv();
+
+        const operatorAddress = normalizeAddress(
+          tronWeb?.defaultAddress?.base58 || tronWeb?.defaultAddress?.hex || "",
+          "operatorAddress"
+        );
+
+        const [gasBalance, accountResources, accountInfo, operatorBalanceSunRaw] =
+          await Promise.all([
+            client.getBalance(),
+            tronWeb.trx.getAccountResources(operatorAddress),
+            tronWeb.trx.getAccount(operatorAddress),
+            tronWeb.trx.getBalance(operatorAddress)
+          ]);
+
+        const operatorBalanceSun = toNumberSafe(operatorBalanceSunRaw);
+        const serviceBalanceSun = parseTrxAmountToSun(gasBalance.balance, "gasStation.balance");
+        const depositAddress = normalizeAddress(
+          String((gasBalance as any).deposit_address || ""),
+          "deposit_address"
+        );
+
+        const energyLimit = toNumberSafe(accountResources?.EnergyLimit);
+        const energyUsed = toNumberSafe(accountResources?.EnergyUsed);
+        const energyAvailable = Math.max(0, energyLimit - energyUsed);
+
+        const freeNetLimit = toNumberSafe(accountInfo?.freeNetLimit);
+        const freeNetUsed = toNumberSafe(accountInfo?.freeNetUsed);
+        const netLimit = toNumberSafe(accountInfo?.NetLimit);
+        const netUsed = toNumberSafe(accountInfo?.NetUsed);
+
+        const freeBandwidthAvailable = Math.max(0, freeNetLimit - freeNetUsed);
+        const paidBandwidthAvailable = Math.max(0, netLimit - netUsed);
+        const bandwidthAvailable = freeBandwidthAvailable + paidBandwidthAvailable;
+
+        const missingEnergy = Math.max(0, env.allocationMinEnergy - energyAvailable);
+        const missingBandwidth = Math.max(0, env.allocationMinBandwidth - bandwidthAvailable);
+
+        const energyToBuy =
+          missingEnergy > 0
+            ? Math.max(env.gasStationMinEnergy, missingEnergy, 64400)
+            : 0;
+
+        const bandwidthToBuy =
+          missingBandwidth > 0
+            ? Math.max(env.gasStationMinBandwidth, missingBandwidth, 5000)
+            : 0;
+
+        const availableForTopUpSun = Math.max(
+          0,
+          operatorBalanceSun - OPERATOR_REMAINING_RESERVE_SUN
+        );
+
+        const needsTopUp = serviceBalanceSun < GASSTATION_LOW_BALANCE_SUN;
+        const canTopUp =
+          operatorBalanceSun >= OPERATOR_MIN_BALANCE_FOR_TOPUP_SUN &&
+          availableForTopUpSun >= GASSTATION_LOW_BALANCE_SUN;
+
+        let energyEstimate: unknown = null;
+        let energyEstimateError: { message: string; code: string | null } | null = null;
+
+        if (energyToBuy > 0) {
+          try {
+            energyEstimate = await client.estimateEnergyOrder({
+              receiveAddress: operatorAddress,
+              addressTo: operatorAddress,
+              contractAddress: resolvedControllerContractAddress,
+              serviceChargeType: env.gasStationServiceChargeType
+            });
+          } catch (error) {
+            energyEstimateError = extractErrorDetails(error);
+          }
+        }
+
+        let bandwidthPrice: unknown = null;
+        let bandwidthPriceError: { message: string; code: string | null } | null = null;
+
+        if (bandwidthToBuy > 0) {
+          try {
+            bandwidthPrice = await client.getPrice({
+              serviceChargeType: env.gasStationServiceChargeType,
+              resourceValue: bandwidthToBuy
+            });
+          } catch (error) {
+            bandwidthPriceError = extractErrorDetails(error);
+          }
+        }
+
+        sendJson(req, res, env, 200, {
+          ok: true,
+          result: {
+            gasStation: {
+              balanceSun: serviceBalanceSun,
+              balanceTrx: sunToTrxString(serviceBalanceSun),
+              depositAddress,
+              lowBalanceThresholdSun: GASSTATION_LOW_BALANCE_SUN,
+              lowBalanceThresholdTrx: sunToTrxString(GASSTATION_LOW_BALANCE_SUN),
+              needsTopUp
+            },
+            operator: {
+              address: operatorAddress,
+              balanceSun: operatorBalanceSun,
+              balanceTrx: sunToTrxString(operatorBalanceSun),
+              minBalanceForTopUpSun: OPERATOR_MIN_BALANCE_FOR_TOPUP_SUN,
+              minBalanceForTopUpTrx: sunToTrxString(OPERATOR_MIN_BALANCE_FOR_TOPUP_SUN),
+              reserveAfterTopUpSun: OPERATOR_REMAINING_RESERVE_SUN,
+              reserveAfterTopUpTrx: sunToTrxString(OPERATOR_REMAINING_RESERVE_SUN),
+              availableForTopUpSun,
+              availableForTopUpTrx: sunToTrxString(availableForTopUpSun),
+              canTopUp
+            },
+            resources: {
+              current: {
+                energyAvailable,
+                bandwidthAvailable
+              },
+              thresholds: {
+                allocationMinEnergy: env.allocationMinEnergy,
+                allocationMinBandwidth: env.allocationMinBandwidth,
+                gasStationMinEnergy: env.gasStationMinEnergy,
+                gasStationMinBandwidth: env.gasStationMinBandwidth
+              },
+              missing: {
+                missingEnergy,
+                missingBandwidth
+              },
+              buyPlan: {
+                energyToBuy,
+                bandwidthToBuy
+              }
+            },
+            checks: {
+              energyEstimate: energyEstimate
+                ? { ok: true, result: energyEstimate }
+                : energyToBuy > 0
+                  ? { ok: false, error: energyEstimateError }
+                  : { ok: true, skipped: true, reason: "Energy is already sufficient" },
+              bandwidthPrice: bandwidthPrice
+                ? { ok: true, result: bandwidthPrice }
+                : bandwidthToBuy > 0
+                  ? { ok: false, error: bandwidthPriceError }
+                  : { ok: true, skipped: true, reason: "Bandwidth is already sufficient" }
             }
           }
         });
