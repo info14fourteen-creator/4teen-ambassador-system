@@ -185,13 +185,10 @@ export interface AllocationWorkerProcessor {
       feeLimitSun?: number;
       limit?: number;
       allocationMode?: AllocationMode;
-      stopOnFirstDeferred?: boolean;
     }
   ): Promise<{
     ambassadorWallet: string;
     processed: Awaited<ReturnType<AllocationService["tryAllocateVerifiedPurchase"]>>[];
-    stoppedEarly: boolean;
-    stopReason: string | null;
   }>;
 }
 
@@ -241,6 +238,7 @@ function parseAmountAsString(value: unknown, fieldName: string): string {
 function isFinalPurchaseStatus(status: PurchaseRecord["status"]): boolean {
   return (
     status === "allocated" ||
+    status === "withdraw_included" ||
     status === "withdraw_completed" ||
     status === "ignored" ||
     status === "allocation_failed_final"
@@ -303,10 +301,7 @@ function mapAllocationAttemptToApiResult(
     };
   }
 
-  if (
-    result.status === "deferred" ||
-    result.status === "stopped-on-resource-shortage"
-  ) {
+  if (result.status === "deferred") {
     return {
       status: "deferred",
       purchase: result.purchase,
@@ -335,6 +330,65 @@ function mapAllocationAttemptToApiResult(
     ambassadorWallet: result.purchase.ambassadorWallet,
     txid: null,
     reason: result.reason
+  };
+}
+
+function mapApiAllocationToDecision(
+  purchase: PurchaseRecord,
+  allocation:
+    | {
+        status: "allocated" | "deferred" | "failed" | "skipped";
+        purchase: PurchaseRecord;
+        ambassadorWallet: string | null;
+        txid: string | null;
+        reason: string | null;
+      }
+    | undefined
+): AllocationDecision | null {
+  if (!allocation) {
+    return null;
+  }
+
+  if (allocation.status === "allocated") {
+    return {
+      status: "allocated",
+      purchase,
+      txid: allocation.txid,
+      reason: null,
+      errorCode: null,
+      errorMessage: null
+    };
+  }
+
+  if (allocation.status === "deferred") {
+    return {
+      status: "deferred",
+      purchase,
+      txid: null,
+      reason: allocation.reason,
+      errorCode: null,
+      errorMessage: allocation.reason
+    };
+  }
+
+  if (allocation.status === "skipped") {
+    return {
+      status: "skipped-no-ambassador-wallet",
+      purchase,
+      txid: null,
+      reason: allocation.reason,
+      errorCode: null,
+      errorMessage: allocation.reason
+    };
+  }
+
+  return {
+    status: "retryable-failed",
+    purchase,
+    txid: null,
+    reason: allocation.reason,
+    errorCode: null,
+    errorMessage: allocation.reason
   };
 }
 
@@ -578,7 +632,10 @@ class AllocationWorkerProcessorImpl implements AllocationWorkerProcessor {
         stage: "verified-purchase",
         purchaseId: verifiedPurchase.purchaseId,
         attribution: {
-          status: purchase.status === "received" ? "matched-local-record" : "duplicate-local-record",
+          status:
+            purchase.status === "received"
+              ? "matched-local-record"
+              : "duplicate-local-record",
           purchase: verifiedPurchase,
           slug: verifiedPurchase.ambassadorSlug,
           slugHash,
@@ -609,12 +666,18 @@ class AllocationWorkerProcessorImpl implements AllocationWorkerProcessor {
       stage: "verified-purchase",
       purchaseId: verifiedPurchase.purchaseId,
       attribution: {
-        status: purchase.status === "received" ? "matched-local-record" : "duplicate-local-record",
+        status:
+          purchase.status === "received"
+            ? "matched-local-record"
+            : "duplicate-local-record",
         purchase: allocationResult.purchase,
         slug: allocationResult.purchase.ambassadorSlug,
         slugHash,
         ambassadorWallet: allocationResult.purchase.ambassadorWallet,
-        reason: purchase.status === "received" ? null : "Purchase already exists in local store"
+        reason:
+          purchase.status === "received"
+            ? null
+            : "Purchase already exists in local store"
       },
       verification: {
         status: "ready-for-allocation",
@@ -644,47 +707,11 @@ class AllocationWorkerProcessorImpl implements AllocationWorkerProcessor {
 
     let allocationDecision: AllocationDecision | null = null;
 
-    if (result.purchaseId && result.verification.purchase) {
+    if (result.purchaseId) {
       const purchase = await this.store.getByPurchaseId(result.purchaseId);
 
       if (purchase) {
-        if (result.allocation?.status === "allocated") {
-          allocationDecision = {
-            status: "allocated",
-            purchase,
-            txid: result.allocation.txid,
-            reason: null,
-            errorCode: null,
-            errorMessage: null
-          };
-        } else if (result.allocation?.status === "deferred") {
-          allocationDecision = {
-            status: "deferred",
-            purchase,
-            txid: null,
-            reason: result.allocation.reason,
-            errorCode: null,
-            errorMessage: result.allocation.reason
-          };
-        } else if (result.allocation?.status === "skipped") {
-          allocationDecision = {
-            status: "skipped-no-ambassador-wallet",
-            purchase,
-            txid: null,
-            reason: result.allocation.reason,
-            errorCode: null,
-            errorMessage: result.allocation.reason
-          };
-        } else if (result.allocation?.status === "failed") {
-          allocationDecision = {
-            status: "retryable-failed",
-            purchase,
-            txid: null,
-            reason: result.allocation.reason,
-            errorCode: null,
-            errorMessage: result.allocation.reason
-          };
-        }
+        allocationDecision = mapApiAllocationToDecision(purchase, result.allocation);
       }
     }
 
@@ -723,29 +750,23 @@ class AllocationWorkerProcessorImpl implements AllocationWorkerProcessor {
       feeLimitSun?: number;
       limit?: number;
       allocationMode?: AllocationMode;
-      stopOnFirstDeferred?: boolean;
     }
   ): Promise<{
     ambassadorWallet: string;
     processed: Awaited<ReturnType<AllocationService["tryAllocateVerifiedPurchase"]>>[];
-    stoppedEarly: boolean;
-    stopReason: string | null;
   }> {
     const result = await this.allocation.allocatePendingBatch({
       ambassadorWallet: input.ambassadorWallet,
       feeLimitSun: input.feeLimitSun,
       limit: input.limit,
-      allocationMode: input.allocationMode,
-      stopOnFirstDeferred: input.stopOnFirstDeferred
+      allocationMode: input.allocationMode
     });
 
     return {
       ambassadorWallet: result.ambassadorWallet,
       processed: result.processed as Awaited<
         ReturnType<AllocationService["tryAllocateVerifiedPurchase"]>
-      >[],
-      stoppedEarly: result.stoppedEarly,
-      stopReason: result.stopReason
+      >[]
     };
   }
 }
