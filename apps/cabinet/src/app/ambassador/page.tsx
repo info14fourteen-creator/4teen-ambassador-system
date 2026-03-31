@@ -29,13 +29,15 @@ function StatusCard({
   trxValue,
   sunValue,
   count,
-  accentClass
+  accentClass,
+  hint
 }: {
   label: string;
   trxValue: string;
   sunValue: string;
   count: number;
   accentClass: string;
+  hint?: string;
 }) {
   return (
     <div className={`rounded-2xl border p-4 ${accentClass}`}>
@@ -45,6 +47,7 @@ function StatusCard({
       <div className="mt-3 text-sm text-white/65">
         {count} {count === 1 ? "purchase" : "purchases"}
       </div>
+      {hint ? <div className="mt-2 text-xs text-white/45">{hint}</div> : null}
     </div>
   );
 }
@@ -132,25 +135,35 @@ function buildWithdrawButtonLabel(params: {
 
 function buildWithdrawHint(params: {
   hasAvailableOnChain: boolean;
+  hasAllocatedInDb: boolean;
   hasPendingBackendSync: boolean;
   hasRequestedForProcessing: boolean;
 }): string {
-  const { hasAvailableOnChain, hasPendingBackendSync, hasRequestedForProcessing } = params;
+  const {
+    hasAvailableOnChain,
+    hasAllocatedInDb,
+    hasPendingBackendSync,
+    hasRequestedForProcessing
+  } = params;
 
   if (hasRequestedForProcessing) {
     return "Your withdrawal request was created and is waiting for backend processing.";
   }
 
-  if (hasPendingBackendSync && hasAvailableOnChain) {
-    return "Part of rewards is already on-chain, and part is still waiting for backend sync.";
+  if (hasAvailableOnChain && hasPendingBackendSync) {
+    return "Part of rewards is really withdrawable now on-chain, and another part is still waiting for backend sync.";
   }
 
-  if (hasPendingBackendSync) {
-    return "Rewards exist, but they are not yet written on-chain.";
+  if (hasPendingBackendSync && !hasAvailableOnChain) {
+    return "You have rewards in the backend queue, but they are not withdrawable on-chain yet.";
   }
 
   if (hasAvailableOnChain) {
-    return "These rewards are already written on-chain and available now.";
+    return "These rewards are реально available on-chain and can be withdrawn now.";
+  }
+
+  if (hasAllocatedInDb) {
+    return "Some purchases are already allocated in backend accounting, but this does not guarantee they are withdrawable on-chain yet.";
   }
 
   return "No rewards available for withdrawal yet.";
@@ -207,11 +220,13 @@ export default function AmbassadorPage() {
     () =>
       buildWithdrawHint({
         hasAvailableOnChain: statusCards.hasAvailableOnChain,
+        hasAllocatedInDb: statusCards.hasAllocatedInDb,
         hasPendingBackendSync: statusCards.hasPendingBackendSync,
         hasRequestedForProcessing: statusCards.hasRequestedForProcessing
       }),
     [
       statusCards.hasAvailableOnChain,
+      statusCards.hasAllocatedInDb,
       statusCards.hasPendingBackendSync,
       statusCards.hasRequestedForProcessing
     ]
@@ -247,8 +262,62 @@ export default function AmbassadorPage() {
 
   const identity = dashboard?.identity ?? null;
   const stats = dashboard?.stats ?? null;
-  const rewards = dashboard?.rewards ?? null;
   const progress = dashboard?.progress ?? null;
+  const withdrawalQueue = dashboard?.withdrawalQueue ?? null;
+
+  const effectiveLevel =
+    (identity as any)?.level ??
+    (identity as any)?.effectiveLevel ??
+    0;
+
+  const currentLevel =
+    (progress as any)?.currentLevel ??
+    effectiveLevel;
+
+  const trackedVolumeSun =
+    (stats as any)?.trackedVolumeSun ??
+    (stats as any)?.totalVolumeSun ??
+    "0";
+
+  const trackedVolumeTrx =
+    (stats as any)?.trackedVolumeTrx ??
+    (stats as any)?.totalVolumeTrx ??
+    sunToTrxString(trackedVolumeSun);
+
+  const claimableRewardsSun =
+    (stats as any)?.claimableRewardsSun ??
+    (withdrawalQueue as any)?.availableOnChainSun ??
+    "0";
+
+  const claimableRewardsTrx =
+    (stats as any)?.claimableRewardsTrx ??
+    sunToTrxString(claimableRewardsSun);
+
+  const lifetimeRewardsSun =
+    (stats as any)?.lifetimeRewardsSun ??
+    (stats as any)?.totalRewardsAccruedSun ??
+    "0";
+
+  const lifetimeRewardsTrx =
+    (stats as any)?.lifetimeRewardsTrx ??
+    (stats as any)?.totalRewardsAccruedTrx ??
+    sunToTrxString(lifetimeRewardsSun);
+
+  const withdrawnRewardsSun =
+    (stats as any)?.withdrawnRewardsSun ??
+    "0";
+
+  const withdrawnRewardsTrx =
+    (stats as any)?.withdrawnRewardsTrx ??
+    sunToTrxString(withdrawnRewardsSun);
+
+  const allocatedInDbSun =
+    (withdrawalQueue as any)?.allocatedInDbSun ??
+    "0";
+
+  const allocatedInDbTrx =
+    (withdrawalQueue as any)?.allocatedInDbTrx ??
+    sunToTrxString(allocatedInDbSun);
 
   return (
     <main className="min-h-screen bg-[#111] px-6 py-10 text-white">
@@ -261,13 +330,17 @@ export default function AmbassadorPage() {
               </div>
               <h1 className="mt-2 text-3xl font-semibold">Your ambassador dashboard</h1>
               <p className="mt-2 max-w-3xl text-sm text-white/60">
-                Track your ambassador profile, level, buyers, reward queues, on-chain
-                availability and withdrawal processing in one place.
+                Track your ambassador profile, level, buyers, backend reward queue,
+                and the real on-chain amount available for withdrawal.
               </p>
             </div>
 
             <div className="flex flex-wrap gap-3">
-              <ActionButton onClick={refresh} disabled={isRefreshing || isWithdrawing} variant="secondary">
+              <ActionButton
+                onClick={refresh}
+                disabled={isRefreshing || isWithdrawing}
+                variant="secondary"
+              >
                 {isRefreshing ? "Refreshing..." : "Refresh"}
               </ActionButton>
 
@@ -288,13 +361,23 @@ export default function AmbassadorPage() {
           ) : null}
         </section>
 
-        <section className="grid gap-4 md:grid-cols-3">
+        <section className="grid gap-4 md:grid-cols-4">
           <StatusCard
-            label="Available on-chain"
+            label="Available on-chain now"
             trxValue={sunToTrxString(statusCards.availableOnChainSun)}
             sunValue={statusCards.availableOnChainSun}
             count={statusCards.availableOnChainCount}
             accentClass="border-emerald-500/20 bg-emerald-500/10"
+            hint="Real withdrawable amount from contract state."
+          />
+
+          <StatusCard
+            label="Allocated in DB"
+            trxValue={sunToTrxString(statusCards.allocatedInDbSun)}
+            sunValue={statusCards.allocatedInDbSun}
+            count={statusCards.allocatedInDbCount}
+            accentClass="border-violet-500/20 bg-violet-500/10"
+            hint="Backend accounting only. Not guaranteed withdrawable now."
           />
 
           <StatusCard
@@ -303,6 +386,7 @@ export default function AmbassadorPage() {
             sunValue={statusCards.pendingBackendSyncSun}
             count={statusCards.pendingBackendSyncCount}
             accentClass="border-amber-500/20 bg-amber-500/10"
+            hint="Verified rewards that still need backend/on-chain sync."
           />
 
           <StatusCard
@@ -311,6 +395,7 @@ export default function AmbassadorPage() {
             sunValue={statusCards.requestedForProcessingSun}
             count={statusCards.requestedForProcessingCount}
             accentClass="border-sky-500/20 bg-sky-500/10"
+            hint="Queue already included in withdrawal preparation."
           />
         </section>
 
@@ -325,92 +410,82 @@ export default function AmbassadorPage() {
             value={isRegistered ? "Registered" : "Not registered"}
             hint={
               identity
-                ? `${identity.active ? "Active" : "Inactive"} • ${levelToLabel(identity.effectiveLevel)}`
+                ? `${(identity as any).active ? "Active" : "Inactive"} • ${levelToLabel(effectiveLevel)}`
                 : "No ambassador profile found"
             }
           />
           <ValueCard
             label="Reward percent"
-            value={`${identity?.rewardPercent ?? 0}%`}
-            hint={`Effective level: ${levelToLabel(identity?.effectiveLevel ?? 0)}`}
+            value={`${(identity as any)?.rewardPercent ?? 0}%`}
+            hint={`Effective level: ${levelToLabel(effectiveLevel)}`}
           />
         </section>
 
         <section className="grid gap-4 md:grid-cols-3">
-          <ValueCard label="Total buyers" value={String(stats?.totalBuyers ?? 0)} />
+          <ValueCard label="Total buyers" value={String((stats as any)?.totalBuyers ?? 0)} />
           <ValueCard
             label="Tracked volume"
-            value={`${stats?.totalVolumeTrx ?? "0"} TRX`}
-            hint={`${stats?.totalVolumeSun ?? "0"} SUN`}
+            value={`${trackedVolumeTrx} TRX`}
+            hint={`${trackedVolumeSun} SUN`}
           />
           <ValueCard
-            label="Claimable rewards"
-            value={`${rewards?.availableTrx ?? "0"} TRX`}
-            hint={`${rewards?.availableSun ?? "0"} SUN`}
+            label="Claimable rewards now"
+            value={`${claimableRewardsTrx} TRX`}
+            hint={`${claimableRewardsSun} SUN • Source: on-chain`}
           />
         </section>
 
         <section className="grid gap-4 md:grid-cols-3">
           <ValueCard
             label="Lifetime rewards"
-            value={`${rewards?.lifetimeTrx ?? "0"} TRX`}
-            hint={`${rewards?.lifetimeSun ?? "0"} SUN`}
+            value={`${lifetimeRewardsTrx} TRX`}
+            hint={`${lifetimeRewardsSun} SUN`}
           />
           <ValueCard
             label="Withdrawn rewards"
-            value={`${rewards?.withdrawnTrx ?? "0"} TRX`}
-            hint={`${rewards?.withdrawnSun ?? "0"} SUN`}
+            value={`${withdrawnRewardsTrx} TRX`}
+            hint={`${withdrawnRewardsSun} SUN`}
           />
           <ValueCard
-            label="Accrued total"
-            value={`${stats?.totalRewardsAccruedTrx ?? "0"} TRX`}
-            hint={`${stats?.totalRewardsAccruedSun ?? "0"} SUN`}
+            label="Allocated in DB"
+            value={`${allocatedInDbTrx} TRX`}
+            hint={`${allocatedInDbSun} SUN • Backend accounting only`}
           />
         </section>
 
         <section className="grid gap-4 md:grid-cols-4">
           <ValueCard
             label="Current level"
-            value={levelToLabel(progress?.currentLevel ?? 0)}
-            hint={`Current buyers: ${progress?.buyersCount ?? 0}`}
+            value={levelToLabel(currentLevel)}
+            hint={`Current buyers: ${(progress as any)?.buyersCount ?? 0}`}
           />
           <ValueCard
             label="Next threshold"
-            value={String(progress?.nextThreshold ?? 0)}
+            value={String((progress as any)?.nextThreshold ?? 0)}
             hint="Buyers needed for next milestone"
           />
           <ValueCard
             label="Remaining"
-            value={String(progress?.remainingToNextLevel ?? 0)}
+            value={String((progress as any)?.remainingToNextLevel ?? 0)}
             hint="Buyers left to next level"
           />
-          <ValueCard label="Created at" value={formatDate(identity?.createdAt ?? 0)} />
+          <ValueCard label="Created at" value={formatDate((identity as any)?.createdAt ?? 0)} />
         </section>
 
         <section className="rounded-3xl border border-white/10 bg-white/5 p-6">
           <h2 className="text-xl font-semibold">On-chain profile</h2>
 
           <div className="mt-4 grid gap-4 md:grid-cols-2">
-            <ValueCard label="Slug hash" value={identity?.slugHash || "—"} />
-            <ValueCard label="Meta hash" value={identity?.metaHash || "—"} />
+            <ValueCard label="Slug hash" value={(identity as any)?.slugHash || "—"} />
+            <ValueCard label="Meta hash" value={(identity as any)?.metaHash || "—"} />
             <ValueCard
-              label="Registration mode"
-              value={
-                identity?.selfRegistered
-                  ? "Self-registered"
-                  : identity?.manualAssigned
-                    ? "Manually assigned"
-                    : "—"
-              }
+              label="Profile active"
+              value={(identity as any)?.active ? "Yes" : "No"}
             />
             <ValueCard
-              label="Override"
-              value={identity?.overrideEnabled ? "Enabled" : "Disabled"}
-              hint={
-                identity
-                  ? `Current: ${levelToLabel(identity.currentLevel)} • Override: ${levelToLabel(identity.overrideLevel)}`
-                  : undefined
-              }
+              label="Level label"
+              value={levelToLabel(effectiveLevel)}
+              hint={`Reward percent: ${(identity as any)?.rewardPercent ?? 0}%`}
             />
           </div>
         </section>
