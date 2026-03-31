@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   AmbassadorDashboard,
   AmbassadorWithdrawalQueue,
@@ -98,6 +98,18 @@ function toErrorMessage(error: unknown): string {
   return "Unknown error";
 }
 
+function isWalletConnectionError(message: string): boolean {
+  const normalized = message.toLowerCase();
+
+  return (
+    normalized.includes("tron wallet is not connected") ||
+    normalized.includes("wallet is not connected") ||
+    normalized.includes("not connected") ||
+    normalized.includes("no wallet") ||
+    normalized.includes("browser environment is required")
+  );
+}
+
 function isPositiveSun(value: string): boolean {
   try {
     return BigInt(value) > 0n;
@@ -124,12 +136,12 @@ function buildStatusCards(
   }
 
   const availableOnChainSun = safeSun(withdrawalQueue.availableOnChainSun);
-  const allocatedInDbSun = safeSun((withdrawalQueue as any).allocatedInDbSun);
+  const allocatedInDbSun = safeSun(withdrawalQueue.allocatedInDbSun);
   const pendingBackendSyncSun = safeSun(withdrawalQueue.pendingBackendSyncSun);
   const requestedForProcessingSun = safeSun(withdrawalQueue.requestedForProcessingSun);
 
   const availableOnChainCount = safeCount(withdrawalQueue.availableOnChainCount);
-  const allocatedInDbCount = safeCount((withdrawalQueue as any).allocatedInDbCount);
+  const allocatedInDbCount = safeCount(withdrawalQueue.allocatedInDbCount);
   const pendingBackendSyncCount = safeCount(withdrawalQueue.pendingBackendSyncCount);
   const requestedForProcessingCount = safeCount(withdrawalQueue.requestedForProcessingCount);
 
@@ -169,13 +181,48 @@ function detectProcessingWithdrawal(
   return Boolean(withdrawalQueue.hasProcessingWithdrawal);
 }
 
+function buildDerivedState(
+  wallet: string,
+  dashboard: AmbassadorDashboard
+): Pick<
+  AmbassadorDashboardState,
+  "wallet" | "dashboard" | "statusCards" | "hasProcessingWithdrawal" | "isConnected" | "isRegistered"
+> {
+  const statusCards = buildStatusCards(dashboard.withdrawalQueue);
+  const hasProcessingWithdrawal = detectProcessingWithdrawal(dashboard.withdrawalQueue);
+  const identityExists = Boolean(dashboard.identity?.exists);
+  const hasSomeIdentityData =
+    Boolean(dashboard.identity?.slugHash) &&
+    dashboard.identity.slugHash !==
+      "0x0000000000000000000000000000000000000000000000000000000000000000";
+
+  return {
+    wallet,
+    dashboard,
+    statusCards,
+    hasProcessingWithdrawal,
+    isConnected: true,
+    isRegistered: identityExists || hasSomeIdentityData
+  };
+}
+
 export function useAmbassadorDashboard(): UseAmbassadorDashboardResult {
   const [state, setState] = useState<AmbassadorDashboardState>(INITIAL_STATE);
+  const requestIdRef = useRef(0);
+  const mountedRef = useRef(true);
+
+  useEffect(() => {
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
 
   const load = useCallback(async (mode: "initial" | "refresh" = "initial") => {
+    const requestId = ++requestIdRef.current;
+
     setState((current) => ({
       ...current,
-      isLoading: mode === "initial",
+      isLoading: mode === "initial" && current.dashboard == null,
       isRefreshing: mode === "refresh",
       error: null
     }));
@@ -183,28 +230,46 @@ export function useAmbassadorDashboard(): UseAmbassadorDashboardResult {
     try {
       const wallet = await getConnectedWalletAddress();
       const dashboard = await readAmbassadorDashboard(wallet);
-      const statusCards = buildStatusCards(dashboard.withdrawalQueue);
-      const hasProcessingWithdrawal = detectProcessingWithdrawal(
-        dashboard.withdrawalQueue
-      );
+
+      if (!mountedRef.current || requestId !== requestIdRef.current) {
+        return;
+      }
+
+      const derived = buildDerivedState(wallet, dashboard);
 
       setState((current) => ({
         ...current,
-        wallet,
-        dashboard,
-        statusCards,
-        hasProcessingWithdrawal,
-        isConnected: true,
-        isRegistered: Boolean((dashboard.identity as any)?.exists),
+        ...derived,
         isLoading: false,
         isRefreshing: false,
         error: null
       }));
     } catch (error) {
+      if (!mountedRef.current || requestId !== requestIdRef.current) {
+        return;
+      }
+
       const message = toErrorMessage(error);
 
       setState((current) => {
+        const walletDisconnected = isWalletConnectionError(message);
+
         if (mode === "refresh") {
+          if (walletDisconnected) {
+            return {
+              ...current,
+              wallet: "",
+              dashboard: null,
+              statusCards: EMPTY_STATUS_CARDS,
+              hasProcessingWithdrawal: false,
+              isConnected: false,
+              isRegistered: false,
+              isLoading: false,
+              isRefreshing: false,
+              error: message
+            };
+          }
+
           return {
             ...current,
             isLoading: false,
@@ -213,14 +278,23 @@ export function useAmbassadorDashboard(): UseAmbassadorDashboardResult {
           };
         }
 
+        if (walletDisconnected) {
+          return {
+            ...current,
+            wallet: "",
+            dashboard: null,
+            statusCards: EMPTY_STATUS_CARDS,
+            hasProcessingWithdrawal: false,
+            isConnected: false,
+            isRegistered: false,
+            isLoading: false,
+            isRefreshing: false,
+            error: message
+          };
+        }
+
         return {
           ...current,
-          wallet: "",
-          dashboard: null,
-          statusCards: EMPTY_STATUS_CARDS,
-          hasProcessingWithdrawal: false,
-          isConnected: false,
-          isRegistered: false,
           isLoading: false,
           isRefreshing: false,
           error: message
@@ -277,6 +351,10 @@ export function useAmbassadorDashboard(): UseAmbassadorDashboardResult {
     try {
       const result = await withdrawRewards();
 
+      if (!mountedRef.current) {
+        return result;
+      }
+
       setState((current) => ({
         ...current,
         isWithdrawing: false,
@@ -288,6 +366,10 @@ export function useAmbassadorDashboard(): UseAmbassadorDashboardResult {
 
       return result;
     } catch (error) {
+      if (!mountedRef.current) {
+        throw error;
+      }
+
       const message = toErrorMessage(error);
 
       setState((current) => ({
