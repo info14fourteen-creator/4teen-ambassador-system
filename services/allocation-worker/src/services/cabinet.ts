@@ -269,32 +269,40 @@ function mapStats(stats: CabinetStatsRecord): {
   };
 }
 
-function getReplayStatus(value: unknown): "allocated" | "failed" | "skipped" | null {
-  if (!value || typeof value !== "object") {
-    return null;
+function extractReplayStatus(result: unknown): string {
+  if (
+    result &&
+    typeof result === "object" &&
+    "status" in result &&
+    typeof (result as { status?: unknown }).status === "string"
+  ) {
+    return String((result as { status: string }).status).trim().toLowerCase();
   }
 
-  const status = (value as { status?: unknown }).status;
-
-  if (status === "allocated" || status === "failed" || status === "skipped") {
-    return status;
-  }
-
-  return null;
+  return "";
 }
 
-function getReplayReason(value: unknown): string | null {
-  if (!value || typeof value !== "object") {
-    return null;
+function extractReplayReason(result: unknown): string | null {
+  if (
+    result &&
+    typeof result === "object" &&
+    "reason" in result &&
+    typeof (result as { reason?: unknown }).reason === "string"
+  ) {
+    const reason = String((result as { reason: string }).reason).trim();
+    return reason || null;
   }
 
-  const candidateKeys = ["reason", "errorMessage", "message"] as const;
-
-  for (const key of candidateKeys) {
-    const current = (value as Record<string, unknown>)[key];
-    if (typeof current === "string" && current.trim()) {
-      return current.trim();
-    }
+  if (
+    result &&
+    typeof result === "object" &&
+    "errorMessage" in result &&
+    typeof (result as { errorMessage?: unknown }).errorMessage === "string"
+  ) {
+    const errorMessage = String(
+      (result as { errorMessage: string }).errorMessage
+    ).trim();
+    return errorMessage || null;
   }
 
   return null;
@@ -456,43 +464,18 @@ export class CabinetService {
           now
         );
 
-        const replayStatus = getReplayStatus(result);
-        const replayReason = getReplayReason(result);
-
-        if (replayStatus === "allocated") {
-          items.push({
-            purchaseId: purchase.purchaseId,
-            ok: true,
-            result
-          });
-          continue;
-        }
-
-        if (replayStatus === "skipped") {
-          items.push({
-            purchaseId: purchase.purchaseId,
-            ok: true,
-            skipped: true,
-            error: replayReason ?? "Replay skipped",
-            result
-          });
-          continue;
-        }
-
-        if (replayStatus === "failed") {
-          items.push({
-            purchaseId: purchase.purchaseId,
-            ok: false,
-            error: replayReason ?? "Replay failed",
-            result
-          });
-          continue;
-        }
+        const replayStatus = extractReplayStatus(result);
+        const isAllocated = replayStatus === "allocated";
+        const isSkipped = replayStatus === "skipped";
+        const replayReason =
+          extractReplayReason(result) ??
+          (isSkipped ? "Replay skipped" : "Allocation failed");
 
         items.push({
           purchaseId: purchase.purchaseId,
-          ok: false,
-          error: "Replay returned unknown status",
+          ok: isAllocated,
+          skipped: isSkipped,
+          error: isAllocated ? undefined : replayReason,
           result
         });
       } catch (error) {
@@ -506,7 +489,7 @@ export class CabinetService {
 
     const succeeded = items.filter((item) => item.ok && !item.skipped).length;
     const skipped = items.filter((item) => item.skipped).length;
-    const failed = items.filter((item) => !item.ok).length;
+    const failed = items.filter((item) => !item.ok && !item.skipped).length;
 
     return {
       wallet: registryWallet,
