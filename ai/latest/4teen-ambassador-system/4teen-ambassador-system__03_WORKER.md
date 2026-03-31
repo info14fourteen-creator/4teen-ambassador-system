@@ -1,6 +1,6 @@
 # 4teen-ambassador-system — ALLOCATION WORKER
 
-Generated: 2026-03-31T10:21:39.247Z
+Generated: 2026-03-31T10:25:50.550Z
 Repository: info14fourteen-creator/4teen-ambassador-system
 Branch: main
 
@@ -4062,6 +4062,31 @@ export interface AllocationWorkerProcessor {
     feeLimitSun?: number,
     now?: number
   ): Promise<ReplayFailedAllocationApiResult>;
+
+  prepareWithdrawBatch(
+    input: {
+      ambassadorWallet: string;
+      limit?: number;
+    }
+  ): Promise<{
+    ambassadorWallet: string;
+    purchases: PurchaseRecord[];
+  }>;
+
+  allocatePendingBatch(
+    input: {
+      ambassadorWallet: string;
+      feeLimitSun?: number;
+      limit?: number;
+      allocationMode?: AllocationMode;
+      stopOnFirstDeferred?: boolean;
+    }
+  ): Promise<{
+    ambassadorWallet: string;
+    processed: Awaited<ReturnType<AllocationService["tryAllocateVerifiedPurchase"]>>[];
+    stoppedEarly: boolean;
+    stopReason: string | null;
+  }>;
 }
 
 export interface AllocationWorker {
@@ -4110,6 +4135,7 @@ function parseAmountAsString(value: unknown, fieldName: string): string {
 function isFinalPurchaseStatus(status: PurchaseRecord["status"]): boolean {
   return (
     status === "allocated" ||
+    status === "withdraw_completed" ||
     status === "ignored" ||
     status === "allocation_failed_final"
   );
@@ -4171,7 +4197,10 @@ function mapAllocationAttemptToApiResult(
     };
   }
 
-  if (result.status === "deferred") {
+  if (
+    result.status === "deferred" ||
+    result.status === "stopped-on-resource-shortage"
+  ) {
     return {
       status: "deferred",
       purchase: result.purchase,
@@ -4269,7 +4298,7 @@ class AllocationWorkerProcessorImpl implements AllocationWorkerProcessor {
       slugHash = ambassador.slugHash;
       ambassadorWallet = ambassador.wallet;
 
-      const linkedPurchase = await this.store.attachAmbassadorToPurchase({
+      receivedPurchase.purchase = await this.store.attachAmbassadorToPurchase({
         purchaseId: receivedPurchase.purchase.purchaseId,
         ambassadorSlug: slug,
         ambassadorWallet: ambassador.wallet,
@@ -4277,10 +4306,6 @@ class AllocationWorkerProcessorImpl implements AllocationWorkerProcessor {
         ownerShareSun: "0",
         now
       });
-
-      if (linkedPurchase) {
-        receivedPurchase.purchase = linkedPurchase;
-      }
     }
 
     const currentPurchase = await this.store.getByPurchaseId(
@@ -4291,29 +4316,15 @@ class AllocationWorkerProcessorImpl implements AllocationWorkerProcessor {
       throw new Error("Failed to reload purchase after frontend attribution");
     }
 
-    if (!ambassador || ambassador.status !== "active" || !ambassador.wallet) {
-      return {
-        stage: "received-purchase",
-        purchaseId: currentPurchase.purchaseId,
-        attribution: {
-          status: attributionStatus,
-          purchase: currentPurchase,
-          slug,
-          slugHash,
-          ambassadorWallet,
-          reason: attributionReason
-        },
-        verification: {
-          status: "waiting-scan",
-          purchase: currentPurchase,
-          slug,
-          slugHash,
-          ambassadorWallet,
-          reason: attributionReason,
-          canAllocate: false
-        }
-      };
-    }
+    this.logger?.info?.({
+      scope: "frontend-attribution",
+      stage: "received",
+      txHash,
+      purchaseId: currentPurchase.purchaseId,
+      slug,
+      ambassadorWallet,
+      attributionStatus
+    });
 
     return {
       stage: "received-purchase",
@@ -4332,7 +4343,10 @@ class AllocationWorkerProcessorImpl implements AllocationWorkerProcessor {
         slug,
         slugHash,
         ambassadorWallet,
-        reason: null,
+        reason:
+          !ambassador || ambassador.status !== "active" || !ambassador.wallet
+            ? attributionReason
+            : null,
         canAllocate: false
       }
     };
@@ -4408,6 +4422,35 @@ class AllocationWorkerProcessorImpl implements AllocationWorkerProcessor {
       };
     }
 
+    if (isFinalPurchaseStatus(purchase.status)) {
+      const ambassador =
+        purchase.ambassadorSlug
+          ? await this.store.getAmbassadorBySlug(purchase.ambassadorSlug)
+          : null;
+
+      return {
+        stage: "verified-purchase",
+        purchaseId: purchase.purchaseId,
+        attribution: {
+          status: "duplicate-local-record",
+          purchase,
+          slug: purchase.ambassadorSlug,
+          slugHash: ambassador?.slugHash ?? null,
+          ambassadorWallet: purchase.ambassadorWallet,
+          reason: "Purchase already finalized"
+        },
+        verification: {
+          status: "already-finalized",
+          purchase,
+          slug: purchase.ambassadorSlug,
+          slugHash: ambassador?.slugHash ?? null,
+          ambassadorWallet: purchase.ambassadorWallet,
+          reason: `Purchase already finalized with status: ${purchase.status}`,
+          canAllocate: false
+        }
+      };
+    }
+
     const verifiedPurchase = await this.store.markVerifiedPurchase({
       purchaseId: purchase.purchaseId,
       txHash,
@@ -4424,36 +4467,12 @@ class AllocationWorkerProcessorImpl implements AllocationWorkerProcessor {
 
     const slugHash = ambassador?.slugHash ?? null;
 
-    if (isFinalPurchaseStatus(verifiedPurchase.status)) {
-      return {
-        stage: "verified-purchase",
-        purchaseId: verifiedPurchase.purchaseId,
-        attribution: {
-          status: "matched-local-record",
-          purchase: verifiedPurchase,
-          slug: verifiedPurchase.ambassadorSlug,
-          slugHash,
-          ambassadorWallet: verifiedPurchase.ambassadorWallet,
-          reason: null
-        },
-        verification: {
-          status: "already-finalized",
-          purchase: verifiedPurchase,
-          slug: verifiedPurchase.ambassadorSlug,
-          slugHash,
-          ambassadorWallet: verifiedPurchase.ambassadorWallet,
-          reason: `Purchase already finalized with status: ${verifiedPurchase.status}`,
-          canAllocate: false
-        }
-      };
-    }
-
     if (!verifiedPurchase.ambassadorWallet) {
       return {
         stage: "verified-purchase",
         purchaseId: verifiedPurchase.purchaseId,
         attribution: {
-          status: "matched-local-record",
+          status: purchase.status === "received" ? "matched-local-record" : "duplicate-local-record",
           purchase: verifiedPurchase,
           slug: verifiedPurchase.ambassadorSlug,
           slugHash,
@@ -4517,29 +4536,58 @@ class AllocationWorkerProcessorImpl implements AllocationWorkerProcessor {
       feeLimitSun: input.feeLimitSun
     });
 
+    let allocationDecision: AllocationDecision | null = null;
+
+    if (result.purchaseId && result.verification.purchase) {
+      const purchase = await this.store.getByPurchaseId(result.purchaseId);
+
+      if (purchase) {
+        if (result.allocation?.status === "allocated") {
+          allocationDecision = {
+            status: "allocated",
+            purchase,
+            txid: result.allocation.txid,
+            reason: null,
+            errorCode: null,
+            errorMessage: null
+          };
+        } else if (result.allocation?.status === "deferred") {
+          allocationDecision = {
+            status: "deferred",
+            purchase,
+            txid: null,
+            reason: result.allocation.reason,
+            errorCode: null,
+            errorMessage: result.allocation.reason
+          };
+        } else if (result.allocation?.status === "skipped") {
+          allocationDecision = {
+            status: "skipped-no-ambassador-wallet",
+            purchase,
+            txid: null,
+            reason: result.allocation.reason,
+            errorCode: null,
+            errorMessage: result.allocation.reason
+          };
+        } else if (result.allocation?.status === "failed") {
+          allocationDecision = {
+            status: "retryable-failed",
+            purchase,
+            txid: null,
+            reason: result.allocation.reason,
+            errorCode: null,
+            errorMessage: result.allocation.reason
+          };
+        }
+      }
+    }
+
     return {
       stage: "verified-purchase",
       purchaseId: result.purchaseId,
       attribution: result.attribution,
       verification: result.verification,
-      allocation:
-        result.allocation == null
-          ? null
-          : ({
-              status:
-                result.allocation.status === "allocated"
-                  ? "allocated"
-                  : result.allocation.status === "deferred"
-                    ? "deferred"
-                    : result.allocation.status === "skipped"
-                      ? "skipped-no-ambassador-wallet"
-                      : "retryable-failed",
-              purchase: result.allocation.purchase,
-              txid: result.allocation.txid,
-              reason: result.allocation.reason,
-              errorCode: null,
-              errorMessage: result.allocation.reason
-            } satisfies AllocationDecision)
+      allocation: allocationDecision
     };
   }
 
@@ -4549,6 +4597,50 @@ class AllocationWorkerProcessorImpl implements AllocationWorkerProcessor {
     now?: number
   ): Promise<ReplayFailedAllocationApiResult> {
     return this.allocation.replayFailedAllocation(purchaseId, feeLimitSun, now);
+  }
+
+  async prepareWithdrawBatch(
+    input: {
+      ambassadorWallet: string;
+      limit?: number;
+    }
+  ): Promise<{
+    ambassadorWallet: string;
+    purchases: PurchaseRecord[];
+  }> {
+    return this.allocation.prepareWithdrawBatch(input);
+  }
+
+  async allocatePendingBatch(
+    input: {
+      ambassadorWallet: string;
+      feeLimitSun?: number;
+      limit?: number;
+      allocationMode?: AllocationMode;
+      stopOnFirstDeferred?: boolean;
+    }
+  ): Promise<{
+    ambassadorWallet: string;
+    processed: Awaited<ReturnType<AllocationService["tryAllocateVerifiedPurchase"]>>[];
+    stoppedEarly: boolean;
+    stopReason: string | null;
+  }> {
+    const result = await this.allocation.allocatePendingBatch({
+      ambassadorWallet: input.ambassadorWallet,
+      feeLimitSun: input.feeLimitSun,
+      limit: input.limit,
+      allocationMode: input.allocationMode,
+      stopOnFirstDeferred: input.stopOnFirstDeferred
+    });
+
+    return {
+      ambassadorWallet: result.ambassadorWallet,
+      processed: result.processed as Awaited<
+        ReturnType<AllocationService["tryAllocateVerifiedPurchase"]>
+      >[],
+      stoppedEarly: result.stoppedEarly,
+      stopReason: result.stopReason
+    };
   }
 }
 
@@ -4583,29 +4675,18 @@ export function createAllocationWorker(
 
   if (gasStationEnabled) {
     gasStationClient = createGasStationClientFromEnv();
-
-    options.logger?.info?.({
-      scope: "gasstation",
-      stage: "configured",
-      enabled: true,
-      gasStationMinBandwidth,
-      gasStationMinEnergy,
-      allocationMinBandwidth,
-      allocationMinEnergy,
-      gasStationServiceChargeType
-    });
-  } else {
-    options.logger?.info?.({
-      scope: "gasstation",
-      stage: "configured",
-      enabled: false,
-      gasStationMinBandwidth,
-      gasStationMinEnergy,
-      allocationMinBandwidth,
-      allocationMinEnergy,
-      gasStationServiceChargeType
-    });
   }
+
+  options.logger?.info?.({
+    scope: "gasstation",
+    stage: "configured",
+    enabled: gasStationEnabled,
+    gasStationMinBandwidth,
+    gasStationMinEnergy,
+    allocationMinBandwidth,
+    allocationMinEnergy,
+    gasStationServiceChargeType
+  });
 
   const executorConfig: TronControllerAllocationExecutorConfig = {
     tronWeb: options.tronWeb,
