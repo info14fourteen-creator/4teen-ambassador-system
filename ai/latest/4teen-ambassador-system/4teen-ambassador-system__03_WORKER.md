@@ -1,6 +1,6 @@
 # 4teen-ambassador-system — ALLOCATION WORKER
 
-Generated: 2026-04-01T17:09:32.689Z
+Generated: 2026-04-01T17:10:48.651Z
 Repository: info14fourteen-creator/4teen-ambassador-system
 Branch: main
 
@@ -9576,10 +9576,9 @@ void bootstrap().catch((error) => {
 import { getAmbassadorRegistryRecordByWallet } from "../db/ambassadors";
 import {
   getDashboardSnapshotByWallet,
-  markDashboardSnapshotSyncFailed,
-  upsertDashboardSnapshot,
   type AmbassadorDashboardSnapshotRecord
 } from "../db/dashboardSnapshots";
+import { createDashboardRefreshService } from "./dashboardRefresh";
 import type {
   CabinetStatsRecord,
   PurchaseProcessingStatus,
@@ -9711,9 +9710,6 @@ const DEFAULT_PENDING_STATUSES: PurchaseProcessingStatus[] = [
 const ZERO_BYTES32 =
   "0x0000000000000000000000000000000000000000000000000000000000000000";
 
-const DEFAULT_SNAPSHOT_TTL_MS = 120_000;
-const DEFAULT_MIN_ONCHAIN_RETRY_AFTER_FAILURE_MS = 60_000;
-
 function assertNonEmpty(value: string, fieldName: string): string {
   const normalized = String(value || "").trim();
 
@@ -9722,34 +9718,6 @@ function assertNonEmpty(value: string, fieldName: string): string {
   }
 
   return normalized;
-}
-
-function parsePositiveIntegerEnv(value: string | undefined, fallback: number): number {
-  if (value == null || String(value).trim() === "") {
-    return fallback;
-  }
-
-  const parsed = Number(value);
-
-  if (!Number.isFinite(parsed) || parsed <= 0) {
-    return fallback;
-  }
-
-  return Math.floor(parsed);
-}
-
-function getSnapshotTtlMs(): number {
-  return parsePositiveIntegerEnv(
-    process.env.CABINET_SNAPSHOT_TTL_MS,
-    DEFAULT_SNAPSHOT_TTL_MS
-  );
-}
-
-function getSnapshotMinRetryAfterFailureMs(): number {
-  return parsePositiveIntegerEnv(
-    process.env.CABINET_SNAPSHOT_MIN_RETRY_AFTER_FAILURE_MS,
-    DEFAULT_MIN_ONCHAIN_RETRY_AFTER_FAILURE_MS
-  );
 }
 
 function safeNumber(value: unknown, fallback = 0): number {
@@ -9769,52 +9737,6 @@ function safeNumber(value: unknown, fallback = 0): number {
   }
 
   return fallback;
-}
-
-function safeBoolean(value: unknown): boolean {
-  if (typeof value === "boolean") {
-    return value;
-  }
-
-  if (typeof value === "number") {
-    return value !== 0;
-  }
-
-  if (typeof value === "bigint") {
-    return value !== 0n;
-  }
-
-  if (typeof value === "string") {
-    const normalized = value.trim().toLowerCase();
-
-    if (!normalized) return false;
-    if (normalized === "true") return true;
-    if (normalized === "false") return false;
-    if (normalized === "1") return true;
-    if (normalized === "0") return false;
-  }
-
-  return Boolean(value);
-}
-
-function toErrorMessage(error: unknown): string {
-  if (typeof error === "string" && error.trim()) {
-    return error.trim();
-  }
-
-  if (
-    error &&
-    typeof error === "object" &&
-    "message" in error &&
-    typeof (error as { message?: unknown }).message === "string"
-  ) {
-    const message = (error as { message: string }).message.trim();
-    if (message) {
-      return message;
-    }
-  }
-
-  return "Unknown error";
 }
 
 function sunToTrxString(value: string | number | bigint | null | undefined): string {
@@ -9872,67 +9794,24 @@ function normalizeSlugHash(value: unknown): string {
   return raw || ZERO_BYTES32;
 }
 
-function pickTupleValue(source: any, index: number, key?: string): unknown {
-  if (Array.isArray(source) && source[index] !== undefined) {
-    return source[index];
+function toErrorMessage(error: unknown): string {
+  if (typeof error === "string" && error.trim()) {
+    return error.trim();
   }
 
-  if (source && typeof source === "object") {
-    if (key && key in source) {
-      return source[key];
-    }
-
-    const numericKey = String(index);
-    if (numericKey in source) {
-      return source[numericKey];
-    }
-
-    const values = Object.values(source);
-    if (values[index] !== undefined) {
-      return values[index];
+  if (
+    error &&
+    typeof error === "object" &&
+    "message" in error &&
+    typeof (error as { message?: unknown }).message === "string"
+  ) {
+    const message = (error as { message: string }).message.trim();
+    if (message) {
+      return message;
     }
   }
 
-  return undefined;
-}
-
-function pickFirstDefined(
-  source: any,
-  candidates: Array<{ index: number; keys?: string[] }>
-): unknown {
-  for (const candidate of candidates) {
-    const keys = candidate.keys ?? [];
-
-    for (const key of keys) {
-      const value = pickTupleValue(source, candidate.index, key);
-      if (value !== undefined && value !== null && value !== "") {
-        return value;
-      }
-    }
-
-    const fallbackValue = pickTupleValue(source, candidate.index);
-    if (fallbackValue !== undefined && fallbackValue !== null && fallbackValue !== "") {
-      return fallbackValue;
-    }
-  }
-
-  return undefined;
-}
-
-function toSunString(value: unknown): string {
-  if (typeof value === "bigint") {
-    return value.toString();
-  }
-
-  if (typeof value === "number" && Number.isFinite(value) && value >= 0) {
-    return Math.floor(value).toString();
-  }
-
-  if (typeof value === "string" && /^\d+$/.test(value.trim())) {
-    return value.trim();
-  }
-
-  return "0";
+  return "Unknown error";
 }
 
 function mapStats(input: {
@@ -10090,7 +9969,7 @@ function buildProfileFromSnapshot(input: {
       rewardPercent: snapshot.rewardPercent,
       createdAt: snapshot.createdAtOnChain ?? 0,
       slugHash: normalizeSlugHash(snapshot.slugHash),
-      metaHash: snapshot.metaHash
+      metaHash: normalizeMetaHash(snapshot.metaHash)
     },
     stats: mapped.stats,
     withdrawalQueue: mapped.withdrawalQueue,
@@ -10103,31 +9982,10 @@ function buildProfileFromSnapshot(input: {
   };
 }
 
-function isSnapshotFresh(snapshot: AmbassadorDashboardSnapshotRecord, now: number): boolean {
-  if (snapshot.syncStatus !== "success") {
-    return false;
-  }
-
-  return now - snapshot.lastSyncedAt <= getSnapshotTtlMs();
-}
-
-function shouldSkipOnChainRefreshAfterFailure(
-  snapshot: AmbassadorDashboardSnapshotRecord,
-  now: number
-): boolean {
-  if (snapshot.syncStatus !== "failed") {
-    return false;
-  }
-
-  return now - snapshot.lastSyncedAt < getSnapshotMinRetryAfterFailureMs();
-}
-
 export class CabinetService {
   private readonly store: PurchaseStore;
-  private readonly tronWeb: any;
-  private readonly controllerContractAddress: string;
   private readonly processor: CabinetServiceDependencies["processor"];
-  private contractInstance: any | null = null;
+  private readonly dashboardRefreshService: ReturnType<typeof createDashboardRefreshService>;
 
   constructor(deps: CabinetServiceDependencies) {
     if (!deps?.store) {
@@ -10143,206 +10001,12 @@ export class CabinetService {
     }
 
     this.store = deps.store;
-    this.tronWeb = deps.tronWeb;
     this.processor = deps.processor;
-    this.controllerContractAddress = assertNonEmpty(
-      deps.controllerContractAddress,
-      "controllerContractAddress"
-    );
-  }
-
-  private async contract(): Promise<any> {
-    if (!this.contractInstance) {
-      this.contractInstance = await this.tronWeb.contract().at(this.controllerContractAddress);
-    }
-
-    return this.contractInstance;
-  }
-
-  private async readContractTuple(
-    contract: any,
-    methodName: string,
-    wallet: string
-  ): Promise<any> {
-    const method = contract?.[methodName];
-
-    if (typeof method !== "function") {
-      throw new Error(`Controller contract method is missing: ${methodName}`);
-    }
-
-    try {
-      return await method(wallet).call();
-    } catch (error) {
-      throw new Error(`${methodName}(${wallet}) failed: ${toErrorMessage(error)}`);
-    }
-  }
-
-  private async readOnChainDashboard(wallet: string): Promise<{
-    identity: CabinetProfileIdentity;
-    progress: CabinetProfileProgress;
-    stats: {
-      totalBuyers: string;
-      trackedVolumeSun: string;
-      claimableRewardsSun: string;
-      lifetimeRewardsSun: string;
-      withdrawnRewardsSun: string;
-    };
-    debug: {
-      coreRaw: any;
-      profileRaw: any;
-      progressRaw: any;
-      statsRaw: any;
-    };
-  }> {
-    const contract = await this.contract();
-
-    const coreRaw = await this.readContractTuple(contract, "getDashboardCore", wallet);
-    const profileRaw = await this.readContractTuple(contract, "getDashboardProfile", wallet);
-    const progressRaw = await this.readContractTuple(
-      contract,
-      "getAmbassadorLevelProgress",
-      wallet
-    );
-    const statsRaw = await this.readContractTuple(contract, "getDashboardStats", wallet);
-
-    const exists = safeBoolean(
-      pickFirstDefined(coreRaw, [{ index: 0, keys: ["exists"] }])
-    );
-
-    const active = safeBoolean(
-      pickFirstDefined(coreRaw, [{ index: 1, keys: ["active"] }])
-    );
-
-    const effectiveLevel = safeNumber(
-      pickFirstDefined(coreRaw, [{ index: 2, keys: ["effectiveLevel", "level"] }]),
-      0
-    );
-
-    const rewardPercent = safeNumber(
-      pickFirstDefined(coreRaw, [{ index: 3, keys: ["rewardPercent"] }]),
-      0
-    );
-
-    const createdAt = safeNumber(
-      pickFirstDefined(coreRaw, [{ index: 4, keys: ["createdAt"] }]),
-      0
-    );
-
-    const selfRegistered = safeBoolean(
-      pickFirstDefined(profileRaw, [{ index: 0, keys: ["selfRegistered"] }])
-    );
-
-    const manualAssigned = safeBoolean(
-      pickFirstDefined(profileRaw, [{ index: 1, keys: ["manualAssigned"] }])
-    );
-
-    const overrideEnabled = safeBoolean(
-      pickFirstDefined(profileRaw, [{ index: 2, keys: ["overrideEnabled"] }])
-    );
-
-    const currentLevel = safeNumber(
-      pickFirstDefined(profileRaw, [{ index: 3, keys: ["currentLevel"] }]),
-      0
-    );
-
-    const overrideLevel = safeNumber(
-      pickFirstDefined(profileRaw, [{ index: 4, keys: ["overrideLevel"] }]),
-      0
-    );
-
-    const slugHash = normalizeSlugHash(
-      pickFirstDefined(profileRaw, [{ index: 5, keys: ["slugHash"] }])
-    );
-
-    const metaHash = normalizeMetaHash(
-      pickFirstDefined(profileRaw, [{ index: 6, keys: ["metaHash"] }])
-    );
-
-    const progressCurrentLevel = safeNumber(
-      pickFirstDefined(progressRaw, [{ index: 0, keys: ["currentLevel", "level"] }]),
-      currentLevel
-    );
-
-    const buyersCount = safeNumber(
-      pickFirstDefined(progressRaw, [{ index: 1, keys: ["buyersCount", "totalBuyers"] }]),
-      0
-    );
-
-    const nextThreshold = safeNumber(
-      pickFirstDefined(progressRaw, [{ index: 2, keys: ["nextThreshold"] }]),
-      0
-    );
-
-    const remainingToNextLevel = safeNumber(
-      pickFirstDefined(progressRaw, [{ index: 3, keys: ["remainingToNextLevel"] }]),
-      0
-    );
-
-    const totalBuyers = toSunString(
-      pickFirstDefined(statsRaw, [{ index: 0, keys: ["totalBuyers"] }])
-    );
-
-    const trackedVolumeSun = toSunString(
-      pickFirstDefined(statsRaw, [
-        { index: 1, keys: ["trackedVolumeSun", "totalVolumeSun"] }
-      ])
-    );
-
-    const lifetimeRewardsSun = toSunString(
-      pickFirstDefined(statsRaw, [
-        { index: 2, keys: ["lifetimeRewardsSun", "totalRewardsAccruedSun"] }
-      ])
-    );
-
-    const withdrawnRewardsSun = toSunString(
-      pickFirstDefined(statsRaw, [
-        { index: 3, keys: ["withdrawnRewardsSun", "totalRewardsClaimedSun"] }
-      ])
-    );
-
-    const claimableRewardsSun = toSunString(
-      pickFirstDefined(statsRaw, [
-        { index: 4, keys: ["claimableRewardsSun", "availableOnChainSun"] }
-      ])
-    );
-
-    return {
-      identity: {
-        wallet,
-        exists,
-        active,
-        selfRegistered,
-        manualAssigned,
-        overrideEnabled,
-        level: effectiveLevel,
-        effectiveLevel,
-        currentLevel,
-        overrideLevel,
-        rewardPercent,
-        createdAt,
-        slugHash,
-        metaHash
-      },
-      progress: {
-        currentLevel: progressCurrentLevel,
-        buyersCount,
-        nextThreshold,
-        remainingToNextLevel
-      },
-      stats: {
-        totalBuyers,
-        trackedVolumeSun,
-        claimableRewardsSun,
-        lifetimeRewardsSun,
-        withdrawnRewardsSun
-      },
-      debug: {
-        coreRaw,
-        profileRaw,
-        progressRaw,
-        statsRaw
-      }
-    };
+    this.dashboardRefreshService = createDashboardRefreshService({
+      tronWeb: deps.tronWeb,
+      controllerContractAddress: deps.controllerContractAddress,
+      logger: console
+    });
   }
 
   private buildFallbackProfile(
@@ -10396,7 +10060,6 @@ export class CabinetService {
   }
 
   async getProfileByWallet(wallet: string): Promise<CabinetProfileResult> {
-    const now = Date.now();
     const normalizedWallet = assertNonEmpty(wallet, "wallet");
     const record = await getAmbassadorRegistryRecordByWallet(normalizedWallet);
 
@@ -10416,19 +10079,25 @@ export class CabinetService {
 
     try {
       snapshot = await getDashboardSnapshotByWallet(registryWallet);
-    } catch (snapshotReadError) {
+    } catch (error) {
       logJson("error", {
-        stage: "dashboard-snapshot-read-failed-before-serve",
+        stage: "dashboard-snapshot-read-failed",
         wallet: registryWallet,
         slug,
         status,
-        error: toErrorMessage(snapshotReadError)
+        error: toErrorMessage(error)
       });
     }
 
-    if (snapshot && isSnapshotFresh(snapshot, now)) {
+    this.dashboardRefreshService.refreshWalletDashboardInBackground({
+      wallet: registryWallet,
+      slug,
+      status
+    });
+
+    if (snapshot) {
       logJson("info", {
-        stage: "dashboard-snapshot-hit-fresh",
+        stage: "dashboard-snapshot-served",
         wallet: registryWallet,
         slug,
         status,
@@ -10445,185 +10114,14 @@ export class CabinetService {
       });
     }
 
-    if (snapshot && shouldSkipOnChainRefreshAfterFailure(snapshot, now)) {
-      logJson("warn", {
-        stage: "dashboard-snapshot-hit-stale-after-failure",
-        wallet: registryWallet,
-        slug,
-        status,
-        snapshotSyncStatus: snapshot.syncStatus,
-        snapshotLastSyncedAt: snapshot.lastSyncedAt,
-        retryAfterMs:
-          getSnapshotMinRetryAfterFailureMs() - Math.max(0, now - snapshot.lastSyncedAt)
-      });
+    logJson("warn", {
+      stage: "dashboard-snapshot-missed-fallback-served",
+      wallet: registryWallet,
+      slug,
+      status
+    });
 
-      return buildProfileFromSnapshot({
-        wallet: registryWallet,
-        slug,
-        status,
-        snapshot,
-        dbStatsRecord
-      });
-    }
-
-    try {
-      const onChain = await this.readOnChainDashboard(registryWallet);
-
-      const persistedSnapshot = await upsertDashboardSnapshot({
-        wallet: registryWallet,
-        slug,
-        registryStatus: status,
-
-        existsOnChain: onChain.identity.exists,
-        activeOnChain: onChain.identity.active,
-        selfRegistered: onChain.identity.selfRegistered,
-        manualAssigned: onChain.identity.manualAssigned,
-        overrideEnabled: onChain.identity.overrideEnabled,
-
-        level: onChain.identity.level,
-        effectiveLevel: onChain.identity.effectiveLevel,
-        currentLevel: onChain.identity.currentLevel,
-        overrideLevel: onChain.identity.overrideLevel,
-        rewardPercent: onChain.identity.rewardPercent,
-
-        createdAtOnChain: onChain.identity.createdAt || null,
-        slugHash: onChain.identity.slugHash,
-        metaHash: onChain.identity.metaHash,
-
-        totalBuyers: safeNumber(onChain.stats.totalBuyers),
-        trackedVolumeSun: onChain.stats.trackedVolumeSun,
-        claimableRewardsSun: onChain.stats.claimableRewardsSun,
-        lifetimeRewardsSun: onChain.stats.lifetimeRewardsSun,
-        withdrawnRewardsSun: onChain.stats.withdrawnRewardsSun,
-
-        nextThreshold: onChain.progress.nextThreshold,
-        remainingToNextLevel: onChain.progress.remainingToNextLevel,
-
-        rawCoreJson: onChain.debug.coreRaw,
-        rawProfileJson: onChain.debug.profileRaw,
-        rawProgressJson: onChain.debug.progressRaw,
-        rawStatsJson: onChain.debug.statsRaw,
-
-        syncStatus: "success",
-        syncError: null,
-        lastSyncedAt: now
-      });
-
-      logJson("info", {
-        stage: "onchain-dashboard-read-success",
-        wallet: registryWallet,
-        slug,
-        status,
-        controllerContractAddress: this.controllerContractAddress,
-        identity: {
-          exists: onChain.identity.exists,
-          active: onChain.identity.active,
-          effectiveLevel: onChain.identity.effectiveLevel,
-          currentLevel: onChain.identity.currentLevel,
-          rewardPercent: onChain.identity.rewardPercent,
-          createdAt: onChain.identity.createdAt,
-          slugHash: onChain.identity.slugHash,
-          metaHash: onChain.identity.metaHash
-        },
-        progress: onChain.progress,
-        stats: onChain.stats
-      });
-
-      return buildProfileFromSnapshot({
-        wallet: registryWallet,
-        slug,
-        status,
-        snapshot: persistedSnapshot,
-        dbStatsRecord
-      });
-    } catch (error) {
-      const errorMessage = toErrorMessage(error);
-
-      logJson("error", {
-        stage: "onchain-dashboard-read-failed",
-        wallet: registryWallet,
-        slug,
-        status,
-        controllerContractAddress: this.controllerContractAddress,
-        error: errorMessage
-      });
-
-      try {
-        await markDashboardSnapshotSyncFailed({
-          wallet: registryWallet,
-          slug,
-          registryStatus: status,
-          syncError: errorMessage,
-          syncStatus: snapshot ? "partial" : "failed",
-          lastSyncedAt: now
-        });
-      } catch (snapshotWriteError) {
-        logJson("error", {
-          stage: "dashboard-snapshot-sync-failed",
-          wallet: registryWallet,
-          slug,
-          status,
-          error: toErrorMessage(snapshotWriteError)
-        });
-      }
-
-      if (snapshot) {
-        logJson("warn", {
-          stage: "dashboard-snapshot-fallback-used",
-          wallet: registryWallet,
-          slug,
-          status,
-          snapshotSyncStatus: snapshot.syncStatus,
-          snapshotLastSyncedAt: snapshot.lastSyncedAt
-        });
-
-        return buildProfileFromSnapshot({
-          wallet: registryWallet,
-          slug,
-          status,
-          snapshot,
-          dbStatsRecord
-        });
-      }
-
-      try {
-        const latestSnapshot = await getDashboardSnapshotByWallet(registryWallet);
-
-        if (
-          latestSnapshot &&
-          (latestSnapshot.syncStatus === "success" ||
-            latestSnapshot.syncStatus === "partial" ||
-            latestSnapshot.syncStatus === "failed")
-        ) {
-          logJson("warn", {
-            stage: "dashboard-snapshot-fallback-used-after-refetch",
-            wallet: registryWallet,
-            slug,
-            status,
-            snapshotSyncStatus: latestSnapshot.syncStatus,
-            snapshotLastSyncedAt: latestSnapshot.lastSyncedAt
-          });
-
-          return buildProfileFromSnapshot({
-            wallet: registryWallet,
-            slug,
-            status,
-            snapshot: latestSnapshot,
-            dbStatsRecord
-          });
-        }
-      } catch (snapshotReadError) {
-        logJson("error", {
-          stage: "dashboard-snapshot-read-failed-after-onchain-failure",
-          wallet: registryWallet,
-          slug,
-          status,
-          error: toErrorMessage(snapshotReadError)
-        });
-      }
-
-      return this.buildFallbackProfile(registryWallet, slug, status, dbStatsRecord);
-    }
+    return this.buildFallbackProfile(registryWallet, slug, status, dbStatsRecord);
   }
 
   async replayPendingByWallet(
