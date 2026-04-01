@@ -87,6 +87,11 @@ function normalizeIncomingSlug(value: string): string {
   return assertValidSlug(normalizeSlug(value));
 }
 
+function normalizeNullableWallet(value: string | null | undefined): string | null {
+  const normalized = String(value || "").trim();
+  return normalized || null;
+}
+
 async function getLocalAmbassadorWalletBySlug(slug: string): Promise<string | null> {
   const normalizedSlug = normalizeIncomingSlug(slug);
 
@@ -328,7 +333,7 @@ export class AttributionService {
 
     if (alreadyProcessedOnChain) {
       const allocated = await this.store.markAllocated(purchaseId, {
-        ambassadorWallet: existing.ambassadorWallet,
+        ambassadorWallet: normalizeNullableWallet(existing.ambassadorWallet),
         allocationMode: existing.allocationMode ?? "manual-replay",
         now
       });
@@ -422,8 +427,8 @@ export class AttributionService {
     const verified = await this.store.markVerified(purchaseId, {
       purchaseAmountSun,
       ownerShareSun,
-      ambassadorRewardSun: existing.ambassadorRewardSun,
-      ownerPayoutSun: existing.ownerPayoutSun === "0" ? ownerShareSun : existing.ownerPayoutSun,
+      ambassadorRewardSun: "0",
+      ownerPayoutSun: ownerShareSun,
       ambassadorSlug: slug,
       ambassadorWallet: resolved.ambassadorWallet,
       allocationMode: existing.allocationMode,
