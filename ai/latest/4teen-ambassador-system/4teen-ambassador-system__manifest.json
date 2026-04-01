@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-04-01T14:05:40.391Z",
+  "generatedAt": "2026-04-01T14:18:28.109Z",
   "repository": "info14fourteen-creator/4teen-ambassador-system",
   "branch": "main",
   "repoName": "4teen-ambassador-system",
@@ -18,6 +18,7 @@
     "services/allocation-worker/package.json",
     "services/allocation-worker/src/app/processAttribution.ts",
     "services/allocation-worker/src/db/ambassadors.ts",
+    "services/allocation-worker/src/db/dashboardSnapshots.ts",
     "services/allocation-worker/src/db/postgres.ts",
     "services/allocation-worker/src/db/purchases.ts",
     "services/allocation-worker/src/domain/allocation.ts",
@@ -83,6 +84,7 @@
         "services/allocation-worker/package.json",
         "services/allocation-worker/src/app/processAttribution.ts",
         "services/allocation-worker/src/db/ambassadors.ts",
+        "services/allocation-worker/src/db/dashboardSnapshots.ts",
         "services/allocation-worker/src/db/postgres.ts",
         "services/allocation-worker/src/db/purchases.ts",
         "services/allocation-worker/src/domain/allocation.ts",
