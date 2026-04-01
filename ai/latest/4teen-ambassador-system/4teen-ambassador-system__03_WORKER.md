@@ -1,6 +1,6 @@
 # 4teen-ambassador-system — ALLOCATION WORKER
 
-Generated: 2026-04-01T16:35:33.179Z
+Generated: 2026-04-01T17:08:16.163Z
 Repository: info14fourteen-creator/4teen-ambassador-system
 Branch: main
 
@@ -1073,12 +1073,147 @@ export async function getDashboardSnapshotByWallet(
   return row ? rowToSnapshotRecord(row) : null;
 }
 
+function mergeSnapshotState(
+  existing: AmbassadorDashboardSnapshotRecord | null,
+  input: UpsertAmbassadorDashboardSnapshotInput
+) {
+  return {
+    wallet: assertNonEmpty(input.wallet, "wallet"),
+    slug:
+      input.slug !== undefined
+        ? normalizeOptionalString(input.slug)
+        : existing?.slug ?? null,
+    registryStatus:
+      input.registryStatus !== undefined
+        ? normalizeOptionalString(input.registryStatus)
+        : existing?.registryStatus ?? null,
+
+    existsOnChain:
+      input.existsOnChain !== undefined
+        ? normalizeBoolean(input.existsOnChain, false)
+        : existing?.existsOnChain ?? false,
+    activeOnChain:
+      input.activeOnChain !== undefined
+        ? normalizeBoolean(input.activeOnChain, false)
+        : existing?.activeOnChain ?? false,
+    selfRegistered:
+      input.selfRegistered !== undefined
+        ? normalizeBoolean(input.selfRegistered, false)
+        : existing?.selfRegistered ?? false,
+    manualAssigned:
+      input.manualAssigned !== undefined
+        ? normalizeBoolean(input.manualAssigned, false)
+        : existing?.manualAssigned ?? false,
+    overrideEnabled:
+      input.overrideEnabled !== undefined
+        ? normalizeBoolean(input.overrideEnabled, false)
+        : existing?.overrideEnabled ?? false,
+
+    level:
+      input.level !== undefined
+        ? normalizeNonNegativeInteger(input.level, "level")
+        : existing?.level ?? 0,
+    effectiveLevel:
+      input.effectiveLevel !== undefined
+        ? normalizeNonNegativeInteger(input.effectiveLevel, "effectiveLevel")
+        : existing?.effectiveLevel ?? 0,
+    currentLevel:
+      input.currentLevel !== undefined
+        ? normalizeNonNegativeInteger(input.currentLevel, "currentLevel")
+        : existing?.currentLevel ?? 0,
+    overrideLevel:
+      input.overrideLevel !== undefined
+        ? normalizeNonNegativeInteger(input.overrideLevel, "overrideLevel")
+        : existing?.overrideLevel ?? 0,
+    rewardPercent:
+      input.rewardPercent !== undefined
+        ? normalizeNonNegativeInteger(input.rewardPercent, "rewardPercent")
+        : existing?.rewardPercent ?? 0,
+
+    createdAtOnChain:
+      input.createdAtOnChain !== undefined
+        ? normalizeTimestamp(input.createdAtOnChain, "createdAtOnChain")
+        : existing?.createdAtOnChain ?? null,
+    slugHash:
+      input.slugHash !== undefined
+        ? normalizeOptionalString(input.slugHash)
+        : existing?.slugHash ?? null,
+    metaHash:
+      input.metaHash !== undefined
+        ? normalizeOptionalString(input.metaHash)
+        : existing?.metaHash ?? null,
+
+    totalBuyers:
+      input.totalBuyers !== undefined
+        ? normalizeNonNegativeInteger(input.totalBuyers, "totalBuyers")
+        : existing?.totalBuyers ?? 0,
+    trackedVolumeSun:
+      input.trackedVolumeSun !== undefined
+        ? normalizeSunAmount(input.trackedVolumeSun, "trackedVolumeSun")
+        : existing?.trackedVolumeSun ?? "0",
+    claimableRewardsSun:
+      input.claimableRewardsSun !== undefined
+        ? normalizeSunAmount(input.claimableRewardsSun, "claimableRewardsSun")
+        : existing?.claimableRewardsSun ?? "0",
+    lifetimeRewardsSun:
+      input.lifetimeRewardsSun !== undefined
+        ? normalizeSunAmount(input.lifetimeRewardsSun, "lifetimeRewardsSun")
+        : existing?.lifetimeRewardsSun ?? "0",
+    withdrawnRewardsSun:
+      input.withdrawnRewardsSun !== undefined
+        ? normalizeSunAmount(input.withdrawnRewardsSun, "withdrawnRewardsSun")
+        : existing?.withdrawnRewardsSun ?? "0",
+
+    nextThreshold:
+      input.nextThreshold !== undefined
+        ? normalizeNonNegativeInteger(input.nextThreshold, "nextThreshold")
+        : existing?.nextThreshold ?? 0,
+    remainingToNextLevel:
+      input.remainingToNextLevel !== undefined
+        ? normalizeNonNegativeInteger(
+            input.remainingToNextLevel,
+            "remainingToNextLevel"
+          )
+        : existing?.remainingToNextLevel ?? 0,
+
+    rawCoreJson:
+      input.rawCoreJson !== undefined
+        ? safeJsonStringify(input.rawCoreJson)
+        : existing?.rawCoreJson ?? null,
+    rawProfileJson:
+      input.rawProfileJson !== undefined
+        ? safeJsonStringify(input.rawProfileJson)
+        : existing?.rawProfileJson ?? null,
+    rawProgressJson:
+      input.rawProgressJson !== undefined
+        ? safeJsonStringify(input.rawProgressJson)
+        : existing?.rawProgressJson ?? null,
+    rawStatsJson:
+      input.rawStatsJson !== undefined
+        ? safeJsonStringify(input.rawStatsJson)
+        : existing?.rawStatsJson ?? null,
+
+    syncStatus:
+      input.syncStatus !== undefined
+        ? normalizeSyncStatus(input.syncStatus)
+        : existing?.syncStatus ?? "success",
+    syncError:
+      input.syncError !== undefined
+        ? normalizeOptionalString(input.syncError)
+        : existing?.syncError ?? null,
+    lastSyncedAt:
+      normalizeTimestamp(
+        input.lastSyncedAt !== undefined ? input.lastSyncedAt : existing?.lastSyncedAt ?? Date.now(),
+        "lastSyncedAt"
+      ) ?? Date.now()
+  };
+}
+
 export async function upsertDashboardSnapshot(
   input: UpsertAmbassadorDashboardSnapshotInput
 ): Promise<AmbassadorDashboardSnapshotRecord> {
-  const wallet = assertNonEmpty(input.wallet, "wallet");
-  const lastSyncedAt =
-    normalizeTimestamp(input.lastSyncedAt ?? Date.now(), "lastSyncedAt") ?? Date.now();
+  const existing = await getDashboardSnapshotByWallet(assertNonEmpty(input.wallet, "wallet"));
+  const merged = mergeSnapshotState(existing, input);
 
   const result = await query(
     `
@@ -1207,46 +1342,43 @@ export async function upsertDashboardSnapshot(
         FLOOR(EXTRACT(EPOCH FROM updated_at) * 1000) AS updated_at_ms
     `,
     [
-      wallet,
-      normalizeOptionalString(input.slug),
-      normalizeOptionalString(input.registryStatus),
+      merged.wallet,
+      merged.slug,
+      merged.registryStatus,
 
-      normalizeBoolean(input.existsOnChain, false),
-      normalizeBoolean(input.activeOnChain, false),
-      normalizeBoolean(input.selfRegistered, false),
-      normalizeBoolean(input.manualAssigned, false),
-      normalizeBoolean(input.overrideEnabled, false),
+      merged.existsOnChain,
+      merged.activeOnChain,
+      merged.selfRegistered,
+      merged.manualAssigned,
+      merged.overrideEnabled,
 
-      normalizeNonNegativeInteger(input.level, "level"),
-      normalizeNonNegativeInteger(input.effectiveLevel, "effectiveLevel"),
-      normalizeNonNegativeInteger(input.currentLevel, "currentLevel"),
-      normalizeNonNegativeInteger(input.overrideLevel, "overrideLevel"),
-      normalizeNonNegativeInteger(input.rewardPercent, "rewardPercent"),
+      merged.level,
+      merged.effectiveLevel,
+      merged.currentLevel,
+      merged.overrideLevel,
+      merged.rewardPercent,
 
-      normalizeTimestamp(input.createdAtOnChain, "createdAtOnChain"),
-      normalizeOptionalString(input.slugHash),
-      normalizeOptionalString(input.metaHash),
+      merged.createdAtOnChain,
+      merged.slugHash,
+      merged.metaHash,
 
-      normalizeNonNegativeInteger(input.totalBuyers, "totalBuyers"),
-      normalizeSunAmount(input.trackedVolumeSun, "trackedVolumeSun"),
-      normalizeSunAmount(input.claimableRewardsSun, "claimableRewardsSun"),
-      normalizeSunAmount(input.lifetimeRewardsSun, "lifetimeRewardsSun"),
-      normalizeSunAmount(input.withdrawnRewardsSun, "withdrawnRewardsSun"),
+      merged.totalBuyers,
+      merged.trackedVolumeSun,
+      merged.claimableRewardsSun,
+      merged.lifetimeRewardsSun,
+      merged.withdrawnRewardsSun,
 
-      normalizeNonNegativeInteger(input.nextThreshold, "nextThreshold"),
-      normalizeNonNegativeInteger(
-        input.remainingToNextLevel,
-        "remainingToNextLevel"
-      ),
+      merged.nextThreshold,
+      merged.remainingToNextLevel,
 
-      safeJsonStringify(input.rawCoreJson),
-      safeJsonStringify(input.rawProfileJson),
-      safeJsonStringify(input.rawProgressJson),
-      safeJsonStringify(input.rawStatsJson),
+      merged.rawCoreJson,
+      merged.rawProfileJson,
+      merged.rawProgressJson,
+      merged.rawStatsJson,
 
-      normalizeSyncStatus(input.syncStatus),
-      normalizeOptionalString(input.syncError),
-      lastSyncedAt
+      merged.syncStatus,
+      merged.syncError,
+      merged.lastSyncedAt
     ]
   );
 
@@ -1261,77 +1393,14 @@ export async function markDashboardSnapshotSyncFailed(input: {
   syncStatus?: DashboardSnapshotSyncStatus;
   lastSyncedAt?: number;
 }): Promise<AmbassadorDashboardSnapshotRecord> {
-  const wallet = assertNonEmpty(input.wallet, "wallet");
-  const syncError = assertNonEmpty(input.syncError, "syncError");
-  const syncStatus = normalizeSyncStatus(input.syncStatus ?? "failed");
-  const lastSyncedAt =
-    normalizeTimestamp(input.lastSyncedAt ?? Date.now(), "lastSyncedAt") ?? Date.now();
-
-  const result = await query(
-    `
-      INSERT INTO ambassador_dashboard_snapshots (
-        wallet,
-        slug,
-        registry_status,
-        sync_status,
-        sync_error,
-        last_synced_at,
-        updated_at
-      )
-      VALUES ($1, $2, $3, $4, $5, $6, NOW())
-      ON CONFLICT (wallet)
-      DO UPDATE SET
-        slug = COALESCE(EXCLUDED.slug, ambassador_dashboard_snapshots.slug),
-        registry_status = COALESCE(EXCLUDED.registry_status, ambassador_dashboard_snapshots.registry_status),
-        sync_status = EXCLUDED.sync_status,
-        sync_error = EXCLUDED.sync_error,
-        last_synced_at = EXCLUDED.last_synced_at,
-        updated_at = NOW()
-      RETURNING
-        wallet,
-        slug,
-        registry_status,
-        exists_on_chain,
-        active_on_chain,
-        self_registered,
-        manual_assigned,
-        override_enabled,
-        level,
-        effective_level,
-        current_level,
-        override_level,
-        reward_percent,
-        created_at_on_chain,
-        slug_hash,
-        meta_hash,
-        total_buyers,
-        tracked_volume_sun,
-        claimable_rewards_sun,
-        lifetime_rewards_sun,
-        withdrawn_rewards_sun,
-        next_threshold,
-        remaining_to_next_level,
-        raw_core_json,
-        raw_profile_json,
-        raw_progress_json,
-        raw_stats_json,
-        sync_status,
-        sync_error,
-        last_synced_at,
-        FLOOR(EXTRACT(EPOCH FROM created_at) * 1000) AS created_at_ms,
-        FLOOR(EXTRACT(EPOCH FROM updated_at) * 1000) AS updated_at_ms
-    `,
-    [
-      wallet,
-      normalizeOptionalString(input.slug),
-      normalizeOptionalString(input.registryStatus),
-      syncStatus,
-      syncError,
-      lastSyncedAt
-    ]
-  );
-
-  return rowToSnapshotRecord(result.rows[0]);
+  return upsertDashboardSnapshot({
+    wallet: input.wallet,
+    slug: input.slug,
+    registryStatus: input.registryStatus,
+    syncStatus: input.syncStatus ?? "failed",
+    syncError: assertNonEmpty(input.syncError, "syncError"),
+    lastSyncedAt: input.lastSyncedAt ?? Date.now()
+  });
 }
 ```
 
