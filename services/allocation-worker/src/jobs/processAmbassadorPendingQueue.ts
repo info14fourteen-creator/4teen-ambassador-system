@@ -84,6 +84,7 @@ function toErrorMessage(error: unknown): string {
     typeof (error as { message?: unknown }).message === "string"
   ) {
     const message = (error as { message: string }).message.trim();
+
     if (message) {
       return message;
     }
@@ -130,22 +131,25 @@ async function resolveAmbassadorWallet(
 
 function mapProcessedItem(attempt: any): ProcessAmbassadorPendingQueueJobItem {
   const purchase = attempt?.purchase ?? {};
+  const attemptStatus = String(attempt?.status || "").trim();
 
   let action: "allocated" | "deferred" | "skipped" | "failed" | "stopped" = "failed";
-  const status = String(attempt?.status || "").trim();
 
-  if (status === "allocated") {
+  if (attemptStatus === "allocated") {
     action = "allocated";
-  } else if (status === "deferred") {
+  } else if (attemptStatus === "deferred") {
     action = "deferred";
-  } else if (status === "stopped-on-resource-shortage") {
+  } else if (attemptStatus === "stopped-on-resource-shortage") {
     action = "stopped";
   } else if (
-    status === "skipped-already-final" ||
-    status === "skipped-no-ambassador-wallet"
+    attemptStatus === "skipped-already-final" ||
+    attemptStatus === "skipped-no-ambassador-wallet"
   ) {
     action = "skipped";
-  } else if (status === "retryable-failed" || status === "final-failed") {
+  } else if (
+    attemptStatus === "retryable-failed" ||
+    attemptStatus === "final-failed"
+  ) {
     action = "failed";
   }
 
@@ -157,7 +161,7 @@ function mapProcessedItem(attempt: any): ProcessAmbassadorPendingQueueJobItem {
     ambassadorWallet: String(purchase.ambassadorWallet || "").trim(),
     purchaseAmountSun: String(purchase.purchaseAmountSun ?? "0"),
     ownerShareSun: String(purchase.ownerShareSun ?? "0"),
-    status: String(purchase.status || status || "unknown"),
+    status: String(purchase.status || attemptStatus || "unknown"),
     action,
     reason: attempt?.reason ? String(attempt.reason) : null,
     txid: attempt?.txid ? String(attempt.txid) : null
@@ -210,7 +214,7 @@ export async function processAmbassadorPendingQueue(
       JSON.stringify({
         ok: true,
         job: "processAmbassadorPendingQueue",
-        message: "Loaded ambassador pending queue",
+        stage: "loaded",
         ambassadorSlug,
         ambassadorWallet,
         scanned: result.scanned,
@@ -226,7 +230,7 @@ export async function processAmbassadorPendingQueue(
         JSON.stringify({
           ok: true,
           job: "processAmbassadorPendingQueue",
-          message: "No pending purchases found",
+          stage: "finished-empty",
           ambassadorSlug,
           ambassadorWallet,
           scanned: 0,
@@ -252,13 +256,20 @@ export async function processAmbassadorPendingQueue(
     for (const item of result.items) {
       if (item.action === "allocated") {
         result.allocated += 1;
-      } else if (item.action === "deferred" || item.action === "stopped") {
-        result.deferred += 1;
-      } else if (item.action === "skipped") {
-        result.skipped += 1;
-      } else {
-        result.failed += 1;
+        continue;
       }
+
+      if (item.action === "deferred" || item.action === "stopped") {
+        result.deferred += 1;
+        continue;
+      }
+
+      if (item.action === "skipped") {
+        result.skipped += 1;
+        continue;
+      }
+
+      result.failed += 1;
     }
 
     result.finishedAt = Date.now();
@@ -267,7 +278,7 @@ export async function processAmbassadorPendingQueue(
       JSON.stringify({
         ok: true,
         job: "processAmbassadorPendingQueue",
-        message: "Ambassador pending queue processing finished",
+        stage: "finished",
         ambassadorSlug,
         ambassadorWallet,
         scanned: result.scanned,
@@ -290,9 +301,11 @@ export async function processAmbassadorPendingQueue(
       JSON.stringify({
         ok: false,
         job: "processAmbassadorPendingQueue",
+        stage: "failed",
         ambassadorSlug,
         ambassadorWallet,
-        error: toErrorMessage(error)
+        error: toErrorMessage(error),
+        durationMs: result.finishedAt - result.startedAt
       })
     );
 
