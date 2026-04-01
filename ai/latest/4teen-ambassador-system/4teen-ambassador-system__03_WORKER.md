@@ -1,6 +1,6 @@
 # 4teen-ambassador-system — ALLOCATION WORKER
 
-Generated: 2026-04-01T17:53:28.492Z
+Generated: 2026-04-01T17:54:42.371Z
 Repository: info14fourteen-creator/4teen-ambassador-system
 Branch: main
 
@@ -6406,8 +6406,11 @@ export function createAllocationWorker(
   });
 
   const attributionProcessor = new AttributionProcessor({
-    attributionService,
-    allocationService: allocation
+  attributionService,
+  allocationService: allocation,
+  store,
+  controllerClient,
+  logger: options.logger
   });
 
   const processor = new AllocationWorkerProcessorImpl({
