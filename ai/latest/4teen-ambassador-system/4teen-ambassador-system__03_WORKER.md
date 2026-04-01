@@ -1,6 +1,6 @@
 # 4teen-ambassador-system — ALLOCATION WORKER
 
-Generated: 2026-04-01T13:00:44.416Z
+Generated: 2026-04-01T13:04:40.818Z
 Repository: info14fourteen-creator/4teen-ambassador-system
 Branch: main
 
@@ -8320,7 +8320,7 @@ async function bootstrap() {
 
   const scanner = new BuyTokensScanner({
     tronWeb,
-    processor: worker.processor as any,
+    processor: worker.processor,
     store: worker.store,
     tokenContractAddress: env.tokenContractAddress,
     pageSize: env.scanPageSize
@@ -8351,7 +8351,13 @@ async function bootstrap() {
       }
 
       if (method === "GET" && pathname === "/debug/gasstation/order-check") {
-        await handleGasStationOrderCheckDebug(req, res, env, tronWeb, controllerContractAddress);
+        await handleGasStationOrderCheckDebug(
+          req,
+          res,
+          env,
+          tronWeb,
+          controllerContractAddress
+        );
         return;
       }
 
@@ -8630,10 +8636,6 @@ async function bootstrap() {
           "buyerWallet"
         );
         const slug = normalizeIncomingSlug(body.slug);
-        const feeLimitSun =
-          body.feeLimitSun !== undefined
-            ? parsePositiveInteger(String(body.feeLimitSun), 1, "feeLimitSun")
-            : undefined;
 
         const result = await worker.processor.processFrontendAttribution({
           txHash,
@@ -8644,8 +8646,7 @@ async function bootstrap() {
 
         sendJson(req, res, env, 200, {
           ok: true,
-          result,
-          feeLimitSun: feeLimitSun ?? null
+          result
         });
         return;
       }
