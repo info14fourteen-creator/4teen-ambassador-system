@@ -1,6 +1,6 @@
 # 4teen-ambassador-system — ALLOCATION WORKER
 
-Generated: 2026-04-01T12:54:37.547Z
+Generated: 2026-04-01T12:56:24.086Z
 Repository: info14fourteen-creator/4teen-ambassador-system
 Branch: main
 
@@ -6309,19 +6309,18 @@ export async function prepareAmbassadorWithdrawal(
 ## FILE CONTENT
 
 ```ts
-import crypto from "node:crypto";
 import type { AllocationWorker } from "../index";
-import type { PurchaseRecord, PurchaseProcessingStatus } from "../db/purchases";
 
-export interface PrepareAmbassadorWithdrawalJobOptions {
+export interface ProcessAmbassadorPendingQueueJobOptions {
   ambassadorSlug?: string;
   ambassadorWallet?: string;
   limit?: number;
   now?: number;
+  feeLimitSun?: number;
   logger?: Pick<Console, "info" | "warn" | "error">;
 }
 
-export interface PrepareAmbassadorWithdrawalJobItem {
+export interface ProcessAmbassadorPendingQueueJobItem {
   purchaseId: string;
   txHash: string;
   buyerWallet: string;
@@ -6329,28 +6328,27 @@ export interface PrepareAmbassadorWithdrawalJobItem {
   ambassadorWallet: string;
   purchaseAmountSun: string;
   ownerShareSun: string;
-  ambassadorRewardSun: string;
-  previousStatus: string;
-  nextStatus: "withdraw_included" | "skipped";
-  withdrawSessionId: string | null;
+  status: string;
+  action: "allocated" | "deferred" | "skipped" | "failed" | "stopped";
   reason: string | null;
+  txid: string | null;
 }
 
-export interface PrepareAmbassadorWithdrawalJobResult {
+export interface ProcessAmbassadorPendingQueueJobResult {
   ok: boolean;
   ambassadorSlug: string | null;
   ambassadorWallet: string | null;
-  withdrawSessionId: string | null;
   scanned: number;
-  included: number;
+  allocated: number;
+  deferred: number;
   skipped: number;
-  totalRewardSun: string;
+  failed: number;
+  stoppedEarly: boolean;
+  stopReason: string | null;
+  items: ProcessAmbassadorPendingQueueJobItem[];
   startedAt: number;
   finishedAt: number;
-  items: PrepareAmbassadorWithdrawalJobItem[];
 }
-
-const ELIGIBLE_STATUSES: PurchaseProcessingStatus[] = ["allocated"];
 
 function normalizeOptionalString(value: unknown): string | undefined {
   if (typeof value !== "string") {
@@ -6361,21 +6359,25 @@ function normalizeOptionalString(value: unknown): string | undefined {
   return normalized || undefined;
 }
 
-function assertNonEmpty(value: unknown, fieldName: string): string {
-  const normalized = normalizeOptionalString(value);
-
-  if (!normalized) {
-    throw new Error(`${fieldName} is required`);
-  }
-
-  return normalized;
-}
-
 function toPositiveInteger(value: unknown, fallback: number): number {
   const parsed = Number(value);
 
   if (!Number.isInteger(parsed) || parsed <= 0) {
     return fallback;
+  }
+
+  return parsed;
+}
+
+function toOptionalPositiveInteger(value: unknown): number | undefined {
+  if (value === undefined || value === null || value === "") {
+    return undefined;
+  }
+
+  const parsed = Number(value);
+
+  if (!Number.isInteger(parsed) || parsed <= 0) {
+    return undefined;
   }
 
   return parsed;
@@ -6400,21 +6402,6 @@ function toErrorMessage(error: unknown): string {
   }
 
   return "Unknown error";
-}
-
-function sumSun(left: string, right: string): string {
-  return (BigInt(left || "0") + BigInt(right || "0")).toString();
-}
-
-function buildWithdrawSessionId(input: {
-  ambassadorWallet: string;
-  now: number;
-}): string {
-  return crypto
-    .createHash("sha256")
-    .update(`withdraw:${input.ambassadorWallet}:${input.now}:${Math.random()}`)
-    .digest("hex")
-    .slice(0, 32);
 }
 
 async function resolveAmbassadorWallet(
@@ -6453,59 +6440,54 @@ async function resolveAmbassadorWallet(
   };
 }
 
-function isPositiveSun(value: string | null | undefined): boolean {
-  try {
-    return BigInt(String(value || "0")) > 0n;
-  } catch {
-    return false;
+function mapProcessedItem(attempt: any): ProcessAmbassadorPendingQueueJobItem {
+  const purchase = attempt?.purchase ?? {};
+  const attemptStatus = String(attempt?.status || "").trim();
+
+  let action: "allocated" | "deferred" | "skipped" | "failed" | "stopped" = "failed";
+
+  if (attemptStatus === "allocated") {
+    action = "allocated";
+  } else if (attemptStatus === "deferred") {
+    action = "deferred";
+  } else if (attemptStatus === "stopped-on-resource-shortage") {
+    action = "stopped";
+  } else if (
+    attemptStatus === "skipped-already-final" ||
+    attemptStatus === "skipped-no-ambassador-wallet"
+  ) {
+    action = "skipped";
+  } else if (
+    attemptStatus === "retryable-failed" ||
+    attemptStatus === "final-failed"
+  ) {
+    action = "failed";
   }
-}
 
-function mapSkippedItem(purchase: PurchaseRecord, reason: string): PrepareAmbassadorWithdrawalJobItem {
   return {
-    purchaseId: purchase.purchaseId,
-    txHash: purchase.txHash,
-    buyerWallet: purchase.buyerWallet,
+    purchaseId: String(purchase.purchaseId || "").trim(),
+    txHash: String(purchase.txHash || "").trim(),
+    buyerWallet: String(purchase.buyerWallet || "").trim(),
     ambassadorSlug: String(purchase.ambassadorSlug || "").trim(),
     ambassadorWallet: String(purchase.ambassadorWallet || "").trim(),
-    purchaseAmountSun: purchase.purchaseAmountSun,
-    ownerShareSun: purchase.ownerShareSun,
-    ambassadorRewardSun: purchase.ambassadorRewardSun,
-    previousStatus: purchase.status,
-    nextStatus: "skipped",
-    withdrawSessionId: purchase.withdrawSessionId,
-    reason
+    purchaseAmountSun: String(purchase.purchaseAmountSun ?? "0"),
+    ownerShareSun: String(purchase.ownerShareSun ?? "0"),
+    status: String(purchase.status || attemptStatus || "unknown"),
+    action,
+    reason: attempt?.reason ? String(attempt.reason) : null,
+    txid: attempt?.txid ? String(attempt.txid) : null
   };
 }
 
-function mapIncludedItem(
-  purchase: PurchaseRecord,
-  withdrawSessionId: string
-): PrepareAmbassadorWithdrawalJobItem {
-  return {
-    purchaseId: purchase.purchaseId,
-    txHash: purchase.txHash,
-    buyerWallet: purchase.buyerWallet,
-    ambassadorSlug: String(purchase.ambassadorSlug || "").trim(),
-    ambassadorWallet: String(purchase.ambassadorWallet || "").trim(),
-    purchaseAmountSun: purchase.purchaseAmountSun,
-    ownerShareSun: purchase.ownerShareSun,
-    ambassadorRewardSun: purchase.ambassadorRewardSun,
-    previousStatus: "allocated",
-    nextStatus: "withdraw_included",
-    withdrawSessionId,
-    reason: null
-  };
-}
-
-export async function prepareAmbassadorWithdrawal(
+export async function processAmbassadorPendingQueue(
   worker: AllocationWorker,
-  options: PrepareAmbassadorWithdrawalJobOptions = {}
-): Promise<PrepareAmbassadorWithdrawalJobResult> {
+  options: ProcessAmbassadorPendingQueueJobOptions = {}
+): Promise<ProcessAmbassadorPendingQueueJobResult> {
   const startedAt = Date.now();
   const logger = options.logger ?? console;
   const now = options.now ?? Date.now();
-  const limit = toPositiveInteger(options.limit, 500);
+  const limit = toPositiveInteger(options.limit, 100);
+  const feeLimitSun = toOptionalPositiveInteger(options.feeLimitSun);
 
   const resolved = await resolveAmbassadorWallet(worker, {
     ambassadorSlug: options.ambassadorSlug,
@@ -6515,33 +6497,34 @@ export async function prepareAmbassadorWithdrawal(
   const ambassadorSlug = resolved.ambassadorSlug;
   const ambassadorWallet = resolved.ambassadorWallet;
 
-  const result: PrepareAmbassadorWithdrawalJobResult = {
+  const result: ProcessAmbassadorPendingQueueJobResult = {
     ok: true,
     ambassadorSlug,
     ambassadorWallet,
-    withdrawSessionId: null,
     scanned: 0,
-    included: 0,
+    allocated: 0,
+    deferred: 0,
     skipped: 0,
-    totalRewardSun: "0",
+    failed: 0,
+    stoppedEarly: false,
+    stopReason: null,
+    items: [],
     startedAt,
-    finishedAt: startedAt,
-    items: []
+    finishedAt: startedAt
   };
 
   try {
-    const candidates = await worker.store.listPendingByAmbassador({
+    const prepared = await worker.processor.prepareWithdrawBatch({
       ambassadorWallet: ambassadorWallet || "",
-      statuses: ELIGIBLE_STATUSES,
       limit
     });
 
-    result.scanned = candidates.length;
+    result.scanned = prepared.purchases.length;
 
     logger.info?.(
       JSON.stringify({
         ok: true,
-        job: "prepareAmbassadorWithdrawal",
+        job: "processAmbassadorPendingQueue",
         stage: "loaded",
         ambassadorSlug,
         ambassadorWallet,
@@ -6551,13 +6534,13 @@ export async function prepareAmbassadorWithdrawal(
       })
     );
 
-    if (!candidates.length) {
+    if (!prepared.purchases.length) {
       result.finishedAt = Date.now();
 
       logger.info?.(
         JSON.stringify({
           ok: true,
-          job: "prepareAmbassadorWithdrawal",
+          job: "processAmbassadorPendingQueue",
           stage: "finished-empty",
           ambassadorSlug,
           ambassadorWallet,
@@ -6569,94 +6552,35 @@ export async function prepareAmbassadorWithdrawal(
       return result;
     }
 
-    const eligible = candidates.filter((purchase) => {
-      if (purchase.status !== "allocated") {
-        return false;
-      }
-
-      if (purchase.withdrawSessionId) {
-        return false;
-      }
-
-      if (!isPositiveSun(purchase.ambassadorRewardSun)) {
-        return false;
-      }
-
-      return true;
-    });
-
-    if (!eligible.length) {
-      result.items = candidates.map((purchase) => {
-        if (purchase.withdrawSessionId) {
-          return mapSkippedItem(purchase, "Purchase is already attached to a withdrawal session");
-        }
-
-        if (!isPositiveSun(purchase.ambassadorRewardSun)) {
-          return mapSkippedItem(purchase, "Purchase has zero ambassador reward");
-        }
-
-        return mapSkippedItem(purchase, `Purchase is not eligible from status: ${purchase.status}`);
-      });
-
-      result.skipped = result.items.length;
-      result.finishedAt = Date.now();
-
-      logger.info?.(
-        JSON.stringify({
-          ok: true,
-          job: "prepareAmbassadorWithdrawal",
-          stage: "finished-no-eligible-items",
-          ambassadorSlug,
-          ambassadorWallet,
-          scanned: result.scanned,
-          skipped: result.skipped,
-          durationMs: result.finishedAt - result.startedAt
-        })
-      );
-
-      return result;
-    }
-
-    const withdrawSessionId = buildWithdrawSessionId({
+    const allocationResult = await worker.processor.allocatePendingBatch({
       ambassadorWallet: ambassadorWallet || "",
-      now
+      feeLimitSun,
+      limit,
+      allocationMode: "claim-first",
+      stopOnFirstDeferred: true
     });
 
-    result.withdrawSessionId = withdrawSessionId;
+    result.stoppedEarly = Boolean(allocationResult.stoppedEarly);
+    result.stopReason = allocationResult.stopReason ?? null;
+    result.items = allocationResult.processed.map(mapProcessedItem);
 
-    for (const purchase of candidates) {
-      if (purchase.status !== "allocated") {
-        result.items.push(
-          mapSkippedItem(purchase, `Purchase is not eligible from status: ${purchase.status}`)
-        );
+    for (const item of result.items) {
+      if (item.action === "allocated") {
+        result.allocated += 1;
+        continue;
+      }
+
+      if (item.action === "deferred" || item.action === "stopped") {
+        result.deferred += 1;
+        continue;
+      }
+
+      if (item.action === "skipped") {
         result.skipped += 1;
         continue;
       }
 
-      if (purchase.withdrawSessionId) {
-        result.items.push(
-          mapSkippedItem(purchase, "Purchase is already attached to a withdrawal session")
-        );
-        result.skipped += 1;
-        continue;
-      }
-
-      if (!isPositiveSun(purchase.ambassadorRewardSun)) {
-        result.items.push(
-          mapSkippedItem(purchase, "Purchase has zero ambassador reward")
-        );
-        result.skipped += 1;
-        continue;
-      }
-
-      const updated = await worker.store.markWithdrawIncluded(purchase.purchaseId, {
-        withdrawSessionId,
-        now
-      });
-
-      result.items.push(mapIncludedItem(updated, withdrawSessionId));
-      result.included += 1;
-      result.totalRewardSun = sumSun(result.totalRewardSun, updated.ambassadorRewardSun);
+      result.failed += 1;
     }
 
     result.finishedAt = Date.now();
@@ -6664,15 +6588,17 @@ export async function prepareAmbassadorWithdrawal(
     logger.info?.(
       JSON.stringify({
         ok: true,
-        job: "prepareAmbassadorWithdrawal",
+        job: "processAmbassadorPendingQueue",
         stage: "finished",
         ambassadorSlug,
         ambassadorWallet,
-        withdrawSessionId: result.withdrawSessionId,
         scanned: result.scanned,
-        included: result.included,
+        allocated: result.allocated,
+        deferred: result.deferred,
         skipped: result.skipped,
-        totalRewardSun: result.totalRewardSun,
+        failed: result.failed,
+        stoppedEarly: result.stoppedEarly,
+        stopReason: result.stopReason,
         durationMs: result.finishedAt - result.startedAt
       })
     );
@@ -6685,11 +6611,10 @@ export async function prepareAmbassadorWithdrawal(
     logger.error?.(
       JSON.stringify({
         ok: false,
-        job: "prepareAmbassadorWithdrawal",
+        job: "processAmbassadorPendingQueue",
         stage: "failed",
         ambassadorSlug,
         ambassadorWallet,
-        withdrawSessionId: result.withdrawSessionId,
         error: toErrorMessage(error),
         durationMs: result.finishedAt - result.startedAt
       })
