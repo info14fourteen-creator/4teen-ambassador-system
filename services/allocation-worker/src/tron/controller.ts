@@ -1057,6 +1057,53 @@ export class TronControllerClient implements ControllerClient {
     }
   }
 
+  private async sendWithdrawOwnerFundsWithoutLock(
+    amountSun: string,
+    feeLimitSun?: number
+  ): Promise<WithdrawOwnerFundsResult> {
+    const normalizedAmountSun = normalizeSunAmount(amountSun, "amountSun");
+    const resolvedFeeLimitSun = normalizeFeeLimitSun(
+      feeLimitSun,
+      this.ownerWithdrawFeeLimitSun
+    );
+
+    await this.ensureResourcesForOperation(`owner-withdraw:${normalizedAmountSun}`);
+    await this.verifyResourcesStillReadyBeforeSend();
+
+    const contract = await this.contract();
+
+    try {
+      const sendResult = await withRateLimitRetry("withdrawOwnerFunds.send", async () => {
+        return await contract.withdrawOwnerFunds(normalizedAmountSun).send({
+          feeLimit: resolvedFeeLimitSun
+        });
+      });
+
+      const txid = extractTxidFromSendTransactionResult(sendResult);
+
+      return {
+        txid: assertNonEmpty(txid || "", "txid"),
+        amountSun: normalizedAmountSun
+      };
+    } catch (error) {
+      if (isRateLimitError(error)) {
+        throw wrapAsRateLimitError(error, "TRON_RATE_LIMIT");
+      }
+
+      if (isResourceSendError(error)) {
+        throw createTaggedError(
+          `Owner withdraw send failed because resources were still not sufficient at execution time. ${getErrorMessage(error)}`,
+          {
+            code: "ACCOUNT_RESOURCE_INSUFFICIENT_DURING_SEND",
+            cause: error
+          }
+        );
+      }
+
+      throw error;
+    }
+  }
+
   private async tryAutoWithdrawOwnerFundsAfterAllocation(purchaseId: string): Promise<void> {
     if (!this.ownerAutoWithdrawEnabled) {
       return;
@@ -1077,7 +1124,10 @@ export class TronControllerClient implements ControllerClient {
     }
 
     try {
-      await this.withdrawOwnerFunds(available.toString(), this.ownerWithdrawFeeLimitSun);
+      await this.sendWithdrawOwnerFundsWithoutLock(
+        available.toString(),
+        this.ownerWithdrawFeeLimitSun
+      );
     } catch (error) {
       console.warn(
         JSON.stringify({
@@ -1176,48 +1226,8 @@ export class TronControllerClient implements ControllerClient {
     amountSun: string,
     feeLimitSun?: number
   ): Promise<WithdrawOwnerFundsResult> {
-    const normalizedAmountSun = normalizeSunAmount(amountSun, "amountSun");
-    const resolvedFeeLimitSun = normalizeFeeLimitSun(
-      feeLimitSun,
-      this.ownerWithdrawFeeLimitSun
-    );
-
     return this.runWithOperatorLock(async () => {
-      await this.ensureResourcesForOperation(`owner-withdraw:${normalizedAmountSun}`);
-      await this.verifyResourcesStillReadyBeforeSend();
-
-      const contract = await this.contract();
-
-      try {
-        const sendResult = await withRateLimitRetry("withdrawOwnerFunds.send", async () => {
-          return await contract.withdrawOwnerFunds(normalizedAmountSun).send({
-            feeLimit: resolvedFeeLimitSun
-          });
-        });
-
-        const txid = extractTxidFromSendTransactionResult(sendResult);
-
-        return {
-          txid: assertNonEmpty(txid || "", "txid"),
-          amountSun: normalizedAmountSun
-        };
-      } catch (error) {
-        if (isRateLimitError(error)) {
-          throw wrapAsRateLimitError(error, "TRON_RATE_LIMIT");
-        }
-
-        if (isResourceSendError(error)) {
-          throw createTaggedError(
-            `Owner withdraw send failed because resources were still not sufficient at execution time. ${getErrorMessage(error)}`,
-            {
-              code: "ACCOUNT_RESOURCE_INSUFFICIENT_DURING_SEND",
-              cause: error
-            }
-          );
-        }
-
-        throw error;
-      }
+      return await this.sendWithdrawOwnerFundsWithoutLock(amountSun, feeLimitSun);
     });
   }
 
