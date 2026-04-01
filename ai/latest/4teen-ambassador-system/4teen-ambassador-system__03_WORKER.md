@@ -1,6 +1,6 @@
 # 4teen-ambassador-system — ALLOCATION WORKER
 
-Generated: 2026-04-01T17:54:42.371Z
+Generated: 2026-04-01T19:14:00.541Z
 Repository: info14fourteen-creator/4teen-ambassador-system
 Branch: main
 
@@ -86,24 +86,81 @@ import {
   AllocationDecision,
   AllocationService
 } from "../domain/allocation";
-import type { AllocationMode, PurchaseStore } from "../db/purchases";
+import type {
+  AllocationMode,
+  PurchaseRecord,
+  PurchaseStore
+} from "../db/purchases";
 import type { ControllerClient } from "../tron/controller";
+
+export interface WorkerLogger {
+  info?(payload: Record<string, unknown>): void;
+  warn?(payload: Record<string, unknown>): void;
+  error?(payload: Record<string, unknown>): void;
+}
 
 export interface ProcessAttributionConfig {
   attributionService: AttributionService;
   allocationService: AllocationService;
   store: PurchaseStore;
   controllerClient: ControllerClient;
-  logger?: {
-    info?(payload: Record<string, unknown>): void;
-    warn?(payload: Record<string, unknown>): void;
-    error?(payload: Record<string, unknown>): void;
-  };
+  tronWeb: any;
+  controllerContractAddress?: string;
+  logger?: WorkerLogger;
 }
 
 export interface ProcessFrontendAttributionResult {
   stage: "frontend-attribution";
   attribution: AttributionDecision;
+}
+
+export interface ProcessVerifiedChainEventInput {
+  txHash: string;
+  buyerWallet: string;
+  purchaseAmountSun: string;
+  ownerShareSun: string;
+  blockTimestamp: number;
+  allocationMode?: AllocationMode;
+  feeLimitSun?: number;
+}
+
+export interface ProcessVerifiedChainEventResult {
+  stage: "verified-purchase";
+  purchaseId: string | null;
+  attribution: {
+    status:
+      | "matched-local-record"
+      | "duplicate-local-record"
+      | "no-local-record"
+      | "wallet-mismatch";
+    purchase: PurchaseRecord | null;
+    slug: string | null;
+    slugHash: string | null;
+    ambassadorWallet: string | null;
+    reason: string | null;
+  };
+  verification: {
+    status:
+      | "ready-for-allocation"
+      | "already-finalized"
+      | "ignored"
+      | "no-attribution";
+    purchase: PurchaseRecord | null;
+    slug: string | null;
+    slugHash: string | null;
+    ambassadorWallet: string | null;
+    reason: string | null;
+    canAllocate: boolean;
+  };
+  allocation?: {
+    status: "allocated" | "deferred" | "failed" | "skipped";
+    purchase: PurchaseRecord;
+    ambassadorWallet: string | null;
+    txid: string | null;
+    reason: string | null;
+    errorCode: string | null;
+    errorMessage: string | null;
+  };
 }
 
 export interface ProcessVerifiedPurchaseAndAllocateInput {
@@ -135,6 +192,10 @@ function assertNonEmpty(value: string, fieldName: string): string {
   return normalized;
 }
 
+function normalizeTxHash(value: string): string {
+  return assertNonEmpty(value, "txHash").toLowerCase();
+}
+
 function normalizeSunAmount(value: string | number | bigint, fieldName: string): string {
   const normalized = String(value).trim();
 
@@ -143,27 +204,6 @@ function normalizeSunAmount(value: string | number | bigint, fieldName: string):
   }
 
   return normalized;
-}
-
-function getReadableErrorMessage(error: unknown, fallback: string): string {
-  if (
-    error &&
-    typeof error === "object" &&
-    "message" in error &&
-    typeof (error as { message?: unknown }).message === "string"
-  ) {
-    const message = String((error as { message: string }).message || "").trim();
-
-    if (message) {
-      return message;
-    }
-  }
-
-  if (typeof error === "string" && error.trim()) {
-    return error.trim();
-  }
-
-  return fallback;
 }
 
 function safeNumber(value: unknown, fallback = 0): number {
@@ -248,70 +288,247 @@ function subtractSun(left: string, right: string): string {
   return result > 0n ? result.toString() : "0";
 }
 
+function isFinalPurchaseStatus(status: PurchaseRecord["status"]): boolean {
+  return (
+    status === "allocated" ||
+    status === "withdraw_included" ||
+    status === "withdraw_completed" ||
+    status === "ignored" ||
+    status === "allocation_failed_final"
+  );
+}
+
+function getReadableErrorMessage(error: unknown, fallback: string): string {
+  if (
+    error &&
+    typeof error === "object" &&
+    "message" in error &&
+    typeof (error as { message?: unknown }).message === "string"
+  ) {
+    const message = String((error as { message: string }).message || "").trim();
+
+    if (message) {
+      return message;
+    }
+  }
+
+  if (typeof error === "string" && error.trim()) {
+    return error.trim();
+  }
+
+  return fallback;
+}
+
+async function getControllerContractInstance(input: {
+  tronWeb: any;
+  controllerContractAddress?: string;
+}): Promise<any> {
+  if (!input.tronWeb) {
+    throw new Error("tronWeb is required");
+  }
+
+  const controllerContractAddress = assertNonEmpty(
+    input.controllerContractAddress || "",
+    "controllerContractAddress"
+  );
+
+  return input.tronWeb.contract().at(controllerContractAddress);
+}
+
 async function readAmbassadorRewardData(input: {
-  controllerClient: ControllerClient;
+  tronWeb: any;
+  controllerContractAddress?: string;
   ambassadorWallet: string;
+  logger?: WorkerLogger;
 }): Promise<{
   rewardPercent: number;
   effectiveLevel: number | null;
+  source:
+    | "getRewardPercent"
+    | "getDashboardCore"
+    | "getEffectiveLevel+getRewardPercentByLevel";
   raw: Record<string, unknown>;
 }> {
-  const ambassadorWallet = assertNonEmpty(input.ambassadorWallet, "ambassadorWallet");
-  const contract = await input.controllerClient.contract();
+  const contract = await getControllerContractInstance({
+    tronWeb: input.tronWeb,
+    controllerContractAddress: input.controllerContractAddress
+  });
 
+  const ambassadorWallet = assertNonEmpty(input.ambassadorWallet, "ambassadorWallet");
   const raw: Record<string, unknown> = {};
 
   if (typeof contract.getRewardPercent === "function") {
-    const rewardPercentRaw = await contract.getRewardPercent(ambassadorWallet).call();
-    raw.getRewardPercent = rewardPercentRaw;
+    try {
+      const rewardPercentRaw = await contract.getRewardPercent(ambassadorWallet).call();
+      raw.getRewardPercent = rewardPercentRaw;
 
-    const rewardPercent = parsePercentStrict(
-      pickTupleValue(rewardPercentRaw, 0),
-      "getRewardPercent"
-    );
+      const rewardPercent = parsePercentStrict(
+        pickTupleValue(rewardPercentRaw, 0),
+        "getRewardPercent"
+      );
 
-    let effectiveLevel: number | null = null;
+      let effectiveLevel: number | null = null;
 
-    if (typeof contract.getEffectiveLevel === "function") {
-      try {
-        const effectiveLevelRaw = await contract.getEffectiveLevel(ambassadorWallet).call();
-        raw.getEffectiveLevel = effectiveLevelRaw;
-        effectiveLevel = safeNumber(pickTupleValue(effectiveLevelRaw, 0), 0);
-      } catch (error) {
-        raw.getEffectiveLevelError =
-          error instanceof Error ? error.message : String(error);
+      if (typeof contract.getEffectiveLevel === "function") {
+        try {
+          const effectiveLevelRaw = await contract.getEffectiveLevel(ambassadorWallet).call();
+          raw.getEffectiveLevel = effectiveLevelRaw;
+          effectiveLevel = Math.floor(
+            safeNumber(pickTupleValue(effectiveLevelRaw, 0), 0)
+          );
+        } catch (error) {
+          raw.getEffectiveLevelError =
+            error instanceof Error ? error.message : String(error);
+        }
       }
-    }
 
-    return {
-      rewardPercent,
-      effectiveLevel,
-      raw
-    };
+      return {
+        rewardPercent,
+        effectiveLevel,
+        source: "getRewardPercent",
+        raw
+      };
+    } catch (error) {
+      raw.getRewardPercentError = error instanceof Error ? error.message : String(error);
+    }
   }
 
   if (typeof contract.getDashboardCore === "function") {
-    const coreRaw = await contract.getDashboardCore(ambassadorWallet).call();
-    raw.getDashboardCore = coreRaw;
+    try {
+      const coreRaw = await contract.getDashboardCore(ambassadorWallet).call();
+      raw.getDashboardCore = coreRaw;
 
-    const rewardPercent = parsePercentStrict(
-      pickTupleValue(coreRaw, 3, "rewardPercent"),
-      "getDashboardCore.rewardPercent"
-    );
+      const rewardPercent = parsePercentStrict(
+        pickTupleValue(coreRaw, 3, "rewardPercent"),
+        "getDashboardCore.rewardPercent"
+      );
 
-    const effectiveLevel = safeNumber(
-      pickTupleValue(coreRaw, 2, "effectiveLevel"),
-      0
-    );
+      const effectiveLevel = Math.floor(
+        safeNumber(pickTupleValue(coreRaw, 2, "effectiveLevel"), 0)
+      );
 
+      return {
+        rewardPercent,
+        effectiveLevel,
+        source: "getDashboardCore",
+        raw
+      };
+    } catch (error) {
+      raw.getDashboardCoreError = error instanceof Error ? error.message : String(error);
+    }
+  }
+
+  if (
+    typeof contract.getEffectiveLevel === "function" &&
+    typeof contract.getRewardPercentByLevel === "function"
+  ) {
+    try {
+      const effectiveLevelRaw = await contract.getEffectiveLevel(ambassadorWallet).call();
+      raw.getEffectiveLevel = effectiveLevelRaw;
+
+      const effectiveLevel = safeNumber(pickTupleValue(effectiveLevelRaw, 0), Number.NaN);
+
+      if (!Number.isFinite(effectiveLevel) || effectiveLevel < 0) {
+        throw new Error("Invalid effective level");
+      }
+
+      const normalizedLevel = Math.floor(effectiveLevel);
+
+      const rewardPercentByLevelRaw = await contract
+        .getRewardPercentByLevel(normalizedLevel)
+        .call();
+
+      raw.getRewardPercentByLevel = rewardPercentByLevelRaw;
+
+      const rewardPercent = parsePercentStrict(
+        pickTupleValue(rewardPercentByLevelRaw, 0),
+        "getRewardPercentByLevel"
+      );
+
+      return {
+        rewardPercent,
+        effectiveLevel: normalizedLevel,
+        source: "getEffectiveLevel+getRewardPercentByLevel",
+        raw
+      };
+    } catch (error) {
+      raw.getEffectiveLevelPlusByLevelError =
+        error instanceof Error ? error.message : String(error);
+    }
+  }
+
+  input.logger?.error?.({
+    scope: "allocation",
+    stage: "reward-percent-read-failed",
+    ambassadorWallet,
+    raw
+  });
+
+  throw new Error("Unable to read ambassador reward percent from controller");
+}
+
+function mapAllocationAttemptToApiResult(
+  result: Awaited<ReturnType<AllocationService["tryAllocateVerifiedPurchase"]>>
+): {
+  status: "allocated" | "deferred" | "failed" | "skipped";
+  purchase: PurchaseRecord;
+  ambassadorWallet: string | null;
+  txid: string | null;
+  reason: string | null;
+  errorCode: string | null;
+  errorMessage: string | null;
+} {
+  if (result.status === "allocated") {
     return {
-      rewardPercent,
-      effectiveLevel,
-      raw
+      status: "allocated",
+      purchase: result.purchase,
+      ambassadorWallet: result.purchase.ambassadorWallet,
+      txid: result.txid,
+      reason: null,
+      errorCode: null,
+      errorMessage: null
     };
   }
 
-  throw new Error("Unable to read ambassador reward percent from controller");
+  if (
+    result.status === "deferred" ||
+    result.status === "stopped-on-resource-shortage"
+  ) {
+    return {
+      status: "deferred",
+      purchase: result.purchase,
+      ambassadorWallet: result.purchase.ambassadorWallet,
+      txid: null,
+      reason: result.reason,
+      errorCode: result.errorCode,
+      errorMessage: result.errorMessage
+    };
+  }
+
+  if (
+    result.status === "skipped-already-final" ||
+    result.status === "skipped-no-ambassador-wallet"
+  ) {
+    return {
+      status: "skipped",
+      purchase: result.purchase,
+      ambassadorWallet: result.purchase.ambassadorWallet,
+      txid: null,
+      reason: result.reason,
+      errorCode: result.errorCode,
+      errorMessage: result.errorMessage
+    };
+  }
+
+  return {
+    status: "failed",
+    purchase: result.purchase,
+    ambassadorWallet: result.purchase.ambassadorWallet,
+    txid: null,
+    reason: result.reason,
+    errorCode: result.errorCode,
+    errorMessage: result.errorMessage
+  };
 }
 
 export class AttributionProcessor {
@@ -319,7 +536,9 @@ export class AttributionProcessor {
   private readonly allocationService: AllocationService;
   private readonly store: PurchaseStore;
   private readonly controllerClient: ControllerClient;
-  private readonly logger?: ProcessAttributionConfig["logger"];
+  private readonly tronWeb: any;
+  private readonly controllerContractAddress?: string;
+  private readonly logger?: WorkerLogger;
 
   constructor(config: ProcessAttributionConfig) {
     if (!config?.attributionService) {
@@ -338,10 +557,16 @@ export class AttributionProcessor {
       throw new Error("controllerClient is required");
     }
 
+    if (!config?.tronWeb) {
+      throw new Error("tronWeb is required");
+    }
+
     this.attributionService = config.attributionService;
     this.allocationService = config.allocationService;
     this.store = config.store;
     this.controllerClient = config.controllerClient;
+    this.tronWeb = config.tronWeb;
+    this.controllerContractAddress = config.controllerContractAddress;
     this.logger = config.logger;
   }
 
@@ -356,16 +581,278 @@ export class AttributionProcessor {
     };
   }
 
+  private async ensureVerifiedPurchaseRewardSplit(input: {
+    purchase: PurchaseRecord;
+    txHash: string;
+    buyerWallet: string;
+    purchaseAmountSun: string;
+    ownerShareSun: string;
+    now: number;
+  }): Promise<PurchaseRecord> {
+    const purchase = input.purchase;
+
+    if (!purchase.ambassadorWallet) {
+      return purchase;
+    }
+
+    const rewardData = await readAmbassadorRewardData({
+      tronWeb: this.tronWeb,
+      controllerContractAddress: this.controllerContractAddress,
+      ambassadorWallet: purchase.ambassadorWallet,
+      logger: this.logger
+    });
+
+    const ambassadorRewardSun = dividePercentFloor(
+      input.ownerShareSun,
+      rewardData.rewardPercent
+    );
+    const ownerPayoutSun = subtractSun(input.ownerShareSun, ambassadorRewardSun);
+
+    const updatedPurchase = await this.store.markVerifiedPurchase({
+      purchaseId: purchase.purchaseId,
+      txHash: input.txHash,
+      buyerWallet: input.buyerWallet,
+      purchaseAmountSun: input.purchaseAmountSun,
+      ownerShareSun: input.ownerShareSun,
+      ambassadorRewardSun,
+      ownerPayoutSun,
+      now: input.now
+    });
+
+    this.logger?.info?.({
+      scope: "allocation",
+      stage: "reward-share-calculated",
+      purchaseId: updatedPurchase.purchaseId,
+      txHash: input.txHash,
+      ambassadorWallet: updatedPurchase.ambassadorWallet,
+      ownerShareSun: input.ownerShareSun,
+      rewardPercent: rewardData.rewardPercent,
+      effectiveLevel: rewardData.effectiveLevel,
+      rewardSource: rewardData.source,
+      ambassadorRewardSun,
+      ownerPayoutSun,
+      rawRewardData: rewardData.raw
+    });
+
+    return updatedPurchase;
+  }
+
+  async processVerifiedChainEvent(
+    input: ProcessVerifiedChainEventInput
+  ): Promise<ProcessVerifiedChainEventResult> {
+    const txHash = normalizeTxHash(input.txHash);
+    const buyerWallet = assertNonEmpty(input.buyerWallet, "buyerWallet");
+    const purchaseAmountSun = normalizeSunAmount(input.purchaseAmountSun, "purchaseAmountSun");
+    const ownerShareSun = normalizeSunAmount(input.ownerShareSun, "ownerShareSun");
+    const blockTimestamp = Number(input.blockTimestamp);
+    const allocationMode = input.allocationMode ?? "eager";
+
+    if (!Number.isFinite(blockTimestamp) || blockTimestamp <= 0) {
+      throw new Error("blockTimestamp must be a positive number");
+    }
+
+    const purchase = await this.store.getByTxHash(txHash);
+
+    if (!purchase) {
+      return {
+        stage: "verified-purchase",
+        purchaseId: null,
+        attribution: {
+          status: "no-local-record",
+          purchase: null,
+          slug: null,
+          slugHash: null,
+          ambassadorWallet: null,
+          reason: "No local attribution record found for txHash"
+        },
+        verification: {
+          status: "no-attribution",
+          purchase: null,
+          slug: null,
+          slugHash: null,
+          ambassadorWallet: null,
+          reason: "No local attribution record found for txHash",
+          canAllocate: false
+        }
+      };
+    }
+
+    if (
+      purchase.buyerWallet &&
+      purchase.buyerWallet.toLowerCase() !== buyerWallet.toLowerCase()
+    ) {
+      return {
+        stage: "verified-purchase",
+        purchaseId: purchase.purchaseId,
+        attribution: {
+          status: "wallet-mismatch",
+          purchase,
+          slug: purchase.ambassadorSlug,
+          slugHash: purchase.ambassadorSlug ? await this.controllerClient.hashSlug?.(purchase.ambassadorSlug) ?? null : null,
+          ambassadorWallet: purchase.ambassadorWallet,
+          reason: "Buyer wallet mismatch for txHash"
+        },
+        verification: {
+          status: "ignored",
+          purchase,
+          slug: purchase.ambassadorSlug,
+          slugHash: null,
+          ambassadorWallet: purchase.ambassadorWallet,
+          reason: "Buyer wallet mismatch for txHash",
+          canAllocate: false
+        }
+      };
+    }
+
+    if (isFinalPurchaseStatus(purchase.status)) {
+      return {
+        stage: "verified-purchase",
+        purchaseId: purchase.purchaseId,
+        attribution: {
+          status: "duplicate-local-record",
+          purchase,
+          slug: purchase.ambassadorSlug,
+          slugHash: null,
+          ambassadorWallet: purchase.ambassadorWallet,
+          reason: "Purchase already finalized"
+        },
+        verification: {
+          status: "already-finalized",
+          purchase,
+          slug: purchase.ambassadorSlug,
+          slugHash: null,
+          ambassadorWallet: purchase.ambassadorWallet,
+          reason: `Purchase already finalized with status: ${purchase.status}`,
+          canAllocate: false
+        }
+      };
+    }
+
+    if (!purchase.ambassadorSlug) {
+      return {
+        stage: "verified-purchase",
+        purchaseId: purchase.purchaseId,
+        attribution: {
+          status: "matched-local-record",
+          purchase,
+          slug: null,
+          slugHash: null,
+          ambassadorWallet: purchase.ambassadorWallet,
+          reason: "Purchase exists locally but ambassador slug is missing"
+        },
+        verification: {
+          status: "ignored",
+          purchase,
+          slug: null,
+          slugHash: null,
+          ambassadorWallet: purchase.ambassadorWallet,
+          reason: "Purchase exists locally but ambassador slug is missing",
+          canAllocate: false
+        }
+      };
+    }
+
+    const verification = await this.attributionService.prepareVerifiedPurchase({
+      purchaseId: purchase.purchaseId,
+      txHash,
+      buyerWallet,
+      slug: purchase.ambassadorSlug,
+      purchaseAmountSun,
+      ownerShareSun,
+      now: blockTimestamp
+    });
+
+    let verifiedPurchase = verification.purchase;
+
+    if (verification.canAllocate) {
+      verifiedPurchase = await this.ensureVerifiedPurchaseRewardSplit({
+        purchase: verification.purchase,
+        txHash,
+        buyerWallet,
+        purchaseAmountSun,
+        ownerShareSun,
+        now: blockTimestamp
+      });
+    }
+
+    if (!verification.canAllocate) {
+      return {
+        stage: "verified-purchase",
+        purchaseId: verifiedPurchase.purchaseId,
+        attribution: {
+          status:
+            purchase.status === "received"
+              ? "matched-local-record"
+              : "duplicate-local-record",
+          purchase: verifiedPurchase,
+          slug: verification.slug,
+          slugHash: verification.slugHash,
+          ambassadorWallet: verification.ambassadorWallet,
+          reason:
+            purchase.status === "received"
+              ? null
+              : "Purchase already exists in local store"
+        },
+        verification: {
+          status:
+            verification.status === "already-processed-on-chain"
+              ? "already-finalized"
+              : "ignored",
+          purchase: verifiedPurchase,
+          slug: verification.slug,
+          slugHash: verification.slugHash,
+          ambassadorWallet: verification.ambassadorWallet,
+          reason: verification.reason,
+          canAllocate: false
+        }
+      };
+    }
+
+    const allocationResult = await this.allocationService.tryAllocateVerifiedPurchase(
+      verifiedPurchase.purchaseId,
+      {
+        feeLimitSun: input.feeLimitSun,
+        allocationMode
+      }
+    );
+
+    return {
+      stage: "verified-purchase",
+      purchaseId: verifiedPurchase.purchaseId,
+      attribution: {
+        status:
+          purchase.status === "received"
+            ? "matched-local-record"
+            : "duplicate-local-record",
+        purchase: allocationResult.purchase,
+        slug: verification.slug,
+        slugHash: verification.slugHash,
+        ambassadorWallet: allocationResult.purchase.ambassadorWallet,
+        reason:
+          purchase.status === "received"
+            ? null
+            : "Purchase already exists in local store"
+      },
+      verification: {
+        status: "ready-for-allocation",
+        purchase: allocationResult.purchase,
+        slug: verification.slug,
+        slugHash: verification.slugHash,
+        ambassadorWallet: allocationResult.purchase.ambassadorWallet,
+        reason: null,
+        canAllocate: true
+      },
+      allocation: mapAllocationAttemptToApiResult(allocationResult)
+    };
+  }
+
   async processVerifiedPurchaseAndAllocate(
     input: ProcessVerifiedPurchaseAndAllocateInput
   ): Promise<ProcessVerifiedPurchaseAndAllocateResult> {
-    const txHash = assertNonEmpty(input.txHash, "txHash");
+    const txHash = normalizeTxHash(input.txHash);
     const buyerWallet = assertNonEmpty(input.buyerWallet, "buyerWallet");
     const slug = assertNonEmpty(input.slug, "slug");
-    const purchaseAmountSun = normalizeSunAmount(
-      input.purchaseAmountSun,
-      "purchaseAmountSun"
-    );
+    const purchaseAmountSun = normalizeSunAmount(input.purchaseAmountSun, "purchaseAmountSun");
     const ownerShareSun = normalizeSunAmount(input.ownerShareSun, "ownerShareSun");
     const now = input.now ?? Date.now();
     const allocationMode = input.allocationMode ?? "eager";
@@ -397,64 +884,27 @@ export class AttributionProcessor {
       now
     });
 
-    let verifiedPurchase = verification.purchase;
-
-    if (verification.canAllocate && verifiedPurchase.ambassadorWallet) {
-      const rewardData = await readAmbassadorRewardData({
-        controllerClient: this.controllerClient,
-        ambassadorWallet: verifiedPurchase.ambassadorWallet
-      });
-
-      const ambassadorRewardSun = dividePercentFloor(
-        ownerShareSun,
-        rewardData.rewardPercent
-      );
-      const ownerPayoutSun = subtractSun(ownerShareSun, ambassadorRewardSun);
-
-      verifiedPurchase = await this.store.markVerifiedPurchase({
-        purchaseId: verifiedPurchase.purchaseId,
-        txHash,
-        buyerWallet,
-        purchaseAmountSun,
-        ownerShareSun,
-        ambassadorRewardSun,
-        ownerPayoutSun,
-        now
-      });
-
-      this.logger?.info?.({
-        scope: "allocation",
-        stage: "reward-share-calculated",
-        purchaseId: verifiedPurchase.purchaseId,
-        txHash,
-        ambassadorWallet: verifiedPurchase.ambassadorWallet,
-        ownerShareSun,
-        rewardPercent: rewardData.rewardPercent,
-        effectiveLevel: rewardData.effectiveLevel,
-        ambassadorRewardSun,
-        ownerPayoutSun,
-        rawRewardData: rewardData.raw
-      });
-    }
-
-    const patchedVerification: PrepareVerifiedPurchaseResult = {
-      ...verification,
-      purchase: verifiedPurchase,
-      ambassadorWallet: verifiedPurchase.ambassadorWallet
-    };
-
-    if (!patchedVerification.canAllocate) {
+    if (!verification.canAllocate) {
       return {
         stage: "verified-purchase",
         purchaseId,
         attribution,
-        verification: patchedVerification,
+        verification,
         allocation: null
       };
     }
 
+    const verifiedPurchaseWithSplit = await this.ensureVerifiedPurchaseRewardSplit({
+      purchase: verification.purchase,
+      txHash,
+      buyerWallet,
+      purchaseAmountSun,
+      ownerShareSun,
+      now
+    });
+
     const allocation = await this.allocationService.executeAllocation({
-      purchaseId,
+      purchaseId: verifiedPurchaseWithSplit.purchaseId,
       feeLimitSun: input.feeLimitSun,
       allocationMode,
       now
@@ -464,7 +914,10 @@ export class AttributionProcessor {
       stage: "verified-purchase",
       purchaseId,
       attribution,
-      verification: patchedVerification,
+      verification: {
+        ...verification,
+        purchase: verifiedPurchaseWithSplit
+      },
       allocation
     };
   }
