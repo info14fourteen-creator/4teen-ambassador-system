@@ -1,6 +1,6 @@
 # 4teen-ambassador-system — ALLOCATION WORKER
 
-Generated: 2026-04-01T19:44:39.480Z
+Generated: 2026-04-01T19:47:26.232Z
 Repository: info14fourteen-creator/4teen-ambassador-system
 Branch: main
 
@@ -196,7 +196,10 @@ function normalizeTxHash(value: string): string {
   return assertNonEmpty(value, "txHash").toLowerCase();
 }
 
-function normalizeSunAmount(value: string | number | bigint, fieldName: string): string {
+function normalizeSunAmount(
+  value: string | number | bigint,
+  fieldName: string
+): string {
   const normalized = String(value).trim();
 
   if (!/^\d+$/.test(normalized)) {
@@ -426,7 +429,10 @@ async function readAmbassadorRewardData(input: {
       const effectiveLevelRaw = await contract.getEffectiveLevel(ambassadorWallet).call();
       raw.getEffectiveLevel = effectiveLevelRaw;
 
-      const effectiveLevel = safeNumber(pickTupleValue(effectiveLevelRaw, 0), Number.NaN);
+      const effectiveLevel = safeNumber(
+        pickTupleValue(effectiveLevelRaw, 0),
+        Number.NaN
+      );
 
       if (!Number.isFinite(effectiveLevel) || effectiveLevel < 0) {
         throw new Error("Invalid effective level");
@@ -642,7 +648,10 @@ export class AttributionProcessor {
   ): Promise<ProcessVerifiedChainEventResult> {
     const txHash = normalizeTxHash(input.txHash);
     const buyerWallet = assertNonEmpty(input.buyerWallet, "buyerWallet");
-    const purchaseAmountSun = normalizeSunAmount(input.purchaseAmountSun, "purchaseAmountSun");
+    const purchaseAmountSun = normalizeSunAmount(
+      input.purchaseAmountSun,
+      "purchaseAmountSun"
+    );
     const ownerShareSun = normalizeSunAmount(input.ownerShareSun, "ownerShareSun");
     const blockTimestamp = Number(input.blockTimestamp);
     const allocationMode = input.allocationMode ?? "eager";
@@ -688,7 +697,7 @@ export class AttributionProcessor {
           status: "wallet-mismatch",
           purchase,
           slug: purchase.ambassadorSlug,
-          slugHash: purchase.ambassadorSlug ? await this.controllerClient.hashSlug?.(purchase.ambassadorSlug) ?? null : null,
+          slugHash: null,
           ambassadorWallet: purchase.ambassadorWallet,
           reason: "Buyer wallet mismatch for txHash"
         },
@@ -852,7 +861,10 @@ export class AttributionProcessor {
     const txHash = normalizeTxHash(input.txHash);
     const buyerWallet = assertNonEmpty(input.buyerWallet, "buyerWallet");
     const slug = assertNonEmpty(input.slug, "slug");
-    const purchaseAmountSun = normalizeSunAmount(input.purchaseAmountSun, "purchaseAmountSun");
+    const purchaseAmountSun = normalizeSunAmount(
+      input.purchaseAmountSun,
+      "purchaseAmountSun"
+    );
     const ownerShareSun = normalizeSunAmount(input.ownerShareSun, "ownerShareSun");
     const now = input.now ?? Date.now();
     const allocationMode = input.allocationMode ?? "eager";
