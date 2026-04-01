@@ -1,4 +1,3 @@
-// services/allocation-worker/src/jobs/finalizeAmbassadorWithdrawal.ts
 import type { AllocationWorker } from "../index";
 
 export interface FinalizeAmbassadorWithdrawalJobOptions {
@@ -19,6 +18,7 @@ export interface FinalizeAmbassadorWithdrawalJobItem {
   ambassadorWallet: string;
   purchaseAmountSun: string;
   ownerShareSun: string;
+  previousStatus: string;
   status: string;
   withdrawSessionId: string | null;
   finalized: boolean;
@@ -116,89 +116,25 @@ async function resolveAmbassadorWallet(
 
 async function loadWithdrawIncludedPurchases(
   worker: AllocationWorker,
-  input: {
+  options: {
     ambassadorWallet: string;
     withdrawSessionId?: string;
     limit: number;
   }
 ): Promise<any[]> {
   const rows = await worker.store.listPendingByAmbassador({
-    ambassadorWallet: input.ambassadorWallet,
+    ambassadorWallet: options.ambassadorWallet,
     statuses: ["withdraw_included"],
-    limit: input.limit
+    limit: options.limit
   });
+
+  if (!options.withdrawSessionId) {
+    return rows;
+  }
 
   return rows.filter((purchase) => {
-    if (purchase.status !== "withdraw_included") {
-      return false;
-    }
-
-    if (!purchase.withdrawSessionId) {
-      return false;
-    }
-
-    if (
-      input.withdrawSessionId &&
-      purchase.withdrawSessionId !== input.withdrawSessionId
-    ) {
-      return false;
-    }
-
-    return true;
+    return String(purchase.withdrawSessionId || "").trim() === options.withdrawSessionId;
   });
-}
-
-function mapSkippedItem(
-  purchase: any,
-  reason: string
-): FinalizeAmbassadorWithdrawalJobItem {
-  return {
-    purchaseId: String(purchase.purchaseId || ""),
-    txHash: String(purchase.txHash || ""),
-    buyerWallet: String(purchase.buyerWallet || ""),
-    ambassadorSlug: String(purchase.ambassadorSlug || ""),
-    ambassadorWallet: String(purchase.ambassadorWallet || ""),
-    purchaseAmountSun: String(purchase.purchaseAmountSun ?? "0"),
-    ownerShareSun: String(purchase.ownerShareSun ?? "0"),
-    status: String(purchase.status || "unknown"),
-    withdrawSessionId: purchase.withdrawSessionId
-      ? String(purchase.withdrawSessionId)
-      : null,
-    finalized: false,
-    reason
-  };
-}
-
-function mapFinalizedItem(
-  updated: any,
-  fallback: any
-): FinalizeAmbassadorWithdrawalJobItem {
-  const row = updated || fallback || {};
-
-  return {
-    purchaseId: String(row.purchaseId || fallback?.purchaseId || ""),
-    txHash: String(row.txHash || fallback?.txHash || ""),
-    buyerWallet: String(row.buyerWallet || fallback?.buyerWallet || ""),
-    ambassadorSlug: String(row.ambassadorSlug || fallback?.ambassadorSlug || ""),
-    ambassadorWallet: String(
-      row.ambassadorWallet || fallback?.ambassadorWallet || ""
-    ),
-    purchaseAmountSun: String(
-      row.purchaseAmountSun ?? fallback?.purchaseAmountSun ?? "0"
-    ),
-    ownerShareSun: String(
-      row.ownerShareSun ?? fallback?.ownerShareSun ?? "0"
-    ),
-    status: String(row.status || "withdraw_completed"),
-    withdrawSessionId:
-      row.withdrawSessionId != null
-        ? String(row.withdrawSessionId)
-        : fallback?.withdrawSessionId != null
-          ? String(fallback.withdrawSessionId)
-          : null,
-    finalized: true,
-    reason: null
-  };
 }
 
 export async function finalizeAmbassadorWithdrawal(
@@ -209,6 +145,8 @@ export async function finalizeAmbassadorWithdrawal(
   const logger = options.logger ?? console;
   const now = options.now ?? Date.now();
   const limit = toPositiveInteger(options.limit, 1000);
+  const txid = normalizeOptionalString(options.txid) ?? null;
+  const requestedWithdrawSessionId = normalizeOptionalString(options.withdrawSessionId) ?? null;
 
   const resolved = await resolveAmbassadorWallet(worker, {
     ambassadorSlug: options.ambassadorSlug,
@@ -217,14 +155,12 @@ export async function finalizeAmbassadorWithdrawal(
 
   const ambassadorSlug = resolved.ambassadorSlug;
   const ambassadorWallet = resolved.ambassadorWallet;
-  const withdrawSessionId = normalizeOptionalString(options.withdrawSessionId) ?? null;
-  const txid = normalizeOptionalString(options.txid) ?? null;
 
   const result: FinalizeAmbassadorWithdrawalJobResult = {
     ok: true,
     ambassadorSlug,
     ambassadorWallet,
-    withdrawSessionId,
+    withdrawSessionId: requestedWithdrawSessionId,
     txid,
     scanned: 0,
     finalized: 0,
@@ -241,7 +177,7 @@ export async function finalizeAmbassadorWithdrawal(
 
     const purchases = await loadWithdrawIncludedPurchases(worker, {
       ambassadorWallet,
-      withdrawSessionId: withdrawSessionId ?? undefined,
+      withdrawSessionId: requestedWithdrawSessionId ?? undefined,
       limit
     });
 
@@ -254,7 +190,7 @@ export async function finalizeAmbassadorWithdrawal(
         message: "Loaded purchases for withdrawal finalization",
         ambassadorSlug,
         ambassadorWallet,
-        withdrawSessionId,
+        withdrawSessionId: requestedWithdrawSessionId,
         txid,
         scanned: result.scanned,
         limit
@@ -271,7 +207,7 @@ export async function finalizeAmbassadorWithdrawal(
           message: "No withdraw_included purchases found for finalization",
           ambassadorSlug,
           ambassadorWallet,
-          withdrawSessionId,
+          withdrawSessionId: requestedWithdrawSessionId,
           txid,
           scanned: 0,
           durationMs: result.finishedAt - result.startedAt
@@ -282,43 +218,71 @@ export async function finalizeAmbassadorWithdrawal(
     }
 
     for (const purchase of purchases) {
-      const currentStatus = String(purchase.status || "").trim();
-      const currentWithdrawSessionId = normalizeOptionalString(
-        purchase.withdrawSessionId
-      );
+      const previousStatus = String(purchase.status || "").trim();
+      const currentWithdrawSessionId = String(purchase.withdrawSessionId || "").trim();
 
-      if (currentStatus !== "withdraw_included") {
+      if (previousStatus !== "withdraw_included") {
         result.skipped += 1;
-        result.items.push(
-          mapSkippedItem(
-            purchase,
-            `Unsupported status for withdrawal finalization: ${currentStatus || "unknown"}`
-          )
-        );
+        result.items.push({
+          purchaseId: String(purchase.purchaseId || ""),
+          txHash: String(purchase.txHash || ""),
+          buyerWallet: String(purchase.buyerWallet || ""),
+          ambassadorSlug: String(purchase.ambassadorSlug || ""),
+          ambassadorWallet: String(purchase.ambassadorWallet || ""),
+          purchaseAmountSun: String(purchase.purchaseAmountSun ?? "0"),
+          ownerShareSun: String(purchase.ownerShareSun ?? "0"),
+          previousStatus,
+          status: previousStatus || "unknown",
+          withdrawSessionId: currentWithdrawSessionId || null,
+          finalized: false,
+          reason: `Unsupported status for withdrawal finalization: ${previousStatus || "unknown"}`
+        });
         continue;
       }
 
-      if (!currentWithdrawSessionId) {
+      if (
+        requestedWithdrawSessionId &&
+        currentWithdrawSessionId !== requestedWithdrawSessionId
+      ) {
         result.skipped += 1;
-        result.items.push(
-          mapSkippedItem(
-            purchase,
-            "withdrawSessionId is missing for withdraw_included purchase"
-          )
-        );
+        result.items.push({
+          purchaseId: String(purchase.purchaseId || ""),
+          txHash: String(purchase.txHash || ""),
+          buyerWallet: String(purchase.buyerWallet || ""),
+          ambassadorSlug: String(purchase.ambassadorSlug || ""),
+          ambassadorWallet: String(purchase.ambassadorWallet || ""),
+          purchaseAmountSun: String(purchase.purchaseAmountSun ?? "0"),
+          ownerShareSun: String(purchase.ownerShareSun ?? "0"),
+          previousStatus,
+          status: previousStatus,
+          withdrawSessionId: currentWithdrawSessionId || null,
+          finalized: false,
+          reason: "Withdraw session mismatch"
+        });
         continue;
       }
 
-      const updated = await worker.store.markWithdrawCompleted(
-        String(purchase.purchaseId),
-        {
-          withdrawSessionId: null,
-          now
-        }
-      );
+      const updated = await worker.store.markWithdrawCompleted(String(purchase.purchaseId), {
+        withdrawSessionId: currentWithdrawSessionId || null,
+        now
+      });
 
       result.finalized += 1;
-      result.items.push(mapFinalizedItem(updated, purchase));
+
+      result.items.push({
+        purchaseId: String(updated?.purchaseId || purchase.purchaseId || ""),
+        txHash: String(updated?.txHash || purchase.txHash || ""),
+        buyerWallet: String(updated?.buyerWallet || purchase.buyerWallet || ""),
+        ambassadorSlug: String(updated?.ambassadorSlug || purchase.ambassadorSlug || ""),
+        ambassadorWallet: String(updated?.ambassadorWallet || purchase.ambassadorWallet || ""),
+        purchaseAmountSun: String(updated?.purchaseAmountSun ?? purchase.purchaseAmountSun ?? "0"),
+        ownerShareSun: String(updated?.ownerShareSun ?? purchase.ownerShareSun ?? "0"),
+        previousStatus,
+        status: String(updated?.status || "withdraw_completed"),
+        withdrawSessionId: String(updated?.withdrawSessionId || currentWithdrawSessionId || "") || null,
+        finalized: true,
+        reason: null
+      });
     }
 
     result.finishedAt = Date.now();
@@ -330,7 +294,7 @@ export async function finalizeAmbassadorWithdrawal(
         message: "Ambassador withdrawal finalization finished",
         ambassadorSlug,
         ambassadorWallet,
-        withdrawSessionId,
+        withdrawSessionId: requestedWithdrawSessionId,
         txid,
         scanned: result.scanned,
         finalized: result.finalized,
@@ -350,7 +314,7 @@ export async function finalizeAmbassadorWithdrawal(
         job: "finalizeAmbassadorWithdrawal",
         ambassadorSlug,
         ambassadorWallet,
-        withdrawSessionId,
+        withdrawSessionId: requestedWithdrawSessionId,
         txid,
         error: toErrorMessage(error)
       })
