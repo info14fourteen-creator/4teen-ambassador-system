@@ -26,10 +26,19 @@ export interface RunScanConfig {
         canAllocate: boolean;
         reason: string | null;
       };
-      allocation: {
-        status: "allocated" | "deferred" | "failed" | "skipped";
-        reason: string | null;
-      } | null;
+      allocation:
+        | {
+            status:
+              | "allocated"
+              | "deferred"
+              | "retryable-failed"
+              | "final-failed"
+              | "skipped-already-final"
+              | "skipped-no-ambassador-wallet"
+              | "stopped-on-resource-shortage";
+            reason: string | null;
+          }
+        | null;
     }>;
   };
   store: PurchaseStore;
@@ -498,7 +507,10 @@ export class BuyTokensScanner {
       };
     }
 
-    if (result.allocation.status === "deferred") {
+    if (
+      result.allocation.status === "deferred" ||
+      result.allocation.status === "stopped-on-resource-shortage"
+    ) {
       return {
         status: "deferred",
         event,
