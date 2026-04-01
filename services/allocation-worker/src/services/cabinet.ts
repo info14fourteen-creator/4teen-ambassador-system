@@ -163,6 +163,28 @@ function safeNumber(value: unknown, fallback = 0): number {
 }
 
 function safeBoolean(value: unknown): boolean {
+  if (typeof value === "boolean") {
+    return value;
+  }
+
+  if (typeof value === "number") {
+    return value !== 0;
+  }
+
+  if (typeof value === "bigint") {
+    return value !== 0n;
+  }
+
+  if (typeof value === "string") {
+    const normalized = value.trim().toLowerCase();
+
+    if (!normalized) return false;
+    if (normalized === "true") return true;
+    if (normalized === "false") return false;
+    if (normalized === "1") return true;
+    if (normalized === "0") return false;
+  }
+
   return Boolean(value);
 }
 
@@ -214,11 +236,20 @@ function buildReferralLink(slug: string): string {
 
 function normalizeHex32(value: unknown): string {
   const raw = String(value ?? "").trim().toLowerCase();
-  return raw || ZERO_BYTES32;
+
+  if (!raw) {
+    return ZERO_BYTES32;
+  }
+
+  if (/^0x[0-9a-f]{64}$/.test(raw)) {
+    return raw;
+  }
+
+  return ZERO_BYTES32;
 }
 
 function normalizeMetaHash(value: unknown): string | null {
-  const raw = String(value ?? "").trim().toLowerCase();
+  const raw = normalizeHex32(value);
 
   if (!raw || raw === ZERO_BYTES32) {
     return null;
@@ -227,8 +258,13 @@ function normalizeMetaHash(value: unknown): string | null {
   return raw;
 }
 
+function normalizeSlugHash(value: unknown): string {
+  const raw = normalizeHex32(value);
+  return raw || ZERO_BYTES32;
+}
+
 function pickTupleValue(source: any, index: number, key?: string): unknown {
-  if (Array.isArray(source)) {
+  if (Array.isArray(source) && source[index] !== undefined) {
     return source[index];
   }
 
@@ -243,7 +279,31 @@ function pickTupleValue(source: any, index: number, key?: string): unknown {
     }
 
     const values = Object.values(source);
-    return values[index];
+    if (values[index] !== undefined) {
+      return values[index];
+    }
+  }
+
+  return undefined;
+}
+
+function pickFirstDefined(
+  source: any,
+  candidates: Array<{ index: number; keys?: string[] }>
+): unknown {
+  for (const candidate of candidates) {
+    const keys = candidate.keys ?? [];
+    for (const key of keys) {
+      const value = pickTupleValue(source, candidate.index, key);
+      if (value !== undefined && value !== null && value !== "") {
+        return value;
+      }
+    }
+
+    const fallbackValue = pickTupleValue(source, candidate.index);
+    if (fallbackValue !== undefined && fallbackValue !== null && fallbackValue !== "") {
+      return fallbackValue;
+    }
   }
 
   return undefined;
@@ -377,6 +437,22 @@ function extractReplayReason(result: unknown): string | null {
   return null;
 }
 
+function logJson(level: "info" | "warn" | "error", payload: Record<string, unknown>): void {
+  const line = JSON.stringify({ level, scope: "cabinet", ...payload });
+
+  if (level === "error") {
+    console.error(line);
+    return;
+  }
+
+  if (level === "warn") {
+    console.warn(line);
+    return;
+  }
+
+  console.log(line);
+}
+
 export class CabinetService {
   private readonly store: PurchaseStore;
   private readonly tronWeb: any;
@@ -414,6 +490,26 @@ export class CabinetService {
     return this.contractInstance;
   }
 
+  private async readContractTuple(
+    contract: any,
+    methodName: string,
+    wallet: string
+  ): Promise<any> {
+    const method = contract?.[methodName];
+
+    if (typeof method !== "function") {
+      throw new Error(`Controller contract method is missing: ${methodName}`);
+    }
+
+    try {
+      return await method(wallet).call();
+    } catch (error) {
+      throw new Error(
+        `${methodName}(${wallet}) failed: ${toErrorMessage(error)}`
+      );
+    }
+  }
+
   private async readOnChainDashboard(wallet: string): Promise<{
     identity: CabinetProfileIdentity;
     progress: CabinetProfileProgress;
@@ -424,55 +520,123 @@ export class CabinetService {
       lifetimeRewardsSun: string;
       withdrawnRewardsSun: string;
     };
+    debug: {
+      coreRaw: any;
+      profileRaw: any;
+      progressRaw: any;
+      statsRaw: any;
+    };
   }> {
     const contract = await this.contract();
 
-    const [coreRaw, profileRaw, progressRaw, statsRaw] = await Promise.all([
-      contract.getDashboardCore(wallet).call(),
-      contract.getDashboardProfile(wallet).call(),
-      contract.getAmbassadorLevelProgress(wallet).call(),
-      contract.getDashboardStats(wallet).call()
-    ]);
+    const coreRaw = await this.readContractTuple(contract, "getDashboardCore", wallet);
+    const profileRaw = await this.readContractTuple(contract, "getDashboardProfile", wallet);
+    const progressRaw = await this.readContractTuple(
+      contract,
+      "getAmbassadorLevelProgress",
+      wallet
+    );
+    const statsRaw = await this.readContractTuple(contract, "getDashboardStats", wallet);
 
-    const exists = safeBoolean(pickTupleValue(coreRaw, 0, "exists"));
-    const active = safeBoolean(pickTupleValue(coreRaw, 1, "active"));
-    const effectiveLevel = safeNumber(pickTupleValue(coreRaw, 2, "effectiveLevel"));
-    const rewardPercent = safeNumber(pickTupleValue(coreRaw, 3, "rewardPercent"));
-    const createdAt = safeNumber(pickTupleValue(coreRaw, 4, "createdAt"));
+    const exists = safeBoolean(
+      pickFirstDefined(coreRaw, [{ index: 0, keys: ["exists"] }])
+    );
 
-    const selfRegistered = safeBoolean(pickTupleValue(profileRaw, 0, "selfRegistered"));
-    const manualAssigned = safeBoolean(pickTupleValue(profileRaw, 1, "manualAssigned"));
-    const overrideEnabled = safeBoolean(pickTupleValue(profileRaw, 2, "overrideEnabled"));
-    const currentLevel = safeNumber(pickTupleValue(profileRaw, 3, "currentLevel"));
-    const overrideLevel = safeNumber(pickTupleValue(profileRaw, 4, "overrideLevel"));
-    const slugHash = normalizeHex32(pickTupleValue(profileRaw, 5, "slugHash"));
-    const metaHash = normalizeMetaHash(pickTupleValue(profileRaw, 6, "metaHash"));
+    const active = safeBoolean(
+      pickFirstDefined(coreRaw, [{ index: 1, keys: ["active"] }])
+    );
+
+    const effectiveLevel = safeNumber(
+      pickFirstDefined(coreRaw, [{ index: 2, keys: ["effectiveLevel", "level"] }]),
+      0
+    );
+
+    const rewardPercent = safeNumber(
+      pickFirstDefined(coreRaw, [{ index: 3, keys: ["rewardPercent"] }]),
+      0
+    );
+
+    const createdAt = safeNumber(
+      pickFirstDefined(coreRaw, [{ index: 4, keys: ["createdAt"] }]),
+      0
+    );
+
+    const selfRegistered = safeBoolean(
+      pickFirstDefined(profileRaw, [{ index: 0, keys: ["selfRegistered"] }])
+    );
+
+    const manualAssigned = safeBoolean(
+      pickFirstDefined(profileRaw, [{ index: 1, keys: ["manualAssigned"] }])
+    );
+
+    const overrideEnabled = safeBoolean(
+      pickFirstDefined(profileRaw, [{ index: 2, keys: ["overrideEnabled"] }])
+    );
+
+    const currentLevel = safeNumber(
+      pickFirstDefined(profileRaw, [{ index: 3, keys: ["currentLevel"] }]),
+      0
+    );
+
+    const overrideLevel = safeNumber(
+      pickFirstDefined(profileRaw, [{ index: 4, keys: ["overrideLevel"] }]),
+      0
+    );
+
+    const slugHash = normalizeSlugHash(
+      pickFirstDefined(profileRaw, [{ index: 5, keys: ["slugHash"] }])
+    );
+
+    const metaHash = normalizeMetaHash(
+      pickFirstDefined(profileRaw, [{ index: 6, keys: ["metaHash"] }])
+    );
 
     const progressCurrentLevel = safeNumber(
-      pickTupleValue(progressRaw, 0, "currentLevel"),
+      pickFirstDefined(progressRaw, [{ index: 0, keys: ["currentLevel", "level"] }]),
       currentLevel
     );
-    const buyersCount = safeNumber(pickTupleValue(progressRaw, 1, "buyersCount"));
-    const nextThreshold = safeNumber(pickTupleValue(progressRaw, 2, "nextThreshold"));
-    const remainingToNextLevel = safeNumber(
-      pickTupleValue(progressRaw, 3, "remainingToNextLevel")
+
+    const buyersCount = safeNumber(
+      pickFirstDefined(progressRaw, [{ index: 1, keys: ["buyersCount", "totalBuyers"] }]),
+      0
     );
 
-    const totalBuyers = toSunString(pickTupleValue(statsRaw, 0, "totalBuyers"));
+    const nextThreshold = safeNumber(
+      pickFirstDefined(progressRaw, [{ index: 2, keys: ["nextThreshold"] }]),
+      0
+    );
+
+    const remainingToNextLevel = safeNumber(
+      pickFirstDefined(progressRaw, [{ index: 3, keys: ["remainingToNextLevel"] }]),
+      0
+    );
+
+    const totalBuyers = toSunString(
+      pickFirstDefined(statsRaw, [{ index: 0, keys: ["totalBuyers"] }])
+    );
+
     const trackedVolumeSun = toSunString(
-      pickTupleValue(statsRaw, 1, "trackedVolumeSun") ??
-        pickTupleValue(statsRaw, 1, "totalVolumeSun")
+      pickFirstDefined(statsRaw, [
+        { index: 1, keys: ["trackedVolumeSun", "totalVolumeSun"] }
+      ])
     );
+
     const lifetimeRewardsSun = toSunString(
-      pickTupleValue(statsRaw, 2, "lifetimeRewardsSun") ??
-        pickTupleValue(statsRaw, 2, "totalRewardsAccruedSun")
+      pickFirstDefined(statsRaw, [
+        { index: 2, keys: ["lifetimeRewardsSun", "totalRewardsAccruedSun"] }
+      ])
     );
+
     const withdrawnRewardsSun = toSunString(
-      pickTupleValue(statsRaw, 3, "withdrawnRewardsSun") ??
-        pickTupleValue(statsRaw, 3, "totalRewardsClaimedSun")
+      pickFirstDefined(statsRaw, [
+        { index: 3, keys: ["withdrawnRewardsSun", "totalRewardsClaimedSun"] }
+      ])
     );
+
     const claimableRewardsSun = toSunString(
-      pickTupleValue(statsRaw, 4, "claimableRewardsSun")
+      pickFirstDefined(statsRaw, [
+        { index: 4, keys: ["claimableRewardsSun", "availableOnChainSun"] }
+      ])
     );
 
     return {
@@ -504,6 +668,12 @@ export class CabinetService {
         claimableRewardsSun,
         lifetimeRewardsSun,
         withdrawnRewardsSun
+      },
+      debug: {
+        coreRaw,
+        profileRaw,
+        progressRaw,
+        statsRaw
       }
     };
   }
@@ -576,6 +746,25 @@ export class CabinetService {
 
     try {
       const onChain = await this.readOnChainDashboard(registryWallet);
+
+      logJson("info", {
+        stage: "onchain-dashboard-read-success",
+        wallet: registryWallet,
+        controllerContractAddress: this.controllerContractAddress,
+        identity: {
+          exists: onChain.identity.exists,
+          active: onChain.identity.active,
+          effectiveLevel: onChain.identity.effectiveLevel,
+          currentLevel: onChain.identity.currentLevel,
+          rewardPercent: onChain.identity.rewardPercent,
+          createdAt: onChain.identity.createdAt,
+          slugHash: onChain.identity.slugHash,
+          metaHash: onChain.identity.metaHash
+        },
+        progress: onChain.progress,
+        stats: onChain.stats
+      });
+
       const mapped = mapStats({
         onChainStats: onChain.stats,
         dbStats: dbStatsRecord
@@ -595,7 +784,16 @@ export class CabinetService {
         withdrawalQueue: mapped.withdrawalQueue,
         progress: onChain.progress
       };
-    } catch {
+    } catch (error) {
+      logJson("error", {
+        stage: "onchain-dashboard-read-failed",
+        wallet: registryWallet,
+        slug,
+        status,
+        controllerContractAddress: this.controllerContractAddress,
+        error: toErrorMessage(error)
+      });
+
       return this.buildFallbackProfile(registryWallet, slug, status, dbStatsRecord);
     }
   }
