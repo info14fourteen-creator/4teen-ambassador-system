@@ -13,6 +13,7 @@ import {
   initAmbassadorRegistryTables,
   isSlugTaken
 } from "./db/ambassadors";
+import { initDashboardSnapshotTables } from "./db/dashboardSnapshots";
 import { initPurchaseTables } from "./db/purchases";
 import { prepareAmbassadorWithdrawal } from "./jobs/prepareAmbassadorWithdrawal";
 import { processAmbassadorPendingQueue } from "./jobs/processAmbassadorPendingQueue";
@@ -721,6 +722,7 @@ async function bootstrap() {
   const TronWeb = getTronWebConstructor();
 
   await initAmbassadorRegistryTables();
+  await initDashboardSnapshotTables();
   await initPurchaseTables();
 
   const tronWeb = new TronWeb({
