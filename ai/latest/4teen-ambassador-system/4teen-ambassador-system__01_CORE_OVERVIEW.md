@@ -1,6 +1,6 @@
 # 4teen-ambassador-system — CORE OVERVIEW
 
-Generated: 2026-04-01T09:02:44.451Z
+Generated: 2026-04-01T09:44:30.346Z
 Repository: info14fourteen-creator/4teen-ambassador-system
 Branch: main
 
@@ -98,7 +98,11 @@ Branch: main
 
 ---
 
-## FILE: 4teen-ambassador-system :: ai/WORKING_RULES.md
+## FILE PATH
+
+`ai/WORKING_RULES.md`
+
+## FILE CONTENT
 
 ```md
 # 4TEEN AMBASSADOR SYSTEM — WORKING RULES (GOLD STANDARD)
@@ -316,7 +320,11 @@ Everything must work step-by-step.
 
 ---
 
-## FILE: 4teen-ambassador-system :: package.json
+## FILE PATH
+
+`package.json`
+
+## FILE CONTENT
 
 ```json
 {
@@ -335,7 +343,11 @@ Everything must work step-by-step.
 
 ---
 
-## FILE: 4teen-ambassador-system :: README.md
+## FILE PATH
+
+`README.md`
+
+## FILE CONTENT
 
 ```md
 # 4TEEN Ambassador System
@@ -747,7 +759,11 @@ It is a full ambassador operations system designed for safe attribution, deferre
 
 ---
 
-## FILE: 4teen-ambassador-system :: shared/config/contracts.ts
+## FILE PATH
+
+`shared/config/contracts.ts`
+
+## FILE CONTENT
 
 ```ts
 export const TRON_NETWORK = "mainnet";
@@ -780,7 +796,11 @@ export function buildTronscanTransactionUrl(txid: string): string {
 
 ---
 
-## FILE: 4teen-ambassador-system :: shared/config/referral.ts
+## FILE PATH
+
+`shared/config/referral.ts`
+
+## FILE CONTENT
 
 ```ts
 export const REFERRAL_QUERY_PARAM = "r";
@@ -797,7 +817,11 @@ export const REFERRAL_SLUG_PATTERN = /^[a-z0-9](?:[a-z0-9-]{1,62}[a-z0-9])?$/;
 
 ---
 
-## FILE: 4teen-ambassador-system :: shared/utils/slug.ts
+## FILE PATH
+
+`shared/utils/slug.ts`
+
+## FILE CONTENT
 
 ```ts
 import {

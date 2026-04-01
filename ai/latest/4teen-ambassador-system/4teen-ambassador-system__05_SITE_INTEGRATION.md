@@ -1,6 +1,6 @@
 # 4teen-ambassador-system — SITE INTEGRATION
 
-Generated: 2026-04-01T09:02:44.455Z
+Generated: 2026-04-01T09:44:30.349Z
 Repository: info14fourteen-creator/4teen-ambassador-system
 Branch: main
 
@@ -18,7 +18,11 @@ Branch: main
 
 ---
 
-## FILE: 4teen-ambassador-system :: apps/site-integration/src/ambassador/autoMount.ts
+## FILE PATH
+
+`apps/site-integration/src/ambassador/autoMount.ts`
+
+## FILE CONTENT
 
 ```ts
 import { mountAmbassadorWidget } from "./widget";
@@ -104,7 +108,11 @@ export function autoMountAmbassadorWidgetsOnReady(
 
 ---
 
-## FILE: 4teen-ambassador-system :: apps/site-integration/src/ambassador/hash.ts
+## FILE PATH
+
+`apps/site-integration/src/ambassador/hash.ts`
+
+## FILE CONTENT
 
 ```ts
 import { keccak_256 } from "@noble/hashes/sha3";
@@ -167,7 +175,11 @@ export function buildAmbassadorRegistrationHashes(
 
 ---
 
-## FILE: 4teen-ambassador-system :: apps/site-integration/src/ambassador/register.ts
+## FILE PATH
+
+`apps/site-integration/src/ambassador/register.ts`
+
+## FILE CONTENT
 
 ```ts
 import { FOURTEEN_CONTROLLER_CONTRACT } from "../../../../shared/config/contracts";
@@ -317,7 +329,11 @@ export async function registerAmbassador(
 
 ---
 
-## FILE: 4teen-ambassador-system :: apps/site-integration/src/ambassador/widget.ts
+## FILE PATH
+
+`apps/site-integration/src/ambassador/widget.ts`
+
+## FILE CONTENT
 
 ```ts
 import { registerAmbassador } from "./register";
@@ -552,7 +568,11 @@ export function mountAmbassadorWidget(
 
 ---
 
-## FILE: 4teen-ambassador-system :: apps/site-integration/src/purchase/afterBuy.ts
+## FILE PATH
+
+`apps/site-integration/src/purchase/afterBuy.ts`
+
+## FILE CONTENT
 
 ```ts
 import { getStoredReferral } from "../referral/storage";
@@ -624,7 +644,11 @@ export async function handleAfterBuy<T = unknown>(
 
 ---
 
-## FILE: 4teen-ambassador-system :: apps/site-integration/src/purchase/submitAttribution.ts
+## FILE PATH
+
+`apps/site-integration/src/purchase/submitAttribution.ts`
+
+## FILE CONTENT
 
 ```ts
 import { assertValidSlug, normalizeSlug } from "../../../../shared/utils/slug";
@@ -747,7 +771,11 @@ export async function submitAttribution<T = unknown>(
 
 ---
 
-## FILE: 4teen-ambassador-system :: apps/site-integration/src/referral/capture.ts
+## FILE PATH
+
+`apps/site-integration/src/referral/capture.ts`
+
+## FILE CONTENT
 
 ```ts
 import {
@@ -826,7 +854,11 @@ export function captureReferralFromUrl(
 
 ---
 
-## FILE: 4teen-ambassador-system :: apps/site-integration/src/referral/firstTouch.ts
+## FILE PATH
+
+`apps/site-integration/src/referral/firstTouch.ts`
+
+## FILE CONTENT
 
 ```ts
 import { REFERRAL_TTL_MS } from "../../../../shared/config/referral";
@@ -879,7 +911,11 @@ export function applyFirstTouch(
 
 ---
 
-## FILE: 4teen-ambassador-system :: apps/site-integration/src/referral/storage.ts
+## FILE PATH
+
+`apps/site-integration/src/referral/storage.ts`
+
+## FILE CONTENT
 
 ```ts
 import {

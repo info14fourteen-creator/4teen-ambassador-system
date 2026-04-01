@@ -1,4 +1,0 @@
-AI map moved to ai/latest/4teen-ambassador-system/00_AI_MAP.md
-
-Repository folder: ai/latest/4teen-ambassador-system/
-Zip archive: ai/latest/4teen-ambassador-system.zip

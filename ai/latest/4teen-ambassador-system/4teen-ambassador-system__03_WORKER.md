@@ -1,6 +1,6 @@
 # 4teen-ambassador-system — ALLOCATION WORKER
 
-Generated: 2026-04-01T09:02:44.452Z
+Generated: 2026-04-01T09:44:30.347Z
 Repository: info14fourteen-creator/4teen-ambassador-system
 Branch: main
 
@@ -32,7 +32,11 @@ Branch: main
 
 ---
 
-## FILE: 4teen-ambassador-system :: services/allocation-worker/package.json
+## FILE PATH
+
+`services/allocation-worker/package.json`
+
+## FILE CONTENT
 
 ```json
 {
@@ -63,7 +67,11 @@ Branch: main
 
 ---
 
-## FILE: 4teen-ambassador-system :: services/allocation-worker/src/app/processAttribution.ts
+## FILE PATH
+
+`services/allocation-worker/src/app/processAttribution.ts`
+
+## FILE CONTENT
 
 ```ts
 import {
@@ -239,7 +247,11 @@ export class AttributionProcessor {
 
 ---
 
-## FILE: 4teen-ambassador-system :: services/allocation-worker/src/db/ambassadors.ts
+## FILE PATH
+
+`services/allocation-worker/src/db/ambassadors.ts`
+
+## FILE CONTENT
 
 ```ts
 import { getClient, query } from "./postgres";
@@ -612,7 +624,11 @@ export async function completeAmbassadorRegistration(
 
 ---
 
-## FILE: 4teen-ambassador-system :: services/allocation-worker/src/db/postgres.ts
+## FILE PATH
+
+`services/allocation-worker/src/db/postgres.ts`
+
+## FILE CONTENT
 
 ```ts
 import { Pool, PoolClient, QueryResult, QueryResultRow } from "pg";
@@ -671,7 +687,11 @@ export async function closePool(): Promise<void> {
 
 ---
 
-## FILE: 4teen-ambassador-system :: services/allocation-worker/src/db/purchases.ts
+## FILE PATH
+
+`services/allocation-worker/src/db/purchases.ts`
+
+## FILE CONTENT
 
 ```ts
 import { query } from "./postgres";
@@ -2928,7 +2948,11 @@ export function createPurchaseStore(): PurchaseStore {
 
 ---
 
-## FILE: 4teen-ambassador-system :: services/allocation-worker/src/domain/allocation.ts
+## FILE PATH
+
+`services/allocation-worker/src/domain/allocation.ts`
+
+## FILE CONTENT
 
 ```ts
 import type {
@@ -3654,7 +3678,11 @@ export class AllocationService {
 
 ---
 
-## FILE: 4teen-ambassador-system :: services/allocation-worker/src/domain/attribution.ts
+## FILE PATH
+
+`services/allocation-worker/src/domain/attribution.ts`
+
+## FILE CONTENT
 
 ```ts
 import { assertValidSlug, normalizeSlug } from "../../../../shared/utils/slug";
@@ -3977,7 +4005,11 @@ export class AttributionService {
 
 ---
 
-## FILE: 4teen-ambassador-system :: services/allocation-worker/src/index.ts
+## FILE PATH
+
+`services/allocation-worker/src/index.ts`
+
+## FILE CONTENT
 
 ```ts
 import { AllocationService, type AllocationDecision } from "./domain/allocation";
@@ -5001,7 +5033,11 @@ export function createAllocationWorker(
 
 ---
 
-## FILE: 4teen-ambassador-system :: services/allocation-worker/src/jobs/allocatePurchase.ts
+## FILE PATH
+
+`services/allocation-worker/src/jobs/allocatePurchase.ts`
+
+## FILE CONTENT
 
 ```ts
 import {
@@ -5100,7 +5136,11 @@ export class AllocatePurchaseJob {
 
 ---
 
-## FILE: 4teen-ambassador-system :: services/allocation-worker/src/jobs/dailyMaintenance.ts
+## FILE PATH
+
+`services/allocation-worker/src/jobs/dailyMaintenance.ts`
+
+## FILE CONTENT
 
 ```ts
 import type { AllocationWorker } from "../index";
@@ -5305,7 +5345,11 @@ export async function dailyMaintenance(
 
 ---
 
-## FILE: 4teen-ambassador-system :: services/allocation-worker/src/jobs/finalizeAmbassadorWithdrawal.ts
+## FILE PATH
+
+`services/allocation-worker/src/jobs/finalizeAmbassadorWithdrawal.ts`
+
+## FILE CONTENT
 
 ```ts
 import type { AllocationWorker } from "../index";
@@ -5637,7 +5681,11 @@ export async function finalizeAmbassadorWithdrawal(
 
 ---
 
-## FILE: 4teen-ambassador-system :: services/allocation-worker/src/jobs/prepareAmbassadorWithdrawal.ts
+## FILE PATH
+
+`services/allocation-worker/src/jobs/prepareAmbassadorWithdrawal.ts`
+
+## FILE CONTENT
 
 ```ts
 import crypto from "node:crypto";
@@ -6005,7 +6053,11 @@ export async function prepareAmbassadorWithdrawal(
 
 ---
 
-## FILE: 4teen-ambassador-system :: services/allocation-worker/src/jobs/processAmbassadorPendingQueue.ts
+## FILE PATH
+
+`services/allocation-worker/src/jobs/processAmbassadorPendingQueue.ts`
+
+## FILE CONTENT
 
 ```ts
 import type { AllocationWorker } from "../index";
@@ -6313,7 +6365,11 @@ export async function processAmbassadorPendingQueue(
 
 ---
 
-## FILE: 4teen-ambassador-system :: services/allocation-worker/src/jobs/rentEnergy.ts
+## FILE PATH
+
+`services/allocation-worker/src/jobs/rentEnergy.ts`
+
+## FILE CONTENT
 
 ```ts
 import { createGasStationClientFromEnv } from "../services/gasStation";
@@ -6390,7 +6446,11 @@ export async function rentDailyEnergy(): Promise<RentEnergyJobResult> {
 
 ---
 
-## FILE: 4teen-ambassador-system :: services/allocation-worker/src/jobs/replayDeferredPurchases.ts
+## FILE PATH
+
+`services/allocation-worker/src/jobs/replayDeferredPurchases.ts`
+
+## FILE CONTENT
 
 ```ts
 import type { AllocationWorker } from "../index";
@@ -6628,7 +6688,11 @@ export async function replayDeferredPurchases(
 
 ---
 
-## FILE: 4teen-ambassador-system :: services/allocation-worker/src/run-scan.ts
+## FILE PATH
+
+`services/allocation-worker/src/run-scan.ts`
+
+## FILE CONTENT
 
 ```ts
 import { FOURTEEN_TOKEN_CONTRACT } from "../../../shared/config/contracts";
@@ -7133,7 +7197,11 @@ export class BuyTokensScanner {
 
 ---
 
-## FILE: 4teen-ambassador-system :: services/allocation-worker/src/server.ts
+## FILE PATH
+
+`services/allocation-worker/src/server.ts`
+
+## FILE CONTENT
 
 ```ts
 import http from "node:http";
@@ -8300,7 +8368,11 @@ void bootstrap();
 
 ---
 
-## FILE: 4teen-ambassador-system :: services/allocation-worker/src/services/cabinet.ts
+## FILE PATH
+
+`services/allocation-worker/src/services/cabinet.ts`
+
+## FILE CONTENT
 
 ```ts
 import { getAmbassadorRegistryRecordByWallet } from "../db/ambassadors";
@@ -9031,7 +9103,11 @@ export function createCabinetService(deps: CabinetServiceDependencies): CabinetS
 
 ---
 
-## FILE: 4teen-ambassador-system :: services/allocation-worker/src/services/gasStation.ts
+## FILE PATH
+
+`services/allocation-worker/src/services/gasStation.ts`
+
+## FILE CONTENT
 
 ```ts
 import crypto from "node:crypto";
@@ -9545,7 +9621,11 @@ export function createGasStationClientFromEnv(): GasStationClient {
 
 ---
 
-## FILE: 4teen-ambassador-system :: services/allocation-worker/src/tron/controller.ts
+## FILE PATH
+
+`services/allocation-worker/src/tron/controller.ts`
+
+## FILE CONTENT
 
 ```ts
 import crypto from "node:crypto";
@@ -10882,7 +10962,11 @@ export class TronControllerAllocationExecutor implements AllocationExecutor {
 
 ---
 
-## FILE: 4teen-ambassador-system :: services/allocation-worker/src/tron/hashing.ts
+## FILE PATH
+
+`services/allocation-worker/src/tron/hashing.ts`
+
+## FILE CONTENT
 
 ```ts
 import { keccak_256 } from "@noble/hashes/sha3";
@@ -10963,7 +11047,11 @@ export class TronHashing implements AttributionHashing {
 
 ---
 
-## FILE: 4teen-ambassador-system :: services/allocation-worker/src/tron/resources.ts
+## FILE PATH
+
+`services/allocation-worker/src/tron/resources.ts`
+
+## FILE CONTENT
 
 ```ts
 export interface AccountResourceSnapshot {
@@ -11378,7 +11466,11 @@ export async function evaluateEffectiveAllocationReadiness(params: {
 
 ---
 
-## FILE: 4teen-ambassador-system :: services/allocation-worker/tsconfig.json
+## FILE PATH
+
+`services/allocation-worker/tsconfig.json`
+
+## FILE CONTENT
 
 ```json
 {

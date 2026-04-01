@@ -1,2 +1,0 @@
-Use ai/latest/4teen-ambassador-system/01_PROJECT_OVERVIEW.md
-Use ai/latest/4teen-ambassador-system/02_CORE_SHARED_AND_TOOLING.md

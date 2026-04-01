@@ -1,6 +1,6 @@
 # 4teen-ambassador-system — CABINET
 
-Generated: 2026-04-01T09:02:44.454Z
+Generated: 2026-04-01T09:44:30.349Z
 Repository: info14fourteen-creator/4teen-ambassador-system
 Branch: main
 
@@ -14,7 +14,11 @@ Branch: main
 
 ---
 
-## FILE: 4teen-ambassador-system :: apps/cabinet/src/app/ambassador/page.tsx
+## FILE PATH
+
+`apps/cabinet/src/app/ambassador/page.tsx`
+
+## FILE CONTENT
 
 ```tsx
 "use client";
@@ -525,7 +529,11 @@ export default function AmbassadorPage() {
 
 ---
 
-## FILE: 4teen-ambassador-system :: apps/cabinet/src/hooks/useAmbassadorDashboard.ts
+## FILE PATH
+
+`apps/cabinet/src/hooks/useAmbassadorDashboard.ts`
+
+## FILE CONTENT
 
 ```ts
 "use client";
@@ -944,7 +952,11 @@ export function useAmbassadorDashboard(): UseAmbassadorDashboardResult {
 
 ---
 
-## FILE: 4teen-ambassador-system :: apps/cabinet/src/lib/blockchain/controller.ts
+## FILE PATH
+
+`apps/cabinet/src/lib/blockchain/controller.ts`
+
+## FILE CONTENT
 
 ```ts
 import { FOURTEEN_CONTROLLER_CONTRACT } from "../../../../../shared/config/contracts";
@@ -1679,7 +1691,11 @@ export async function readAmbassadorDashboard(wallet?: string): Promise<Ambassad
 
 ---
 
-## FILE: 4teen-ambassador-system :: apps/cabinet/src/lib/referral/storage.ts
+## FILE PATH
+
+`apps/cabinet/src/lib/referral/storage.ts`
+
+## FILE CONTENT
 
 ```ts
 import { REFERRAL_STORAGE_KEY } from "../../../../../shared/config/referral";
@@ -1783,7 +1799,11 @@ export function clearStoredReferral(): void {
 
 ---
 
-## FILE: 4teen-ambassador-system :: apps/cabinet/src/lib/telegram/link.ts
+## FILE PATH
+
+`apps/cabinet/src/lib/telegram/link.ts`
+
+## FILE CONTENT
 
 ```ts
 import { buildTronscanAddressUrl } from "../../../../../shared/config/contracts";

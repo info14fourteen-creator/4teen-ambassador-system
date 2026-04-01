@@ -1,6 +1,0 @@
-AI SNAPSHOT LINKS
-
-Folder base: https://raw.githubusercontent.com/info14fourteen-creator/4teen-ambassador-system/main/ai/latest/4teen-ambassador-system
-Map: https://raw.githubusercontent.com/info14fourteen-creator/4teen-ambassador-system/main/ai/latest/4teen-ambassador-system/00_AI_MAP.md
-Info: https://raw.githubusercontent.com/info14fourteen-creator/4teen-ambassador-system/main/ai/latest/4teen-ambassador-system/99_SNAPSHOT_INFO.md
-Working rules: https://raw.githubusercontent.com/info14fourteen-creator/4teen-ambassador-system/main/ai/WORKING_RULES.md

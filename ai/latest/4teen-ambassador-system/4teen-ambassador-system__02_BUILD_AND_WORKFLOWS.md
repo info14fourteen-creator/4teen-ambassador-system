@@ -1,6 +1,6 @@
 # 4teen-ambassador-system — BUILD AND WORKFLOWS
 
-Generated: 2026-04-01T09:02:44.452Z
+Generated: 2026-04-01T09:44:30.347Z
 Repository: info14fourteen-creator/4teen-ambassador-system
 Branch: main
 
@@ -12,7 +12,11 @@ Branch: main
 
 ---
 
-## FILE: 4teen-ambassador-system :: .github/workflows/allocation-worker-daily.yml
+## FILE PATH
+
+`.github/workflows/allocation-worker-daily.yml`
+
+## FILE CONTENT
 
 ```yml
 name: allocation-worker-daily
@@ -94,7 +98,11 @@ jobs:
 
 ---
 
-## FILE: 4teen-ambassador-system :: .github/workflows/build-ai-bundles.yml
+## FILE PATH
+
+`.github/workflows/build-ai-bundles.yml`
+
+## FILE CONTENT
 
 ```yml
 name: Build and Publish AI Bundles
@@ -185,7 +193,11 @@ jobs:
 
 ---
 
-## FILE: 4teen-ambassador-system :: scripts/build-ai-bundles.mjs
+## FILE PATH
+
+`scripts/build-ai-bundles.mjs`
+
+## FILE CONTENT
 
 ```js
 import fs from "fs";
@@ -195,6 +207,7 @@ import { spawnSync } from "child_process";
 const ROOT = process.cwd();
 const AI_DIR = path.join(ROOT, "ai");
 const LATEST_DIR = path.join(AI_DIR, "latest");
+const TMP_DIR = path.join(AI_DIR, ".latest_build_tmp");
 
 const REPOS = [
   {
@@ -260,12 +273,10 @@ const IGNORE_DIRS = new Set([
   "coverage",
   ".vercel",
   ".idea",
-  ".vscode"
+  ".vscode",
+  "ai/latest",
+  "ai/.latest_build_tmp"
 ]);
-
-const IGNORE_PREFIXES = [
-  "ai/latest/"
-];
 
 const IGNORE_FILES = new Set([
   ".env",
@@ -294,13 +305,18 @@ const ALLOWED_EXTENSIONS = new Set([
   ".yaml"
 ]);
 
-const MAX_OUTPUT_FILES_PER_REPO = 10;
 const MAX_SOURCE_FILE_BYTES = 240 * 1024;
 const MAX_SECTION_BYTES = 1_600_000;
 const MAX_TOTAL_SELECTED_FILES = 180;
 
 function ensureDir(dir) {
   fs.mkdirSync(dir, { recursive: true });
+}
+
+function removeDirIfExists(dir) {
+  if (fs.existsSync(dir)) {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 }
 
 function toPosix(p) {
@@ -310,13 +326,9 @@ function toPosix(p) {
 function shouldIgnore(relPath) {
   const posix = toPosix(relPath);
 
-  if (IGNORE_PREFIXES.some((prefix) => posix.startsWith(prefix))) {
-    return true;
-  }
-
-  if (IGNORE_FILES.has(path.basename(posix))) {
-    return true;
-  }
+  if (posix.startsWith("ai/latest/")) return true;
+  if (posix.startsWith("ai/.latest_build_tmp/")) return true;
+  if (IGNORE_FILES.has(path.basename(posix))) return true;
 
   return false;
 }
@@ -336,7 +348,7 @@ function walk(dir, out = []) {
     if (shouldIgnore(posix)) continue;
 
     if (entry.isDirectory()) {
-      if (IGNORE_DIRS.has(entry.name)) continue;
+      if (IGNORE_DIRS.has(posix) || IGNORE_DIRS.has(entry.name)) continue;
       walk(abs, out);
       continue;
     }
@@ -533,7 +545,7 @@ function buildGroups(files, groupDefs) {
     files: remaining
   });
 
-  return groups.slice(0, MAX_OUTPUT_FILES_PER_REPO - 1);
+  return groups;
 }
 
 function buildSectionDoc(repoName, group, allFiles, info) {
@@ -557,6 +569,7 @@ function buildSectionDoc(repoName, group, allFiles, info) {
 
   lines.push("## Included files");
   lines.push("");
+
   if (group.files.length === 0) {
     lines.push("- none");
     lines.push("");
@@ -575,7 +588,11 @@ function buildSectionDoc(repoName, group, allFiles, info) {
 
     lines.push("---");
     lines.push("");
-    lines.push(`## FILE: ${repoName} :: ${file}`);
+    lines.push(`## FILE PATH`);
+    lines.push("");
+    lines.push(`\`${file}\``);
+    lines.push("");
+    lines.push(`## FILE CONTENT`);
     lines.push("");
     lines.push("```" + lang);
     lines.push(content.trimEnd());
@@ -586,13 +603,18 @@ function buildSectionDoc(repoName, group, allFiles, info) {
   return lines.join("\n");
 }
 
-function writeRepoOutputs(repoName, allFiles, groups, info) {
-  const repoDir = path.join(LATEST_DIR, repoName);
+function writeTextFile(filePath, content) {
+  ensureDir(path.dirname(filePath));
+  fs.writeFileSync(filePath, content, "utf8");
+}
+
+function writeRepoOutputs(baseOutputDir, repoName, allFiles, groups, info) {
+  const repoDir = path.join(baseOutputDir, repoName);
   ensureDir(repoDir);
 
   for (const group of groups) {
     const outFile = path.join(repoDir, `${repoName}__${group.key}.md`);
-    fs.writeFileSync(outFile, buildSectionDoc(repoName, group, allFiles, info), "utf8");
+    writeTextFile(outFile, buildSectionDoc(repoName, group, allFiles, info));
   }
 
   const mapLines = [];
@@ -610,9 +632,11 @@ function writeRepoOutputs(repoName, allFiles, groups, info) {
   mapLines.push("");
   mapLines.push("## Snapshot files");
   mapLines.push("");
+
   for (const group of groups) {
     mapLines.push(`- ${repoName}__${group.key}.md`);
   }
+
   mapLines.push("");
   mapLines.push("## Curated project tree");
   mapLines.push("");
@@ -621,10 +645,9 @@ function writeRepoOutputs(repoName, allFiles, groups, info) {
   mapLines.push("```");
   mapLines.push("");
 
-  fs.writeFileSync(
+  writeTextFile(
     path.join(repoDir, `${repoName}__ai-project-map.txt`),
-    mapLines.join("\n"),
-    "utf8"
+    mapLines.join("\n")
   );
 
   const linksLines = [];
@@ -634,15 +657,16 @@ function writeRepoOutputs(repoName, allFiles, groups, info) {
   linksLines.push(`Zip archive: ${info.zipUrl}`);
   linksLines.push(`Working rules: ${info.rulesUrl}`);
   linksLines.push("");
+
   for (const group of groups) {
     linksLines.push(`- ${info.repoPrefixUrl}/${repoName}__${group.key}.md`);
   }
+
   linksLines.push("");
 
-  fs.writeFileSync(
+  writeTextFile(
     path.join(repoDir, `${repoName}__links.txt`),
-    linksLines.join("\n"),
-    "utf8"
+    linksLines.join("\n")
   );
 
   const manifest = {
@@ -660,13 +684,12 @@ function writeRepoOutputs(repoName, allFiles, groups, info) {
     }))
   };
 
-  fs.writeFileSync(
+  writeTextFile(
     path.join(repoDir, `${repoName}__manifest.json`),
-    JSON.stringify(manifest, null, 2),
-    "utf8"
+    JSON.stringify(manifest, null, 2)
   );
 
-  const zipFile = path.join(LATEST_DIR, `${repoName}.zip`);
+  const zipFile = path.join(baseOutputDir, `${repoName}.zip`);
   if (fs.existsSync(zipFile)) {
     fs.rmSync(zipFile, { force: true });
   }
@@ -682,7 +705,7 @@ function writeRepoOutputs(repoName, allFiles, groups, info) {
       : ["-r", zipFile, repoName],
     process.platform === "win32"
       ? { stdio: "inherit" }
-      : { cwd: LATEST_DIR, stdio: "inherit" }
+      : { cwd: baseOutputDir, stdio: "inherit" }
   );
 
   if (result.status !== 0) {
@@ -690,18 +713,30 @@ function writeRepoOutputs(repoName, allFiles, groups, info) {
   }
 }
 
+function prepareFreshOutput() {
+  ensureDir(AI_DIR);
+  removeDirIfExists(TMP_DIR);
+  ensureDir(TMP_DIR);
+}
+
+function finalizeFreshOutput() {
+  removeDirIfExists(LATEST_DIR);
+  fs.renameSync(TMP_DIR, LATEST_DIR);
+}
+
 function main() {
-  ensureDir(LATEST_DIR);
+  prepareFreshOutput();
 
   for (const repo of REPOS) {
     const info = getRepoInfo(repo.repoName);
     const allFiles = buildSelectedFiles(repo.groups);
     const groups = buildGroups(allFiles, repo.groups);
 
-    writeRepoOutputs(repo.repoName, allFiles, groups, info);
+    writeRepoOutputs(TMP_DIR, repo.repoName, allFiles, groups, info);
     console.log(`Built AI bundle for ${repo.repoName}`);
   }
 
+  finalizeFreshOutput();
   console.log("All AI bundles generated successfully.");
 }
 

@@ -1,2 +1,0 @@
-Use ai/latest/4teen-ambassador-system/05_WORKER_DOMAIN_DB_SERVER.md
-Use ai/latest/4teen-ambassador-system/06_WORKER_TRON_AND_JOBS.md
