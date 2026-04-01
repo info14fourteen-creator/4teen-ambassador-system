@@ -1,6 +1,6 @@
 # 4teen-ambassador-system — ALLOCATION WORKER
 
-Generated: 2026-04-01T08:09:20.068Z
+Generated: 2026-04-01T08:17:38.662Z
 Repository: info14fourteen-creator/4teen-ambassador-system
 Branch: main
 
@@ -9526,6 +9526,9 @@ export interface ControllerClientConfig {
   allocationMinEnergy?: number;
   allocationMinBandwidth?: number;
   gasStationServiceChargeType?: string;
+  ownerAutoWithdrawEnabled?: boolean;
+  ownerWithdrawMinSun?: number;
+  ownerWithdrawFeeLimitSun?: number;
 }
 
 export interface TronControllerAllocationExecutorConfig {
@@ -9538,6 +9541,9 @@ export interface TronControllerAllocationExecutorConfig {
   allocationMinEnergy?: number;
   allocationMinBandwidth?: number;
   gasStationServiceChargeType?: string;
+  ownerAutoWithdrawEnabled?: boolean;
+  ownerWithdrawMinSun?: number;
+  ownerWithdrawFeeLimitSun?: number;
 }
 
 export interface ResolveAmbassadorBySlugHashResult {
@@ -9558,11 +9564,19 @@ export interface RecordVerifiedPurchaseResult {
   txid: string;
 }
 
+export interface WithdrawOwnerFundsResult {
+  txid: string;
+  amountSun: string;
+}
+
 export interface ControllerClient {
   getAmbassadorBySlugHash(slugHash: string): Promise<ResolveAmbassadorBySlugHashResult>;
   getBuyerAmbassador(buyerWallet: string): Promise<string | null>;
   isPurchaseProcessed(purchaseId: string): Promise<boolean>;
   canBindBuyerToAmbassador(buyerWallet: string, ambassadorWallet: string): Promise<boolean>;
+  getOwnerAvailableBalance(): Promise<string>;
+  isOperatorContractOwner(): Promise<boolean>;
+  withdrawOwnerFunds(amountSun: string, feeLimitSun?: number): Promise<WithdrawOwnerFundsResult>;
   recordVerifiedPurchase(input: RecordVerifiedPurchaseInput): Promise<RecordVerifiedPurchaseResult>;
 }
 
@@ -9589,6 +9603,8 @@ const TRON_HEX_ZERO_ADDRESS = "410000000000000000000000000000000000000000";
 const DEFAULT_SERVICE_CHARGE_TYPE = "10010";
 const DEFAULT_TRON_RETRY_ATTEMPTS = 4;
 const DEFAULT_FEE_LIMIT_SUN = 300_000_000;
+const DEFAULT_OWNER_WITHDRAW_MIN_SUN = 1;
+const DEFAULT_OWNER_WITHDRAW_FEE_LIMIT_SUN = 300_000_000;
 
 const SUN_PER_TRX = 1_000_000;
 
@@ -9643,8 +9659,8 @@ function normalizeBytes32Hex(value: string, fieldName: string): string {
   return normalized;
 }
 
-function normalizeFeeLimitSun(value: number | undefined): number {
-  const resolved = value ?? DEFAULT_FEE_LIMIT_SUN;
+function normalizeFeeLimitSun(value: number | undefined, fallback = DEFAULT_FEE_LIMIT_SUN): number {
+  const resolved = value ?? fallback;
 
   if (!Number.isInteger(resolved) || resolved <= 0) {
     throw new Error("feeLimitSun must be a positive integer");
@@ -9711,6 +9727,29 @@ function normalizeReturnedAddress(tronWeb: any, value: unknown): string | null {
   }
 
   return raw || null;
+}
+
+function toComparableAddress(tronWeb: any, value: unknown): string {
+  const raw = String(value || "").trim();
+
+  if (!raw) {
+    return "";
+  }
+
+  if (isHexAddress(raw)) {
+    return raw.toLowerCase();
+  }
+
+  if (isBase58Address(raw) && typeof tronWeb?.address?.toHex === "function") {
+    try {
+      const hex = String(tronWeb.address.toHex(raw) || "").trim();
+      return hex.toLowerCase();
+    } catch {
+      return raw;
+    }
+  }
+
+  return raw;
 }
 
 function toNumberSafe(value: unknown): number {
@@ -10114,6 +10153,9 @@ export class TronControllerClient implements ControllerClient {
   private readonly allocationMinEnergy: number;
   private readonly allocationMinBandwidth: number;
   private readonly gasStationServiceChargeType: string;
+  private readonly ownerAutoWithdrawEnabled: boolean;
+  private readonly ownerWithdrawMinSun: number;
+  private readonly ownerWithdrawFeeLimitSun: number;
   private contractInstance: any | null = null;
 
   constructor(config: ControllerClientConfig) {
@@ -10135,6 +10177,15 @@ export class TronControllerClient implements ControllerClient {
     this.gasStationServiceChargeType = assertNonEmpty(
       config.gasStationServiceChargeType ?? DEFAULT_SERVICE_CHARGE_TYPE,
       "gasStationServiceChargeType"
+    );
+    this.ownerAutoWithdrawEnabled = Boolean(config.ownerAutoWithdrawEnabled);
+    this.ownerWithdrawMinSun = normalizeNonNegativeInteger(
+      config.ownerWithdrawMinSun,
+      DEFAULT_OWNER_WITHDRAW_MIN_SUN
+    );
+    this.ownerWithdrawFeeLimitSun = normalizeFeeLimitSun(
+      config.ownerWithdrawFeeLimitSun,
+      DEFAULT_OWNER_WITHDRAW_FEE_LIMIT_SUN
     );
   }
 
@@ -10418,7 +10469,7 @@ export class TronControllerClient implements ControllerClient {
     return buildResourceRequirement(this.allocationMinEnergy, this.allocationMinBandwidth);
   }
 
-  private async ensureResourcesForAllocation(purchaseId: string): Promise<void> {
+  private async ensureResourcesForOperation(operationId: string): Promise<void> {
     const operatorAddress = this.getOperatorAddress();
     const requirement = this.buildCurrentRequirement();
     const before = await getAccountResourceSnapshot(this.tronWeb, operatorAddress);
@@ -10459,7 +10510,7 @@ export class TronControllerClient implements ControllerClient {
     try {
       if (energyToBuy > 0) {
         await this.gasStationClient.createEnergyOrder({
-          requestId: buildGasRequestId("allocation", purchaseId, "energy"),
+          requestId: buildGasRequestId("allocation", operationId, "energy"),
           receiveAddress: operatorAddress,
           energyNum: energyToBuy,
           serviceChargeType: this.gasStationServiceChargeType
@@ -10468,7 +10519,7 @@ export class TronControllerClient implements ControllerClient {
 
       if (bandwidthToBuy > 0) {
         await this.gasStationClient.createBandwidthOrder({
-          requestId: buildGasRequestId("allocation", purchaseId, "bandwidth"),
+          requestId: buildGasRequestId("allocation", operationId, "bandwidth"),
           receiveAddress: operatorAddress,
           netNum: bandwidthToBuy,
           serviceChargeType: this.gasStationServiceChargeType
@@ -10511,6 +10562,42 @@ export class TronControllerClient implements ControllerClient {
         {
           code: "ACCOUNT_RESOURCE_CONSUMED_BEFORE_SEND"
         }
+      );
+    }
+  }
+
+  private async tryAutoWithdrawOwnerFundsAfterAllocation(purchaseId: string): Promise<void> {
+    if (!this.ownerAutoWithdrawEnabled) {
+      return;
+    }
+
+    const isOwner = await this.isOperatorContractOwner();
+
+    if (!isOwner) {
+      return;
+    }
+
+    const availableSun = await this.getOwnerAvailableBalance();
+    const available = BigInt(availableSun || "0");
+    const minAmount = BigInt(String(this.ownerWithdrawMinSun));
+
+    if (available < minAmount || available <= 0n) {
+      return;
+    }
+
+    try {
+      await this.withdrawOwnerFunds(available.toString(), this.ownerWithdrawFeeLimitSun);
+    } catch (error) {
+      console.warn(
+        JSON.stringify({
+          level: "warn",
+          scope: "owner-withdraw",
+          stage: "auto-withdraw-failed",
+          purchaseId,
+          amountSun: available.toString(),
+          error: getErrorMessage(error),
+          code: extractErrorCode(error)
+        })
       );
     }
   }
@@ -10570,6 +10657,79 @@ export class TronControllerClient implements ControllerClient {
     return Boolean(result);
   }
 
+  async getOwnerAvailableBalance(): Promise<string> {
+    const contract = await this.contract();
+
+    const result = await withRateLimitRetry("ownerAvailableBalance.call", async () => {
+      return await contract.ownerAvailableBalance().call();
+    });
+
+    return normalizeSunAmount(String(result ?? "0"), "ownerAvailableBalance");
+  }
+
+  async isOperatorContractOwner(): Promise<boolean> {
+    const contract = await this.contract();
+
+    const ownerRaw = await withRateLimitRetry("owner.call", async () => {
+      return await contract.owner().call();
+    });
+
+    const operatorAddress = this.getOperatorAddress();
+    const ownerComparable = toComparableAddress(this.tronWeb, ownerRaw);
+    const operatorComparable = toComparableAddress(this.tronWeb, operatorAddress);
+
+    return Boolean(ownerComparable && operatorComparable && ownerComparable === operatorComparable);
+  }
+
+  async withdrawOwnerFunds(
+    amountSun: string,
+    feeLimitSun?: number
+  ): Promise<WithdrawOwnerFundsResult> {
+    const normalizedAmountSun = normalizeSunAmount(amountSun, "amountSun");
+    const resolvedFeeLimitSun = normalizeFeeLimitSun(
+      feeLimitSun,
+      this.ownerWithdrawFeeLimitSun
+    );
+
+    return this.runWithOperatorLock(async () => {
+      await this.ensureResourcesForOperation(`owner-withdraw:${normalizedAmountSun}`);
+      await this.verifyResourcesStillReadyBeforeSend();
+
+      const contract = await this.contract();
+
+      try {
+        const sendResult = await withRateLimitRetry("withdrawOwnerFunds.send", async () => {
+          return await contract.withdrawOwnerFunds(normalizedAmountSun).send({
+            feeLimit: resolvedFeeLimitSun
+          });
+        });
+
+        const txid = extractTxidFromSendTransactionResult(sendResult);
+
+        return {
+          txid: assertNonEmpty(txid || "", "txid"),
+          amountSun: normalizedAmountSun
+        };
+      } catch (error) {
+        if (isRateLimitError(error)) {
+          throw wrapAsRateLimitError(error, "TRON_RATE_LIMIT");
+        }
+
+        if (isResourceSendError(error)) {
+          throw createTaggedError(
+            `Owner withdraw send failed because resources were still not sufficient at execution time. ${getErrorMessage(error)}`,
+            {
+              code: "ACCOUNT_RESOURCE_INSUFFICIENT_DURING_SEND",
+              cause: error
+            }
+          );
+        }
+
+        throw error;
+      }
+    });
+  }
+
   async recordVerifiedPurchase(
     input: RecordVerifiedPurchaseInput
   ): Promise<RecordVerifiedPurchaseResult> {
@@ -10581,7 +10741,7 @@ export class TronControllerClient implements ControllerClient {
     const feeLimitSun = normalizeFeeLimitSun(input.feeLimitSun);
 
     return this.runWithOperatorLock(async () => {
-      await this.ensureResourcesForAllocation(purchaseId);
+      await this.ensureResourcesForOperation(purchaseId);
       await this.verifyResourcesStillReadyBeforeSend();
 
       const contract = await this.contract();
@@ -10602,10 +10762,13 @@ export class TronControllerClient implements ControllerClient {
         });
 
         const txid = extractTxidFromSendTransactionResult(sendResult);
-
-        return {
+        const result = {
           txid: assertNonEmpty(txid || "", "txid")
         };
+
+        await this.tryAutoWithdrawOwnerFundsAfterAllocation(purchaseId);
+
+        return result;
       } catch (error) {
         if (isRateLimitError(error)) {
           throw wrapAsRateLimitError(error, "TRON_RATE_LIMIT");
@@ -10640,7 +10803,10 @@ export class TronControllerAllocationExecutor implements AllocationExecutor {
       gasStationMinBandwidth: config.gasStationMinBandwidth,
       allocationMinEnergy: config.allocationMinEnergy,
       allocationMinBandwidth: config.allocationMinBandwidth,
-      gasStationServiceChargeType: config.gasStationServiceChargeType
+      gasStationServiceChargeType: config.gasStationServiceChargeType,
+      ownerAutoWithdrawEnabled: config.ownerAutoWithdrawEnabled,
+      ownerWithdrawMinSun: config.ownerWithdrawMinSun,
+      ownerWithdrawFeeLimitSun: config.ownerWithdrawFeeLimitSun
     });
   }
 
