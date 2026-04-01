@@ -1,7 +1,6 @@
 import { FOURTEEN_TOKEN_CONTRACT } from "../../../shared/config/contracts";
-import type { ProcessVerifiedPurchaseAndAllocateResult } from "./app/processAttribution";
+import type { PurchaseStore } from "./db/purchases";
 import {
-  type PurchaseStore,
   getAllocationRetryReadyAt,
   isPurchaseReadyForAllocationRetry,
   isRateLimitedAllocationFailure
@@ -18,8 +17,20 @@ export interface RunScanConfig {
       ownerShareSun: string;
       feeLimitSun?: number;
       now?: number;
-      allocationMode?: "eager" | "claim-first";
-    }): Promise<ProcessVerifiedPurchaseAndAllocateResult>;
+      allocationMode?: string;
+    }): Promise<{
+      stage: "verified-purchase";
+      purchaseId: string | null;
+      attribution: unknown;
+      verification: {
+        canAllocate: boolean;
+        reason: string | null;
+      };
+      allocation: {
+        status: "allocated" | "deferred" | "failed" | "skipped";
+        reason: string | null;
+      } | null;
+    }>;
   };
   store: PurchaseStore;
   tokenContractAddress?: string;
