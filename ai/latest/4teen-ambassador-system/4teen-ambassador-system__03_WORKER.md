@@ -1,6 +1,6 @@
 # 4teen-ambassador-system — ALLOCATION WORKER
 
-Generated: 2026-04-01T08:22:30.649Z
+Generated: 2026-04-01T08:39:08.520Z
 Repository: info14fourteen-creator/4teen-ambassador-system
 Branch: main
 
@@ -1595,6 +1595,22 @@ export async function initPurchaseTables(): Promise<void> {
   `);
 
   await query(`
+    UPDATE purchases
+    SET
+      ambassador_reward_sun = CASE
+        WHEN ambassador_reward_sun IS NULL OR TRIM(ambassador_reward_sun) = '' THEN '0'
+        ELSE ambassador_reward_sun
+      END,
+      owner_payout_sun = CASE
+        WHEN owner_payout_sun IS NULL
+          OR TRIM(owner_payout_sun) = ''
+          OR owner_payout_sun = '0'
+        THEN owner_share_sun
+        ELSE owner_payout_sun
+      END
+  `);
+
+  await query(`
     CREATE INDEX IF NOT EXISTS idx_purchases_tx_hash
     ON purchases(tx_hash)
   `);
@@ -2344,7 +2360,7 @@ export class PostgresPurchaseStore implements PurchaseStore {
           ) AS pending_backend_sync_count,
 
           COALESCE(SUM(CASE
-            WHEN status IN ('withdraw_included')
+            WHEN status = 'withdraw_included'
               AND withdraw_session_id IS NOT NULL
               AND ambassador_reward_sun::numeric > 0
             THEN ambassador_reward_sun::numeric
@@ -2352,7 +2368,7 @@ export class PostgresPurchaseStore implements PurchaseStore {
           END)::text, '0') AS requested_for_processing_sun,
 
           COUNT(*) FILTER (
-            WHERE status IN ('withdraw_included')
+            WHERE status = 'withdraw_included'
               AND withdraw_session_id IS NOT NULL
               AND ambassador_reward_sun::numeric > 0
           ) AS requested_for_processing_count
