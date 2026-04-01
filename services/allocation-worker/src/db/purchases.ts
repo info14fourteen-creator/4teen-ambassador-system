@@ -64,28 +64,31 @@ export interface CabinetStatsRecord {
   trackedVolumeSun: string;
 
   /**
-   * These fields are intentionally zero in DB-derived stats.
-   * Real claimable and real available balances must come from contract reads.
+   * Real claimable / available balances must come from contract reads.
+   * DB only stores operational and historical backend state.
    */
   claimableRewardsSun: string;
   availableOnChainSun: string;
   availableOnChainCount: number;
 
-  /**
-   * Backend operational ledger only.
-   */
   allocatedInDbSun: string;
   allocatedInDbCount: number;
+
   pendingBackendSyncSun: string;
   pendingBackendSyncCount: number;
+
   requestedForProcessingSun: string;
   requestedForProcessingCount: number;
 
-  /**
-   * Historical DB-derived lifecycle accounting only.
-   */
   lifetimeRewardsSun: string;
   withdrawnRewardsSun: string;
+
+  /**
+   * Debug / legacy visibility:
+   * rows where we have volume and owner share, but reward was never written.
+   */
+  missingRewardCount: number;
+  missingRewardOwnerShareSun: string;
 
   hasProcessingWithdrawal: boolean;
 }
@@ -520,6 +523,8 @@ function emptyCabinetStatsRecord(): CabinetStatsRecord {
     requestedForProcessingCount: 0,
     lifetimeRewardsSun: "0",
     withdrawnRewardsSun: "0",
+    missingRewardCount: 0,
+    missingRewardOwnerShareSun: "0",
     hasProcessingWithdrawal: false
   };
 }
@@ -785,17 +790,26 @@ function rowToCabinetStatsRecord(row: any): CabinetStatsRecord {
   return {
     totalBuyers: Number(row.total_buyers || 0),
     trackedVolumeSun: String(row.tracked_volume_sun || "0"),
+
     claimableRewardsSun: "0",
     availableOnChainSun: "0",
     availableOnChainCount: 0,
+
     allocatedInDbSun: String(row.allocated_in_db_sun || "0"),
     allocatedInDbCount: Number(row.allocated_in_db_count || 0),
+
     pendingBackendSyncSun: String(row.pending_backend_sync_sun || "0"),
     pendingBackendSyncCount: Number(row.pending_backend_sync_count || 0),
+
     requestedForProcessingSun: String(row.requested_for_processing_sun || "0"),
     requestedForProcessingCount,
+
     lifetimeRewardsSun: String(row.lifetime_rewards_sun || "0"),
     withdrawnRewardsSun: String(row.withdrawn_rewards_sun || "0"),
+
+    missingRewardCount: Number(row.missing_reward_count || 0),
+    missingRewardOwnerShareSun: String(row.missing_reward_owner_share_sun || "0"),
+
     hasProcessingWithdrawal: requestedForProcessingCount > 0
   };
 }
@@ -867,6 +881,11 @@ function buildSelectSql(): string {
 
 function buildCabinetStatsSql(): string {
   return `
+    WITH scoped AS (
+      SELECT *
+      FROM purchases
+      WHERE ambassador_wallet = $1
+    )
     SELECT
       COUNT(DISTINCT CASE
         WHEN status <> 'received' AND buyer_wallet <> '' THEN buyer_wallet
@@ -902,7 +921,8 @@ function buildCabinetStatsSql(): string {
       END)::text, '0') AS lifetime_rewards_sun,
 
       COALESCE(SUM(CASE
-        WHEN status = 'withdraw_completed' THEN ambassador_reward_sun::numeric
+        WHEN status = 'withdraw_completed'
+        THEN ambassador_reward_sun::numeric
         ELSE 0
       END)::text, '0') AS withdrawn_rewards_sun,
 
@@ -956,9 +976,40 @@ function buildCabinetStatsSql(): string {
         WHERE status = 'withdraw_included'
           AND withdraw_session_id IS NOT NULL
           AND ambassador_reward_sun::numeric > 0
-      ) AS requested_for_processing_count
-    FROM purchases
-    WHERE ambassador_wallet = $1
+      ) AS requested_for_processing_count,
+
+      COUNT(*) FILTER (
+        WHERE status IN (
+          'verified',
+          'deferred',
+          'allocation_in_progress',
+          'allocated',
+          'allocation_failed_retryable',
+          'allocation_failed_final',
+          'withdraw_included',
+          'withdraw_completed'
+        )
+          AND owner_share_sun::numeric > 0
+          AND ambassador_reward_sun::numeric = 0
+      ) AS missing_reward_count,
+
+      COALESCE(SUM(CASE
+        WHEN status IN (
+          'verified',
+          'deferred',
+          'allocation_in_progress',
+          'allocated',
+          'allocation_failed_retryable',
+          'allocation_failed_final',
+          'withdraw_included',
+          'withdraw_completed'
+        )
+          AND owner_share_sun::numeric > 0
+          AND ambassador_reward_sun::numeric = 0
+        THEN owner_share_sun::numeric
+        ELSE 0
+      END)::text, '0') AS missing_reward_owner_share_sun
+    FROM scoped
   `;
 }
 
@@ -2149,9 +2200,12 @@ export class InMemoryPurchaseStore implements PurchaseStore {
     let allocatedInDbSun = "0";
     let pendingBackendSyncSun = "0";
     let requestedForProcessingSun = "0";
+    let missingRewardOwnerShareSun = "0";
+
     let allocatedInDbCount = 0;
     let pendingBackendSyncCount = 0;
     let requestedForProcessingCount = 0;
+    let missingRewardCount = 0;
 
     for (const record of rows) {
       if (record.status !== "received" && record.buyerWallet) {
@@ -2164,6 +2218,18 @@ export class InMemoryPurchaseStore implements PurchaseStore {
       }
 
       const hasReward = hasPositiveReward(record);
+
+      if (
+        TRACKED_VOLUME_STATUSES.has(record.status) &&
+        toBigIntSafe(record.ownerShareSun) > 0n &&
+        !hasReward
+      ) {
+        missingRewardCount += 1;
+        missingRewardOwnerShareSun = sumSunStrings(
+          missingRewardOwnerShareSun,
+          record.ownerShareSun
+        );
+      }
 
       if (record.status === "withdraw_completed" && hasReward) {
         withdrawnRewardsSun = sumSunStrings(withdrawnRewardsSun, record.ambassadorRewardSun);
@@ -2206,17 +2272,26 @@ export class InMemoryPurchaseStore implements PurchaseStore {
     return {
       totalBuyers: buyers.size,
       trackedVolumeSun,
+
       claimableRewardsSun: "0",
       availableOnChainSun: "0",
       availableOnChainCount: 0,
+
       allocatedInDbSun,
       allocatedInDbCount,
+
       pendingBackendSyncSun,
       pendingBackendSyncCount,
+
       requestedForProcessingSun,
       requestedForProcessingCount,
+
       lifetimeRewardsSun,
       withdrawnRewardsSun,
+
+      missingRewardCount,
+      missingRewardOwnerShareSun,
+
       hasProcessingWithdrawal: requestedForProcessingCount > 0
     };
   }
