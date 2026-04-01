@@ -1,4 +1,9 @@
 import type { AllocationWorker } from "../index";
+import {
+  getAllocationRetryReadyAt,
+  isPurchaseReadyForAllocationRetry,
+  isRateLimitedAllocationFailure
+} from "../db/purchases";
 
 export interface ReplayDeferredPurchasesJobOptions {
   limit?: number;
@@ -85,14 +90,17 @@ export async function replayDeferredPurchases(
 
   if (!failures.length) {
     result.finishedAt = Date.now();
+
     logger.info?.(
       JSON.stringify({
         ok: true,
         job: "replayDeferredPurchases",
-        message: "No deferred purchases found",
-        scanned: 0
+        stage: "finished-empty",
+        scanned: 0,
+        durationMs: result.finishedAt - result.startedAt
       })
     );
+
     return result;
   }
 
@@ -100,13 +108,41 @@ export async function replayDeferredPurchases(
     JSON.stringify({
       ok: true,
       job: "replayDeferredPurchases",
-      message: "Starting replay of deferred purchases",
+      stage: "started",
       scanned: failures.length,
-      limit
+      limit,
+      now
     })
   );
 
   for (const purchase of failures) {
+    if (!isPurchaseReadyForAllocationRetry(purchase, now)) {
+      const retryAt = getAllocationRetryReadyAt(purchase);
+      const retryInMs = Math.max(0, retryAt - now);
+
+      result.skipped += 1;
+      result.items.push({
+        purchaseId: purchase.purchaseId,
+        status: "skipped",
+        reason: isRateLimitedAllocationFailure(purchase)
+          ? `Cooldown active after rate limit. Retry in ${retryInMs}ms`
+          : `Cooldown active. Retry in ${retryInMs}ms`,
+        txid: null
+      });
+
+      logger.info?.(
+        JSON.stringify({
+          ok: true,
+          job: "replayDeferredPurchases",
+          stage: "cooldown-skip",
+          purchaseId: purchase.purchaseId,
+          retryInMs
+        })
+      );
+
+      continue;
+    }
+
     result.attempted += 1;
 
     try {
@@ -129,8 +165,8 @@ export async function replayDeferredPurchases(
           JSON.stringify({
             ok: true,
             job: "replayDeferredPurchases",
+            stage: "allocated",
             purchaseId: purchase.purchaseId,
-            status: "allocated",
             txid: replayResult.txid ?? null
           })
         );
@@ -151,8 +187,8 @@ export async function replayDeferredPurchases(
           JSON.stringify({
             ok: true,
             job: "replayDeferredPurchases",
+            stage: "skipped",
             purchaseId: purchase.purchaseId,
-            status: "skipped",
             reason: replayResult.reason ?? "Replay skipped"
           })
         );
@@ -172,8 +208,8 @@ export async function replayDeferredPurchases(
         JSON.stringify({
           ok: false,
           job: "replayDeferredPurchases",
+          stage: "failed",
           purchaseId: purchase.purchaseId,
-          status: "failed",
           reason: replayResult.reason ?? "Replay failed"
         })
       );
@@ -198,8 +234,8 @@ export async function replayDeferredPurchases(
         JSON.stringify({
           ok: false,
           job: "replayDeferredPurchases",
+          stage: "exception",
           purchaseId: purchase.purchaseId,
-          status: "failed",
           error: message
         })
       );
