@@ -17,6 +17,7 @@ export interface PrepareAmbassadorWithdrawalJobItem {
   ambassadorWallet: string;
   purchaseAmountSun: string;
   ownerShareSun: string;
+  ambassadorRewardSun: string;
   status: string;
   queuedForWithdrawal: boolean;
   withdrawSessionId: string | null;
@@ -31,6 +32,7 @@ export interface PrepareAmbassadorWithdrawalJobResult {
   scanned: number;
   prepared: number;
   skipped: number;
+  totalRewardSun: string;
   items: PrepareAmbassadorWithdrawalJobItem[];
   startedAt: number;
   finishedAt: number;
@@ -73,6 +75,18 @@ function toErrorMessage(error: unknown): string {
   }
 
   return "Unknown error";
+}
+
+function sumSun(left: string, right: string): string {
+  return (BigInt(left || "0") + BigInt(right || "0")).toString();
+}
+
+function isPositiveSun(value: string | number | bigint | null | undefined): boolean {
+  try {
+    return BigInt(String(value ?? "0")) > 0n;
+  } catch {
+    return false;
+  }
 }
 
 function buildWithdrawSessionId(input: {
@@ -137,12 +151,10 @@ async function loadCandidatePurchases(
   });
 
   return pending.filter((purchase) => {
-    const reward = BigInt(String(purchase.ownerShareSun || "0"));
-
     return (
       purchase.status === "allocated" &&
       !purchase.withdrawSessionId &&
-      reward > 0n
+      isPositiveSun(purchase.ambassadorRewardSun)
     );
   });
 }
@@ -189,6 +201,7 @@ export async function prepareAmbassadorWithdrawal(
     scanned: 0,
     prepared: 0,
     skipped: 0,
+    totalRewardSun: "0",
     items: [],
     startedAt,
     finishedAt: startedAt
@@ -210,7 +223,7 @@ export async function prepareAmbassadorWithdrawal(
       JSON.stringify({
         ok: true,
         job: "prepareAmbassadorWithdrawal",
-        message: "Loaded purchases for ambassador withdrawal preparation",
+        stage: "loaded",
         ambassadorSlug,
         ambassadorWallet,
         scanned: result.scanned,
@@ -225,7 +238,7 @@ export async function prepareAmbassadorWithdrawal(
         JSON.stringify({
           ok: true,
           job: "prepareAmbassadorWithdrawal",
-          message: "No allocated purchases found for withdrawal preparation",
+          stage: "finished-empty",
           ambassadorSlug,
           ambassadorWallet,
           scanned: 0,
@@ -245,7 +258,7 @@ export async function prepareAmbassadorWithdrawal(
 
     for (const purchase of purchases) {
       const currentStatus = String(purchase.status || "").trim();
-      const rewardAmount = BigInt(String(purchase.ownerShareSun ?? "0"));
+      const rewardAmount = BigInt(String(purchase.ambassadorRewardSun ?? "0"));
 
       if (currentStatus !== "allocated") {
         result.skipped += 1;
@@ -257,6 +270,7 @@ export async function prepareAmbassadorWithdrawal(
           ambassadorWallet: String(purchase.ambassadorWallet || ""),
           purchaseAmountSun: String(purchase.purchaseAmountSun ?? "0"),
           ownerShareSun: String(purchase.ownerShareSun ?? "0"),
+          ambassadorRewardSun: String(purchase.ambassadorRewardSun ?? "0"),
           status: currentStatus || "unknown",
           queuedForWithdrawal: false,
           withdrawSessionId: null,
@@ -275,6 +289,7 @@ export async function prepareAmbassadorWithdrawal(
           ambassadorWallet: String(purchase.ambassadorWallet || ""),
           purchaseAmountSun: String(purchase.purchaseAmountSun ?? "0"),
           ownerShareSun: String(purchase.ownerShareSun ?? "0"),
+          ambassadorRewardSun: String(purchase.ambassadorRewardSun ?? "0"),
           status: currentStatus,
           queuedForWithdrawal: true,
           withdrawSessionId: String(purchase.withdrawSessionId),
@@ -293,10 +308,11 @@ export async function prepareAmbassadorWithdrawal(
           ambassadorWallet: String(purchase.ambassadorWallet || ""),
           purchaseAmountSun: String(purchase.purchaseAmountSun ?? "0"),
           ownerShareSun: String(purchase.ownerShareSun ?? "0"),
+          ambassadorRewardSun: String(purchase.ambassadorRewardSun ?? "0"),
           status: currentStatus,
           queuedForWithdrawal: false,
           withdrawSessionId: null,
-          reason: "Reward amount is zero"
+          reason: "Ambassador reward amount is zero"
         });
         continue;
       }
@@ -309,6 +325,11 @@ export async function prepareAmbassadorWithdrawal(
       );
 
       result.prepared += 1;
+      result.totalRewardSun = sumSun(
+        result.totalRewardSun,
+        String(updated?.ambassadorRewardSun ?? purchase.ambassadorRewardSun ?? "0")
+      );
+
       result.items.push({
         purchaseId: String(updated?.purchaseId || purchase.purchaseId || ""),
         txHash: String(updated?.txHash || purchase.txHash || ""),
@@ -317,6 +338,9 @@ export async function prepareAmbassadorWithdrawal(
         ambassadorWallet: String(updated?.ambassadorWallet || purchase.ambassadorWallet || ""),
         purchaseAmountSun: String(updated?.purchaseAmountSun ?? purchase.purchaseAmountSun ?? "0"),
         ownerShareSun: String(updated?.ownerShareSun ?? purchase.ownerShareSun ?? "0"),
+        ambassadorRewardSun: String(
+          updated?.ambassadorRewardSun ?? purchase.ambassadorRewardSun ?? "0"
+        ),
         status: String(updated?.status || "withdraw_included"),
         queuedForWithdrawal: true,
         withdrawSessionId,
@@ -330,13 +354,14 @@ export async function prepareAmbassadorWithdrawal(
       JSON.stringify({
         ok: true,
         job: "prepareAmbassadorWithdrawal",
-        message: "Ambassador withdrawal preparation finished",
+        stage: "finished",
         ambassadorSlug,
         ambassadorWallet,
         withdrawSessionId,
         scanned: result.scanned,
         prepared: result.prepared,
         skipped: result.skipped,
+        totalRewardSun: result.totalRewardSun,
         durationMs: result.finishedAt - result.startedAt
       })
     );
@@ -350,9 +375,11 @@ export async function prepareAmbassadorWithdrawal(
       JSON.stringify({
         ok: false,
         job: "prepareAmbassadorWithdrawal",
+        stage: "failed",
         ambassadorSlug,
         ambassadorWallet,
-        error: toErrorMessage(error)
+        error: toErrorMessage(error),
+        durationMs: result.finishedAt - result.startedAt
       })
     );
 
