@@ -1,6 +1,6 @@
 # 4teen-ambassador-system — ALLOCATION WORKER
 
-Generated: 2026-04-01T12:15:02.163Z
+Generated: 2026-04-01T12:17:35.486Z
 Repository: info14fourteen-creator/4teen-ambassador-system
 Branch: main
 
@@ -11035,6 +11035,7 @@ export class TronControllerAllocationExecutor implements AllocationExecutor {
 ## FILE CONTENT
 
 ```ts
+import crypto from "node:crypto";
 import { keccak_256 } from "@noble/hashes/sha3";
 import { utf8ToBytes } from "@noble/hashes/utils";
 
@@ -11077,11 +11078,11 @@ function toBytes32HexFromUtf8(value: string): string {
 }
 
 function normalizeSlugForHashing(slug: string): string {
-  return assertNonEmpty(slug, "slug").trim().toLowerCase();
+  return assertNonEmpty(slug, "slug").toLowerCase();
 }
 
 function normalizeTxHash(txHash: string): string {
-  const normalized = assertNonEmpty(txHash, "txHash").trim().toLowerCase();
+  const normalized = assertNonEmpty(txHash, "txHash").toLowerCase();
   const stripped = stripHexPrefix(normalized);
 
   if (!isHex(stripped)) {
@@ -11092,21 +11093,30 @@ function normalizeTxHash(txHash: string): string {
 }
 
 function normalizeWalletForPurchaseId(wallet: string): string {
-  return assertNonEmpty(wallet, "buyerWallet").trim();
+  return assertNonEmpty(wallet, "buyerWallet");
+}
+
+export function hashSlugToBytes32Hex(slug: string): string {
+  return toBytes32HexFromUtf8(normalizeSlugForHashing(slug));
+}
+
+export function derivePurchaseId(input: PurchaseIdInput): string {
+  const txHash = normalizeTxHash(input.txHash);
+  const buyerWallet = normalizeWalletForPurchaseId(input.buyerWallet).toLowerCase();
+
+  return `0x${crypto
+    .createHash("sha256")
+    .update(`${txHash}:${buyerWallet}`)
+    .digest("hex")}`;
 }
 
 export class TronHashing implements AttributionHashing {
   hashSlugToBytes32Hex(slug: string): string {
-    const normalizedSlug = normalizeSlugForHashing(slug);
-    return toBytes32HexFromUtf8(normalizedSlug);
+    return hashSlugToBytes32Hex(slug);
   }
 
   derivePurchaseId(input: PurchaseIdInput): string {
-    const txHash = normalizeTxHash(input.txHash);
-    const buyerWallet = normalizeWalletForPurchaseId(input.buyerWallet);
-
-    const combined = `${txHash}:${buyerWallet}`;
-    return toBytes32HexFromUtf8(combined);
+    return derivePurchaseId(input);
   }
 }
 ```
