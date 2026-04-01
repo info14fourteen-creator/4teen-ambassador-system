@@ -1,6 +1,6 @@
 # 4teen-ambassador-system — ALLOCATION WORKER
 
-Generated: 2026-04-01T19:49:14.665Z
+Generated: 2026-04-01T19:53:16.484Z
 Repository: info14fourteen-creator/4teen-ambassador-system
 Branch: main
 
@@ -6131,13 +6131,9 @@ class AllocationWorkerProcessorImpl implements AllocationWorkerProcessor {
   private readonly attributionProcessor: AttributionProcessor;
 
   constructor(options: {
-    store: PurchaseStore;
     allocation: AllocationService;
     attributionService: AttributionService;
     attributionProcessor: AttributionProcessor;
-    tronWeb: any;
-    controllerContractAddress?: string;
-    logger?: WorkerLogger;
   }) {
     this.allocation = options.allocation;
     this.allocationService = options.allocation;
@@ -6162,7 +6158,10 @@ class AllocationWorkerProcessorImpl implements AllocationWorkerProcessor {
     return this.attributionProcessor.processVerifiedChainEvent({
       txHash: normalizeTxHash(input.txHash),
       buyerWallet: normalizeWallet(input.buyerWallet, "buyerWallet"),
-      purchaseAmountSun: parseAmountAsString(input.purchaseAmountSun, "purchaseAmountSun"),
+      purchaseAmountSun: parseAmountAsString(
+        input.purchaseAmountSun,
+        "purchaseAmountSun"
+      ),
       ownerShareSun: parseAmountAsString(input.ownerShareSun, "ownerShareSun"),
       blockTimestamp: Number(input.blockTimestamp),
       allocationMode: input.allocationMode,
@@ -6177,7 +6176,10 @@ class AllocationWorkerProcessorImpl implements AllocationWorkerProcessor {
       txHash: normalizeTxHash(input.txHash),
       buyerWallet: normalizeWallet(input.buyerWallet, "buyerWallet"),
       slug: assertNonEmpty(input.slug, "slug"),
-      purchaseAmountSun: parseAmountAsString(input.purchaseAmountSun, "purchaseAmountSun"),
+      purchaseAmountSun: parseAmountAsString(
+        input.purchaseAmountSun,
+        "purchaseAmountSun"
+      ),
       ownerShareSun: parseAmountAsString(input.ownerShareSun, "ownerShareSun"),
       feeLimitSun: input.feeLimitSun,
       now: input.now ?? Date.now(),
@@ -6192,7 +6194,11 @@ class AllocationWorkerProcessorImpl implements AllocationWorkerProcessor {
             status:
               result.attribution.status === "duplicate-local-record"
                 ? "duplicate-local-record"
-                : "matched-local-record",
+                : result.attribution.status === "no-local-record"
+                  ? "no-local-record"
+                  : result.attribution.status === "wallet-mismatch"
+                    ? "wallet-mismatch"
+                    : "matched-local-record",
             purchase: result.attribution.purchase ?? null,
             slug: result.attribution.slug ?? null,
             slugHash: result.attribution.slugHash ?? null,
@@ -6204,9 +6210,11 @@ class AllocationWorkerProcessorImpl implements AllocationWorkerProcessor {
         status:
           result.verification.status === "already-processed-on-chain"
             ? "already-finalized"
-            : result.verification.canAllocate
-              ? "ready-for-allocation"
-              : "ignored",
+            : result.verification.status === "no-attribution"
+              ? "no-attribution"
+              : result.verification.canAllocate
+                ? "ready-for-allocation"
+                : "ignored",
         purchase: result.verification.purchase,
         slug: result.verification.slug,
         slugHash: result.verification.slugHash,
@@ -6390,13 +6398,9 @@ export function createAllocationWorker(
   });
 
   const processor = new AllocationWorkerProcessorImpl({
-    store,
     allocation,
     attributionService,
-    attributionProcessor,
-    tronWeb: options.tronWeb,
-    controllerContractAddress: options.controllerContractAddress,
-    logger: options.logger
+    attributionProcessor
   });
 
   return {
