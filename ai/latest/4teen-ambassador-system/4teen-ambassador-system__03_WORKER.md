@@ -1,6 +1,6 @@
 # 4teen-ambassador-system — ALLOCATION WORKER
 
-Generated: 2026-04-01T10:06:17.408Z
+Generated: 2026-04-01T10:17:17.836Z
 Repository: info14fourteen-creator/4teen-ambassador-system
 Branch: main
 
@@ -9712,7 +9712,14 @@ interface ResourceRequirement {
   targetBandwidth: number;
 }
 
+type TaggedError = Error & {
+  code?: string;
+  retryAfterMs?: number | null;
+  cause?: unknown;
+};
+
 const TRON_HEX_ZERO_ADDRESS = "410000000000000000000000000000000000000000";
+
 const DEFAULT_SERVICE_CHARGE_TYPE = "10010";
 const DEFAULT_TRON_RETRY_ATTEMPTS = 4;
 const DEFAULT_FEE_LIMIT_SUN = 300_000_000;
@@ -9725,14 +9732,14 @@ const GASSTATION_LOW_BALANCE_SUN = 8_500_000;
 const OPERATOR_MIN_BALANCE_FOR_TOPUP_SUN = 11_000_000;
 const OPERATOR_REMAINING_RESERVE_SUN = 2_000_000;
 
-const GASSTATION_TOPUP_POLL_INTERVAL_MS = 4000;
+const GASSTATION_TOPUP_POLL_INTERVAL_MS = 4_000;
 const GASSTATION_TOPUP_POLL_ATTEMPTS = 12;
 
-const RESOURCE_DELIVERY_POLL_INTERVAL_MS = 5000;
+const RESOURCE_DELIVERY_POLL_INTERVAL_MS = 5_000;
 const RESOURCE_DELIVERY_POLL_ATTEMPTS = 18;
 
-const RESOURCE_STABILIZATION_DELAY_MS = 2500;
-const RESOURCE_RECHECK_BEFORE_SEND_DELAY_MS = 1500;
+const RESOURCE_STABILIZATION_DELAY_MS = 2_500;
+const RESOURCE_RECHECK_BEFORE_SEND_DELAY_MS = 1_500;
 
 const MIN_ENERGY_ORDER_FLOOR = 64_400;
 const MIN_BANDWIDTH_ORDER_FLOOR = 5_000;
@@ -9772,7 +9779,10 @@ function normalizeBytes32Hex(value: string, fieldName: string): string {
   return normalized;
 }
 
-function normalizeFeeLimitSun(value: number | undefined, fallback = DEFAULT_FEE_LIMIT_SUN): number {
+function normalizeFeeLimitSun(
+  value: number | undefined,
+  fallback = DEFAULT_FEE_LIMIT_SUN
+): number {
   const resolved = value ?? fallback;
 
   if (!Number.isInteger(resolved) || resolved <= 0) {
@@ -9828,7 +9838,7 @@ function normalizeReturnedAddress(tronWeb: any, value: unknown): string | null {
       return null;
     }
 
-    if (tronWeb?.address?.fromHex) {
+    if (typeof tronWeb?.address?.fromHex === "function") {
       return tronWeb.address.fromHex(raw);
     }
 
@@ -9839,7 +9849,7 @@ function normalizeReturnedAddress(tronWeb: any, value: unknown): string | null {
     return raw;
   }
 
-  return raw || null;
+  return null;
 }
 
 function toComparableAddress(tronWeb: any, value: unknown): string {
@@ -9855,14 +9865,13 @@ function toComparableAddress(tronWeb: any, value: unknown): string {
 
   if (isBase58Address(raw) && typeof tronWeb?.address?.toHex === "function") {
     try {
-      const hex = String(tronWeb.address.toHex(raw) || "").trim();
-      return hex.toLowerCase();
+      return String(tronWeb.address.toHex(raw) || "").trim().toLowerCase();
     } catch {
-      return raw;
+      return raw.toLowerCase();
     }
   }
 
-  return raw;
+  return raw.toLowerCase();
 }
 
 function toNumberSafe(value: unknown): number {
@@ -9871,12 +9880,11 @@ function toNumberSafe(value: unknown): number {
 }
 
 function buildGasRequestId(prefix: string, purchaseId: string, suffix: string): string {
-  const hash = crypto
+  return crypto
     .createHash("sha256")
     .update(`${prefix}:${purchaseId}:${suffix}:${Date.now()}:${Math.random()}`)
-    .digest("hex");
-
-  return hash.slice(0, 32);
+    .digest("hex")
+    .slice(0, 32);
 }
 
 function delay(ms: number): Promise<void> {
@@ -9895,6 +9903,7 @@ function getErrorMessage(error: unknown): string {
     typeof (error as { message?: unknown }).message === "string"
   ) {
     const message = (error as { message: string }).message.trim();
+
     if (message) {
       return message;
     }
@@ -9922,6 +9931,7 @@ function extractErrorCode(error: unknown): string | null {
     }
 
     const normalized = String(candidate).trim();
+
     if (normalized) {
       return normalized;
     }
@@ -9937,6 +9947,7 @@ function parseRetryAfterMs(value: unknown): number | null {
 
   if (typeof value === "string" && value.trim()) {
     const parsed = Number(value);
+
     if (Number.isFinite(parsed) && parsed >= 0) {
       return Math.floor(parsed);
     }
@@ -9969,12 +9980,8 @@ function createTaggedError(
     retryAfterMs?: number | null;
     cause?: unknown;
   }
-): Error {
-  const error = new Error(message) as Error & {
-    code?: string;
-    retryAfterMs?: number | null;
-    cause?: unknown;
-  };
+): TaggedError {
+  const error = new Error(message) as TaggedError;
 
   if (extras?.code) {
     error.code = extras.code;
@@ -9991,7 +9998,7 @@ function createTaggedError(
   return error;
 }
 
-function wrapAsRateLimitError(error: unknown, defaultCode = "TRON_RATE_LIMIT"): Error {
+function wrapAsRateLimitError(error: unknown, defaultCode = "TRON_RATE_LIMIT"): TaggedError {
   const retryAfterMs =
     parseRetryAfterMs((error as any)?.retryAfterMs) ??
     parseRetryAfterMs((error as any)?.response?.headers?.["retry-after"]) ??
@@ -10010,9 +10017,9 @@ function computeBackoffMs(attemptIndex: number, retryAfterMs?: number | null): n
   }
 
   if (attemptIndex <= 0) return 750;
-  if (attemptIndex === 1) return 1500;
-  if (attemptIndex === 2) return 3000;
-  return 5000;
+  if (attemptIndex === 1) return 1_500;
+  if (attemptIndex === 2) return 3_000;
+  return 5_000;
 }
 
 async function withRateLimitRetry<T>(
@@ -10114,6 +10121,7 @@ function normalizePriceItems(source: unknown): Array<{
     .filter((item) => item && typeof item === "object")
     .map((item) => {
       const value = item as Record<string, unknown>;
+
       return {
         expire_min: String(value.expire_min ?? "").trim(),
         service_charge_type: String(value.service_charge_type ?? "").trim(),
@@ -10200,6 +10208,7 @@ async function getAccountResourceSnapshot(
       if (typeof tronWeb?.trx?.getBandwidth !== "function") {
         return 0;
       }
+
       return await tronWeb.trx.getBandwidth(normalizedAddress);
     })
   ]);
@@ -10243,7 +10252,6 @@ async function getAccountResourceSnapshot(
   const calculatedFreeBandwidth = Math.max(0, freeNetLimit - freeNetUsed);
   const calculatedPaidBandwidth = Math.max(0, netLimit - netUsed);
   const calculatedBandwidth = calculatedFreeBandwidth + calculatedPaidBandwidth;
-
   const bandwidthAvailable = Math.max(0, toNumberSafe(bandwidthRaw), calculatedBandwidth);
 
   return {
@@ -10269,6 +10277,7 @@ export class TronControllerClient implements ControllerClient {
   private readonly ownerAutoWithdrawEnabled: boolean;
   private readonly ownerWithdrawMinSun: number;
   private readonly ownerWithdrawFeeLimitSun: number;
+
   private contractInstance: any | null = null;
 
   constructor(config: ControllerClientConfig) {
@@ -10335,10 +10344,15 @@ export class TronControllerClient implements ControllerClient {
       return await current;
     } finally {
       const stored = TronControllerClient.operatorLocks.get(operatorAddress);
+
       if (stored === current) {
         TronControllerClient.operatorLocks.delete(operatorAddress);
       }
     }
+  }
+
+  private buildCurrentRequirement(): ResourceRequirement {
+    return buildResourceRequirement(this.allocationMinEnergy, this.allocationMinBandwidth);
   }
 
   private async estimateRentalCostSun(input: {
@@ -10578,10 +10592,6 @@ export class TronControllerClient implements ControllerClient {
     );
   }
 
-  private buildCurrentRequirement(): ResourceRequirement {
-    return buildResourceRequirement(this.allocationMinEnergy, this.allocationMinBandwidth);
-  }
-
   private async ensureResourcesForOperation(operationId: string): Promise<void> {
     const operatorAddress = this.getOperatorAddress();
     const requirement = this.buildCurrentRequirement();
@@ -10741,7 +10751,7 @@ export class TronControllerClient implements ControllerClient {
     const available = BigInt(availableSun || "0");
     const minAmount = BigInt(String(this.ownerWithdrawMinSun));
 
-    if (available < minAmount || available <= 0n) {
+    if (available <= 0n || available < minAmount) {
       return;
     }
 
@@ -10773,11 +10783,9 @@ export class TronControllerClient implements ControllerClient {
       return await contract.getAmbassadorBySlugHash(normalizedSlugHash).call();
     });
 
-    const ambassadorWallet = normalizeReturnedAddress(this.tronWeb, result);
-
     return {
       slugHash: normalizedSlugHash,
-      ambassadorWallet
+      ambassadorWallet: normalizeReturnedAddress(this.tronWeb, result)
     };
   }
 
