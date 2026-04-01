@@ -179,6 +179,8 @@ export class AttributionService {
         ambassadorWallet: null,
         purchaseAmountSun: "0",
         ownerShareSun: "0",
+        ambassadorRewardSun: "0",
+        ownerPayoutSun: "0",
         source: "frontend-attribution",
         status: "ignored",
         failureReason: "Ambassador wallet not found in local registry",
@@ -203,6 +205,8 @@ export class AttributionService {
       ambassadorWallet,
       purchaseAmountSun: "0",
       ownerShareSun: "0",
+      ambassadorRewardSun: "0",
+      ownerPayoutSun: "0",
       source: "frontend-attribution",
       status: "received",
       failureReason: null,
@@ -269,6 +273,8 @@ export class AttributionService {
     const purchase = await this.store.markVerified(purchaseId, {
       purchaseAmountSun,
       ownerShareSun,
+      ambassadorRewardSun: "0",
+      ownerPayoutSun: ownerShareSun,
       ambassadorSlug: slug,
       ambassadorWallet,
       now
