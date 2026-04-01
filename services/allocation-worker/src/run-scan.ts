@@ -1,5 +1,5 @@
 import { FOURTEEN_TOKEN_CONTRACT } from "../../../shared/config/contracts";
-import type { PurchaseStore } from "./db/purchases";
+import type { AllocationMode, PurchaseStore } from "./db/purchases";
 import {
   getAllocationRetryReadyAt,
   isPurchaseReadyForAllocationRetry,
@@ -17,7 +17,7 @@ export interface RunScanConfig {
       ownerShareSun: string;
       feeLimitSun?: number;
       now?: number;
-      allocationMode?: string;
+      allocationMode?: AllocationMode;
     }): Promise<{
       stage: "verified-purchase";
       purchaseId: string | null;
