@@ -1118,8 +1118,11 @@ export function createAllocationWorker(
   });
 
   const attributionProcessor = new AttributionProcessor({
-    attributionService,
-    allocationService: allocation
+  attributionService,
+  allocationService: allocation,
+  store,
+  controllerClient,
+  logger: options.logger
   });
 
   const processor = new AllocationWorkerProcessorImpl({
