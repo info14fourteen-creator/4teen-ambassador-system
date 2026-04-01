@@ -1,6 +1,6 @@
 # 4teen-ambassador-system — ALLOCATION WORKER
 
-Generated: 2026-04-01T12:53:13.450Z
+Generated: 2026-04-01T12:54:37.547Z
 Repository: info14fourteen-creator/4teen-ambassador-system
 Branch: main
 
@@ -84,6 +84,7 @@ import {
   AllocationDecision,
   AllocationService
 } from "../domain/allocation";
+import type { AllocationMode } from "../db/purchases";
 
 export interface ProcessAttributionConfig {
   attributionService: AttributionService;
@@ -103,6 +104,7 @@ export interface ProcessVerifiedPurchaseAndAllocateInput {
   ownerShareSun: string;
   feeLimitSun?: number;
   now?: number;
+  allocationMode?: AllocationMode;
 }
 
 export interface ProcessVerifiedPurchaseAndAllocateResult {
@@ -118,6 +120,16 @@ function assertNonEmpty(value: string, fieldName: string): string {
 
   if (!normalized) {
     throw new Error(`${fieldName} is required`);
+  }
+
+  return normalized;
+}
+
+function normalizeSunAmount(value: string | number | bigint, fieldName: string): string {
+  const normalized = String(value).trim();
+
+  if (!/^\d+$/.test(normalized)) {
+    throw new Error(`${fieldName} must be a non-negative integer string`);
   }
 
   return normalized;
@@ -178,9 +190,13 @@ export class AttributionProcessor {
     const txHash = assertNonEmpty(input.txHash, "txHash");
     const buyerWallet = assertNonEmpty(input.buyerWallet, "buyerWallet");
     const slug = assertNonEmpty(input.slug, "slug");
-    const purchaseAmountSun = assertNonEmpty(input.purchaseAmountSun, "purchaseAmountSun");
-    const ownerShareSun = assertNonEmpty(input.ownerShareSun, "ownerShareSun");
+    const purchaseAmountSun = normalizeSunAmount(
+      input.purchaseAmountSun,
+      "purchaseAmountSun"
+    );
+    const ownerShareSun = normalizeSunAmount(input.ownerShareSun, "ownerShareSun");
     const now = input.now ?? Date.now();
+    const allocationMode = input.allocationMode ?? "eager";
 
     let attribution: AttributionDecision | null = null;
 
@@ -192,7 +208,9 @@ export class AttributionProcessor {
         now
       });
     } catch (error) {
-      throw new Error(getReadableErrorMessage(error, "Failed to capture frontend attribution"));
+      throw new Error(
+        getReadableErrorMessage(error, "Failed to capture frontend attribution")
+      );
     }
 
     const purchaseId = attribution.purchase.purchaseId;
@@ -220,7 +238,7 @@ export class AttributionProcessor {
     const allocation = await this.allocationService.executeAllocation({
       purchaseId,
       feeLimitSun: input.feeLimitSun,
-      allocationMode: "eager",
+      allocationMode,
       now
     });
 
