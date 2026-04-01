@@ -300,6 +300,26 @@ function pickTupleValue(source: any, index: number, ...keys: string[]): any {
   return undefined;
 }
 
+function parsePercentStrict(value: unknown, fieldName: string): number {
+  const parsed = safeNumber(value, Number.NaN);
+
+  if (!Number.isFinite(parsed)) {
+    throw new Error(`${fieldName} is not a finite number`);
+  }
+
+  const normalized = Math.floor(parsed);
+
+  if (normalized < 0) {
+    throw new Error(`${fieldName} must be >= 0`);
+  }
+
+  if (normalized > 100) {
+    throw new Error(`${fieldName} must be <= 100`);
+  }
+
+  return normalized;
+}
+
 function dividePercentFloor(amountSun: string, percent: number): string {
   if (percent <= 0) {
     return "0";
@@ -327,15 +347,12 @@ function isFinalPurchaseStatus(status: PurchaseRecord["status"]): boolean {
   );
 }
 
-async function readAmbassadorRewardPercent(input: {
+async function getControllerContractInstance(input: {
   tronWeb: any;
   controllerContractAddress?: string;
-  ambassadorWallet: string;
-}): Promise<number> {
-  const tronWeb = input.tronWeb;
-
-  if (!tronWeb) {
-    throw new Error("tronWeb is required to read ambassador reward percent");
+}): Promise<any> {
+  if (!input.tronWeb) {
+    throw new Error("tronWeb is required");
   }
 
   const controllerContractAddress = assertNonEmpty(
@@ -343,23 +360,174 @@ async function readAmbassadorRewardPercent(input: {
     "controllerContractAddress"
   );
 
-  const contract = await tronWeb.contract().at(controllerContractAddress);
+  return input.tronWeb.contract().at(controllerContractAddress);
+}
 
-  if (typeof contract.getDashboardCore !== "function") {
-    return 0;
+async function readAmbassadorRewardData(input: {
+  tronWeb: any;
+  controllerContractAddress?: string;
+  ambassadorWallet: string;
+  logger?: WorkerLogger;
+}): Promise<{
+  rewardPercent: number;
+  effectiveLevel: number | null;
+  source:
+    | "getRewardPercent"
+    | "getDashboardCore"
+    | "getEffectiveLevel+getRewardPercentByLevel"
+    | "ambassadorLevels+getRewardPercentByLevel";
+  raw: Record<string, unknown>;
+}> {
+  const contract = await getControllerContractInstance({
+    tronWeb: input.tronWeb,
+    controllerContractAddress: input.controllerContractAddress
+  });
+
+  const ambassadorWallet = assertNonEmpty(input.ambassadorWallet, "ambassadorWallet");
+  const raw: Record<string, unknown> = {};
+
+  if (typeof contract.getRewardPercent === "function") {
+    try {
+      const rewardPercentRaw = await contract.getRewardPercent(ambassadorWallet).call();
+      raw.getRewardPercent = rewardPercentRaw;
+
+      const rewardPercent = parsePercentStrict(
+        pickTupleValue(rewardPercentRaw, 0),
+        "getRewardPercent"
+      );
+
+      let effectiveLevel: number | null = null;
+
+      if (typeof contract.getEffectiveLevel === "function") {
+        try {
+          const effectiveLevelRaw = await contract.getEffectiveLevel(ambassadorWallet).call();
+          raw.getEffectiveLevel = effectiveLevelRaw;
+          effectiveLevel = safeNumber(pickTupleValue(effectiveLevelRaw, 0), 0);
+        } catch (error) {
+          raw.getEffectiveLevelError =
+            error instanceof Error ? error.message : String(error);
+        }
+      }
+
+      return {
+        rewardPercent,
+        effectiveLevel,
+        source: "getRewardPercent",
+        raw
+      };
+    } catch (error) {
+      raw.getRewardPercentError = error instanceof Error ? error.message : String(error);
+    }
   }
 
-  const coreRaw = await contract.getDashboardCore(input.ambassadorWallet).call();
-  const rewardPercent = safeNumber(
-    pickTupleValue(coreRaw, 3, "rewardPercent"),
-    0
-  );
+  if (typeof contract.getDashboardCore === "function") {
+    try {
+      const coreRaw = await contract.getDashboardCore(ambassadorWallet).call();
+      raw.getDashboardCore = coreRaw;
 
-  if (!Number.isFinite(rewardPercent) || rewardPercent < 0) {
-    return 0;
+      const rewardPercent = parsePercentStrict(
+        pickTupleValue(coreRaw, 3, "rewardPercent"),
+        "getDashboardCore.rewardPercent"
+      );
+
+      const effectiveLevel = safeNumber(
+        pickTupleValue(coreRaw, 2, "effectiveLevel"),
+        0
+      );
+
+      return {
+        rewardPercent,
+        effectiveLevel,
+        source: "getDashboardCore",
+        raw
+      };
+    } catch (error) {
+      raw.getDashboardCoreError = error instanceof Error ? error.message : String(error);
+    }
   }
 
-  return Math.floor(rewardPercent);
+  if (
+    typeof contract.getEffectiveLevel === "function" &&
+    typeof contract.getRewardPercentByLevel === "function"
+  ) {
+    try {
+      const effectiveLevelRaw = await contract.getEffectiveLevel(ambassadorWallet).call();
+      raw.getEffectiveLevel = effectiveLevelRaw;
+
+      const effectiveLevel = safeNumber(pickTupleValue(effectiveLevelRaw, 0), Number.NaN);
+
+      if (!Number.isFinite(effectiveLevel) || effectiveLevel < 0) {
+        throw new Error("Invalid effective level");
+      }
+
+      const rewardPercentByLevelRaw = await contract
+        .getRewardPercentByLevel(Math.floor(effectiveLevel))
+        .call();
+
+      raw.getRewardPercentByLevel = rewardPercentByLevelRaw;
+
+      const rewardPercent = parsePercentStrict(
+        pickTupleValue(rewardPercentByLevelRaw, 0),
+        "getRewardPercentByLevel"
+      );
+
+      return {
+        rewardPercent,
+        effectiveLevel: Math.floor(effectiveLevel),
+        source: "getEffectiveLevel+getRewardPercentByLevel",
+        raw
+      };
+    } catch (error) {
+      raw.getEffectiveLevelPlusByLevelError =
+        error instanceof Error ? error.message : String(error);
+    }
+  }
+
+  if (
+    typeof contract.ambassadorLevels === "function" &&
+    typeof contract.getRewardPercentByLevel === "function"
+  ) {
+    try {
+      const levelsRaw = await contract.ambassadorLevels(ambassadorWallet).call();
+      raw.ambassadorLevels = levelsRaw;
+
+      const effectiveLevel = safeNumber(pickTupleValue(levelsRaw, 0), Number.NaN);
+
+      if (!Number.isFinite(effectiveLevel) || effectiveLevel < 0) {
+        throw new Error("Invalid ambassadorLevels effective level");
+      }
+
+      const rewardPercentByLevelRaw = await contract
+        .getRewardPercentByLevel(Math.floor(effectiveLevel))
+        .call();
+
+      raw.getRewardPercentByLevel = rewardPercentByLevelRaw;
+
+      const rewardPercent = parsePercentStrict(
+        pickTupleValue(rewardPercentByLevelRaw, 0),
+        "getRewardPercentByLevel"
+      );
+
+      return {
+        rewardPercent,
+        effectiveLevel: Math.floor(effectiveLevel),
+        source: "ambassadorLevels+getRewardPercentByLevel",
+        raw
+      };
+    } catch (error) {
+      raw.ambassadorLevelsPlusByLevelError =
+        error instanceof Error ? error.message : String(error);
+    }
+  }
+
+  input.logger?.error?.({
+    scope: "allocation",
+    stage: "reward-percent-read-failed",
+    ambassadorWallet,
+    raw
+  });
+
+  throw new Error("Unable to read ambassador reward percent from controller");
 }
 
 function mapAllocationAttemptToApiResult(
@@ -667,13 +835,17 @@ class AllocationWorkerProcessorImpl implements AllocationWorkerProcessor {
     let verifiedPurchase = verification.purchase;
 
     if (verification.canAllocate && verifiedPurchase.ambassadorWallet) {
-      const rewardPercent = await readAmbassadorRewardPercent({
+      const rewardData = await readAmbassadorRewardData({
         tronWeb: this.tronWeb,
         controllerContractAddress: this.controllerContractAddress,
-        ambassadorWallet: verifiedPurchase.ambassadorWallet
+        ambassadorWallet: verifiedPurchase.ambassadorWallet,
+        logger: this.logger
       });
 
-      const ambassadorRewardSun = dividePercentFloor(ownerShareSun, rewardPercent);
+      const ambassadorRewardSun = dividePercentFloor(
+        ownerShareSun,
+        rewardData.rewardPercent
+      );
       const ownerPayoutSun = subtractSun(ownerShareSun, ambassadorRewardSun);
 
       verifiedPurchase = await this.store.markVerifiedPurchase({
@@ -694,9 +866,12 @@ class AllocationWorkerProcessorImpl implements AllocationWorkerProcessor {
         txHash,
         ambassadorWallet: verifiedPurchase.ambassadorWallet,
         ownerShareSun,
-        rewardPercent,
+        rewardPercent: rewardData.rewardPercent,
+        effectiveLevel: rewardData.effectiveLevel,
+        rewardSource: rewardData.source,
         ambassadorRewardSun,
-        ownerPayoutSun
+        ownerPayoutSun,
+        rawRewardData: rewardData.raw
       });
     }
 
