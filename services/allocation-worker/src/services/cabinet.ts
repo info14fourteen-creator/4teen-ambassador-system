@@ -529,7 +529,7 @@ function buildProfileFromSnapshot(input: {
 }
 
 function isSnapshotFresh(snapshot: AmbassadorDashboardSnapshotRecord, now: number): boolean {
-  if (snapshot.syncStatus !== "success" && snapshot.syncStatus !== "partial") {
+  if (snapshot.syncStatus !== "success") {
     return false;
   }
 
