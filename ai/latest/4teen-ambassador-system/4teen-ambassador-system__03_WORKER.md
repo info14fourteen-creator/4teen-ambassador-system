@@ -1,6 +1,6 @@
 # 4teen-ambassador-system — ALLOCATION WORKER
 
-Generated: 2026-04-01T08:48:08.215Z
+Generated: 2026-04-01T09:02:44.452Z
 Repository: info14fourteen-creator/4teen-ambassador-system
 Branch: main
 
@@ -3838,6 +3838,8 @@ export class AttributionService {
         ambassadorWallet: null,
         purchaseAmountSun: "0",
         ownerShareSun: "0",
+        ambassadorRewardSun: "0",
+        ownerPayoutSun: "0",
         source: "frontend-attribution",
         status: "ignored",
         failureReason: "Ambassador wallet not found in local registry",
@@ -3862,6 +3864,8 @@ export class AttributionService {
       ambassadorWallet,
       purchaseAmountSun: "0",
       ownerShareSun: "0",
+      ambassadorRewardSun: "0",
+      ownerPayoutSun: "0",
       source: "frontend-attribution",
       status: "received",
       failureReason: null,
@@ -3928,6 +3932,8 @@ export class AttributionService {
     const purchase = await this.store.markVerified(purchaseId, {
       purchaseAmountSun,
       ownerShareSun,
+      ambassadorRewardSun: "0",
+      ownerPayoutSun: ownerShareSun,
       ambassadorSlug: slug,
       ambassadorWallet,
       now
