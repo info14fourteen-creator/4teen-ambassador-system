@@ -12,6 +12,40 @@ function assertNonEmpty(value: string | undefined, fieldName: string): string {
   return normalized;
 }
 
+function parseBoolean(value: string | undefined, fallback: boolean): boolean {
+  if (value == null || String(value).trim() === "") {
+    return fallback;
+  }
+
+  const normalized = String(value).trim().toLowerCase();
+
+  if (["1", "true", "yes", "y", "on"].includes(normalized)) {
+    return true;
+  }
+
+  if (["0", "false", "no", "n", "off"].includes(normalized)) {
+    return false;
+  }
+
+  throw new Error(`Invalid boolean value: ${value}`);
+}
+
+function shouldUseSsl(): boolean {
+  if (process.env.PGSSLMODE?.trim().toLowerCase() === "disable") {
+    return false;
+  }
+
+  if (process.env.DATABASE_SSL?.trim().toLowerCase() === "false") {
+    return false;
+  }
+
+  if (process.env.NODE_ENV === "test" && !process.env.DATABASE_URL) {
+    return false;
+  }
+
+  return true;
+}
+
 export function getDatabaseUrl(): string {
   return assertNonEmpty(process.env.DATABASE_URL, "DATABASE_URL");
 }
@@ -21,11 +55,33 @@ export function getPool(): Pool {
     return pool;
   }
 
+  const sslEnabled = shouldUseSsl();
+  const rejectUnauthorized = parseBoolean(
+    process.env.DATABASE_SSL_REJECT_UNAUTHORIZED,
+    false
+  );
+
   pool = new Pool({
     connectionString: getDatabaseUrl(),
-    ssl: {
-      rejectUnauthorized: false
-    }
+    max: Number(process.env.PG_POOL_MAX || 10),
+    idleTimeoutMillis: Number(process.env.PG_IDLE_TIMEOUT_MS || 30_000),
+    connectionTimeoutMillis: Number(process.env.PG_CONNECT_TIMEOUT_MS || 10_000),
+    ssl: sslEnabled
+      ? {
+          rejectUnauthorized
+        }
+      : false
+  });
+
+  pool.on("error", (error) => {
+    console.error(
+      JSON.stringify({
+        level: "error",
+        scope: "postgres",
+        stage: "pool-error",
+        error: error?.message || "Unknown pool error"
+      })
+    );
   });
 
   return pool;
@@ -47,6 +103,7 @@ export async function closePool(): Promise<void> {
     return;
   }
 
-  await pool.end();
+  const currentPool = pool;
   pool = null;
+  await currentPool.end();
 }
