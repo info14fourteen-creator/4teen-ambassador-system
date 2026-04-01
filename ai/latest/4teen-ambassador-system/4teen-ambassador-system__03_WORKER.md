@@ -1,6 +1,6 @@
 # 4teen-ambassador-system — ALLOCATION WORKER
 
-Generated: 2026-04-01T15:13:24.439Z
+Generated: 2026-04-01T16:15:14.350Z
 Repository: info14fourteen-creator/4teen-ambassador-system
 Branch: main
 
@@ -755,6 +755,15 @@ export interface UpsertAmbassadorDashboardSnapshotInput {
   lastSyncedAt?: number;
 }
 
+export interface MarkDashboardSnapshotSyncFailedInput {
+  wallet: string;
+  slug?: string | null;
+  registryStatus?: string | null;
+  syncError: string;
+  syncStatus?: DashboardSnapshotSyncStatus;
+  lastSyncedAt?: number;
+}
+
 function assertNonEmpty(value: string, fieldName: string): string {
   const normalized = String(value || "").trim();
 
@@ -1253,21 +1262,108 @@ export async function upsertDashboardSnapshot(
   return rowToSnapshotRecord(result.rows[0]);
 }
 
-export async function markDashboardSnapshotSyncFailed(input: {
+export async function updateDashboardSnapshotSyncState(input: {
   wallet: string;
   slug?: string | null;
   registryStatus?: string | null;
-  syncError: string;
-  syncStatus?: DashboardSnapshotSyncStatus;
+  syncStatus: DashboardSnapshotSyncStatus;
+  syncError?: string | null;
   lastSyncedAt?: number;
-}): Promise<AmbassadorDashboardSnapshotRecord> {
+}): Promise<AmbassadorDashboardSnapshotRecord | null> {
+  const wallet = assertNonEmpty(input.wallet, "wallet");
+  const syncStatus = normalizeSyncStatus(input.syncStatus);
+  const syncError = normalizeOptionalString(input.syncError);
+  const lastSyncedAt =
+    normalizeTimestamp(input.lastSyncedAt ?? Date.now(), "lastSyncedAt") ?? Date.now();
+
+  const result = await query(
+    `
+      UPDATE ambassador_dashboard_snapshots
+      SET
+        slug = COALESCE($2, slug),
+        registry_status = COALESCE($3, registry_status),
+        sync_status = $4,
+        sync_error = $5,
+        last_synced_at = $6,
+        updated_at = NOW()
+      WHERE wallet = $1
+      RETURNING
+        wallet,
+        slug,
+        registry_status,
+        exists_on_chain,
+        active_on_chain,
+        self_registered,
+        manual_assigned,
+        override_enabled,
+        level,
+        effective_level,
+        current_level,
+        override_level,
+        reward_percent,
+        created_at_on_chain,
+        slug_hash,
+        meta_hash,
+        total_buyers,
+        tracked_volume_sun,
+        claimable_rewards_sun,
+        lifetime_rewards_sun,
+        withdrawn_rewards_sun,
+        next_threshold,
+        remaining_to_next_level,
+        raw_core_json,
+        raw_profile_json,
+        raw_progress_json,
+        raw_stats_json,
+        sync_status,
+        sync_error,
+        last_synced_at,
+        FLOOR(EXTRACT(EPOCH FROM created_at) * 1000) AS created_at_ms,
+        FLOOR(EXTRACT(EPOCH FROM updated_at) * 1000) AS updated_at_ms
+    `,
+    [
+      wallet,
+      normalizeOptionalString(input.slug),
+      normalizeOptionalString(input.registryStatus),
+      syncStatus,
+      syncError,
+      lastSyncedAt
+    ]
+  );
+
+  const row = result.rows[0];
+  return row ? rowToSnapshotRecord(row) : null;
+}
+
+export async function markDashboardSnapshotSyncFailed(
+  input: MarkDashboardSnapshotSyncFailedInput
+): Promise<AmbassadorDashboardSnapshotRecord | null> {
+  const wallet = assertNonEmpty(input.wallet, "wallet");
+  const syncError = assertNonEmpty(input.syncError, "syncError");
+  const syncStatus = normalizeSyncStatus(input.syncStatus ?? "failed");
+  const lastSyncedAt =
+    normalizeTimestamp(input.lastSyncedAt ?? Date.now(), "lastSyncedAt") ?? Date.now();
+
+  const existing = await getDashboardSnapshotByWallet(wallet);
+
+  if (existing) {
+    return updateDashboardSnapshotSyncState({
+      wallet,
+      slug: input.slug ?? null,
+      registryStatus: input.registryStatus ?? null,
+      syncStatus,
+      syncError,
+      lastSyncedAt
+    });
+  }
+
   return upsertDashboardSnapshot({
-    wallet: input.wallet,
+    wallet,
     slug: input.slug ?? null,
     registryStatus: input.registryStatus ?? null,
-    syncStatus: input.syncStatus ?? "failed",
-    syncError: assertNonEmpty(input.syncError, "syncError"),
-    lastSyncedAt: input.lastSyncedAt ?? Date.now()
+    syncStatus,
+    syncError,
+    lastSyncedAt
   });
 }
 ```
