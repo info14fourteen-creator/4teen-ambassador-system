@@ -58,6 +58,30 @@ export interface ResourceGateway {
   ): Promise<AllocationResourceCheckResult>;
 }
 
+export interface GasStationBalanceSnapshot {
+  ok: boolean;
+  availableEnergy?: number;
+  availableBandwidth?: number;
+  raw: unknown;
+}
+
+export interface GasStationBalanceReader {
+  getBalance(): Promise<GasStationBalanceSnapshot>;
+}
+
+export interface EffectiveAllocationResourceDecision {
+  ok: boolean;
+  reason: string | null;
+  wallet: AllocationResourceCheckResult;
+  gasStation?: {
+    balance: GasStationBalanceSnapshot;
+    energySatisfied: boolean;
+    bandwidthSatisfied: boolean;
+    shortEnergyCovered: number;
+    shortBandwidthCovered: number;
+  };
+}
+
 function toSafeNumber(value: unknown): number {
   const parsed = Number(value);
 
@@ -65,25 +89,63 @@ function toSafeNumber(value: unknown): number {
     return 0;
   }
 
-  return parsed;
+  return Math.floor(parsed);
+}
+
+function assertNonEmpty(value: string, fieldName: string): string {
+  const normalized = String(value || "").trim();
+
+  if (!normalized) {
+    throw new Error(`${fieldName} is required`);
+  }
+
+  return normalized;
+}
+
+function isHexAddress(value: string): boolean {
+  return /^41[0-9a-fA-F]{40}$/.test(value);
+}
+
+function isBase58Address(value: string): boolean {
+  return /^T[1-9A-HJ-NP-Za-km-z]{33}$/.test(value);
 }
 
 function normalizeAddressFromTronWeb(tronWeb: any, address: string): string {
-  const raw = String(address || "").trim();
+  const raw = assertNonEmpty(address, "address");
 
-  if (!raw) {
-    throw new Error("address is required");
+  if (isBase58Address(raw)) {
+    return raw;
   }
 
-  if (typeof tronWeb?.address?.fromHex === "function" && raw.startsWith("41")) {
+  if (isHexAddress(raw)) {
+    if (typeof tronWeb?.address?.fromHex === "function") {
+      try {
+        return tronWeb.address.fromHex(raw);
+      } catch {
+        return raw;
+      }
+    }
+
+    return raw;
+  }
+
+  throw new Error("address must be a valid TRON address");
+}
+
+function toAccountQueryAddress(tronWeb: any, normalizedAddress: string): string {
+  if (isHexAddress(normalizedAddress)) {
+    return normalizedAddress;
+  }
+
+  if (typeof tronWeb?.address?.toHex === "function") {
     try {
-      return tronWeb.address.fromHex(raw);
+      return tronWeb.address.toHex(normalizedAddress);
     } catch {
-      return raw;
+      return normalizedAddress;
     }
   }
 
-  return raw;
+  return normalizedAddress;
 }
 
 function sumBandwidth(resources: any, account: any, bandwidthRaw: any) {
@@ -126,7 +188,6 @@ function sumBandwidth(resources: any, account: any, bandwidthRaw: any) {
   const totalLimit = freeNetLimit + netLimit;
   const totalUsed = freeNetUsed + netUsed;
   const calculatedAvailable = Math.max(totalLimit - totalUsed, 0);
-
   const available = Math.max(calculatedAvailable, toSafeNumber(bandwidthRaw));
 
   return {
@@ -172,6 +233,27 @@ function calculateTarget(baseRequired: number, buffer: number): number {
   return Math.max(toSafeNumber(baseRequired) + toSafeNumber(buffer), 0);
 }
 
+function buildReason(input: {
+  shortEnergy: number;
+  shortBandwidth: number;
+}): string | null {
+  const { shortEnergy, shortBandwidth } = input;
+
+  if (shortEnergy > 0 && shortBandwidth > 0) {
+    return `Insufficient energy and bandwidth. Need +${shortEnergy} energy and +${shortBandwidth} bandwidth to reach buffered target.`;
+  }
+
+  if (shortEnergy > 0) {
+    return `Insufficient energy. Need +${shortEnergy} energy to reach buffered target.`;
+  }
+
+  if (shortBandwidth > 0) {
+    return `Insufficient bandwidth. Need +${shortBandwidth} bandwidth to reach buffered target.`;
+  }
+
+  return null;
+}
+
 export function buildDefaultAllocationResourcePolicy(
   overrides?: Partial<AllocationResourcePolicy>
 ): AllocationResourcePolicy {
@@ -192,10 +274,7 @@ export function createResourceGateway(tronWeb: any): ResourceGateway {
 
   async function getAccountResourceSnapshot(address: string): Promise<AccountResourceSnapshot> {
     const normalizedAddress = normalizeAddressFromTronWeb(tronWeb, address);
-    const accountAddress =
-      typeof tronWeb?.address?.toHex === "function"
-        ? tronWeb.address.toHex(normalizedAddress)
-        : normalizedAddress;
+    const accountAddress = toAccountQueryAddress(tronWeb, normalizedAddress);
 
     const [account, resources, bandwidthRaw, balanceSunRaw] = await Promise.all([
       tronWeb.trx.getAccount(accountAddress),
@@ -257,20 +336,13 @@ export function createResourceGateway(tronWeb: any): ResourceGateway {
         ? Math.max(shortBandwidth, toSafeNumber(policy.minBandwidthOrderFloor))
         : 0;
 
-    let reason: string | null = null;
-
-    if (shortEnergy > 0 && shortBandwidth > 0) {
-      reason =
-        `Insufficient energy and bandwidth. ` +
-        `Need +${shortEnergy} energy and +${shortBandwidth} bandwidth to reach buffered target.`;
-    } else if (shortEnergy > 0) {
-      reason = `Insufficient energy. Need +${shortEnergy} energy to reach buffered target.`;
-    } else if (shortBandwidth > 0) {
-      reason = `Insufficient bandwidth. Need +${shortBandwidth} bandwidth to reach buffered target.`;
-    }
+    const reason = buildReason({
+      shortEnergy,
+      shortBandwidth
+    });
 
     return {
-      ok: !reason,
+      ok: reason == null,
       address: snapshot.address,
       availableEnergy,
       availableBandwidth,
@@ -293,30 +365,6 @@ export function createResourceGateway(tronWeb: any): ResourceGateway {
   };
 }
 
-export interface GasStationBalanceSnapshot {
-  ok: boolean;
-  availableEnergy?: number;
-  availableBandwidth?: number;
-  raw: unknown;
-}
-
-export interface GasStationBalanceReader {
-  getBalance(): Promise<GasStationBalanceSnapshot>;
-}
-
-export interface EffectiveAllocationResourceDecision {
-  ok: boolean;
-  reason: string | null;
-  wallet: AllocationResourceCheckResult;
-  gasStation?: {
-    balance: GasStationBalanceSnapshot;
-    energySatisfied: boolean;
-    bandwidthSatisfied: boolean;
-    shortEnergyCovered: number;
-    shortBandwidthCovered: number;
-  };
-}
-
 export async function evaluateEffectiveAllocationReadiness(params: {
   gateway: ResourceGateway;
   address: string;
@@ -335,7 +383,6 @@ export async function evaluateEffectiveAllocationReadiness(params: {
   }
 
   const balance = await params.gasStationClient.getBalance();
-
   const gasEnergy = toSafeNumber(balance.availableEnergy);
   const gasBandwidth = toSafeNumber(balance.availableBandwidth);
 
