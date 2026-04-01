@@ -1,7 +1,7 @@
 import { FOURTEEN_TOKEN_CONTRACT } from "../../../shared/config/contracts";
-import type { AttributionProcessor } from "./app/processAttribution";
+import type { ProcessVerifiedPurchaseAndAllocateResult } from "./app/processAttribution";
 import {
-  PurchaseStore,
+  type PurchaseStore,
   getAllocationRetryReadyAt,
   isPurchaseReadyForAllocationRetry,
   isRateLimitedAllocationFailure
@@ -9,7 +9,18 @@ import {
 
 export interface RunScanConfig {
   tronWeb: any;
-  processor: AttributionProcessor;
+  processor: {
+    processVerifiedPurchaseAndAllocate(input: {
+      txHash: string;
+      buyerWallet: string;
+      slug: string;
+      purchaseAmountSun: string;
+      ownerShareSun: string;
+      feeLimitSun?: number;
+      now?: number;
+      allocationMode?: "eager" | "claim-first";
+    }): Promise<ProcessVerifiedPurchaseAndAllocateResult>;
+  };
   store: PurchaseStore;
   tokenContractAddress?: string;
   eventName?: string;
@@ -292,7 +303,7 @@ function shouldApplyRetryCooldown(status: string): boolean {
 
 export class BuyTokensScanner {
   private readonly tronWeb: any;
-  private readonly processor: AttributionProcessor;
+  private readonly processor: RunScanConfig["processor"];
   private readonly store: PurchaseStore;
   private readonly tokenContractAddress: string;
   private readonly eventName: string;
