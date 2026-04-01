@@ -508,6 +508,39 @@ function hasPositiveReward(record: PurchaseRecord): boolean {
   return toBigIntSafe(record.ambassadorRewardSun) > 0n;
 }
 
+function assertSplitConsistency(input: {
+  ownerShareSun: string;
+  ambassadorRewardSun: string;
+  ownerPayoutSun: string;
+  context: string;
+}): void {
+  const ownerShareSun = normalizeSunAmount(input.ownerShareSun);
+  const ambassadorRewardSun = normalizeSunAmount(input.ambassadorRewardSun);
+  const ownerPayoutSun = normalizeSunAmount(input.ownerPayoutSun);
+
+  const ownerShare = BigInt(ownerShareSun);
+  const reward = BigInt(ambassadorRewardSun);
+  const ownerPayout = BigInt(ownerPayoutSun);
+
+  if (reward > ownerShare) {
+    throw new Error(
+      `${input.context}: ambassadorRewardSun cannot exceed ownerShareSun`
+    );
+  }
+
+  if (ownerPayout > ownerShare) {
+    throw new Error(
+      `${input.context}: ownerPayoutSun cannot exceed ownerShareSun`
+    );
+  }
+
+  if (reward + ownerPayout !== ownerShare) {
+    throw new Error(
+      `${input.context}: invalid reward split, ambassadorRewardSun + ownerPayoutSun must equal ownerShareSun`
+    );
+  }
+}
+
 function emptyCabinetStatsRecord(): CabinetStatsRecord {
   return {
     totalBuyers: 0,
@@ -632,6 +665,18 @@ export function isPurchaseReadyForAllocationRetry(
 function createRecord(input: CreatePurchaseRecordInput): PurchaseRecord {
   const now = input.now ?? Date.now();
   const status = normalizeStatus(input.status);
+  const purchaseAmountSun = normalizeSunAmount(input.purchaseAmountSun);
+  const ownerShareSun = normalizeSunAmount(input.ownerShareSun);
+  const ambassadorRewardSun = normalizeSunAmount(input.ambassadorRewardSun);
+  const ownerPayoutSun = normalizeSunAmount(input.ownerPayoutSun);
+
+  assertSplitConsistency({
+    ownerShareSun,
+    ambassadorRewardSun,
+    ownerPayoutSun,
+    context: "createRecord"
+  });
+
   const allocatedAt =
     input.allocatedAt !== undefined
       ? normalizeTimestamp(input.allocatedAt, "allocatedAt")
@@ -647,10 +692,10 @@ function createRecord(input: CreatePurchaseRecordInput): PurchaseRecord {
     buyerWallet: assertNonEmpty(input.buyerWallet, "buyerWallet"),
     ambassadorSlug: normalizeOptionalString(input.ambassadorSlug),
     ambassadorWallet: normalizeWallet(input.ambassadorWallet),
-    purchaseAmountSun: normalizeSunAmount(input.purchaseAmountSun),
-    ownerShareSun: normalizeSunAmount(input.ownerShareSun),
-    ambassadorRewardSun: normalizeSunAmount(input.ambassadorRewardSun),
-    ownerPayoutSun: normalizeSunAmount(input.ownerPayoutSun),
+    purchaseAmountSun,
+    ownerShareSun,
+    ambassadorRewardSun,
+    ownerPayoutSun,
     status,
     failureReason: normalizeOptionalString(input.failureReason),
     source: normalizeSource(input.source),
@@ -677,6 +722,33 @@ function mergeRecord(
   const now = input.now ?? Date.now();
   const nextStatus = input.status ?? current.status;
 
+  const nextPurchaseAmountSun =
+    input.purchaseAmountSun !== undefined
+      ? normalizeSunAmount(input.purchaseAmountSun)
+      : current.purchaseAmountSun;
+
+  const nextOwnerShareSun =
+    input.ownerShareSun !== undefined
+      ? normalizeSunAmount(input.ownerShareSun)
+      : current.ownerShareSun;
+
+  const nextAmbassadorRewardSun =
+    input.ambassadorRewardSun !== undefined
+      ? normalizeSunAmount(input.ambassadorRewardSun)
+      : current.ambassadorRewardSun;
+
+  const nextOwnerPayoutSun =
+    input.ownerPayoutSun !== undefined
+      ? normalizeSunAmount(input.ownerPayoutSun)
+      : current.ownerPayoutSun;
+
+  assertSplitConsistency({
+    ownerShareSun: nextOwnerShareSun,
+    ambassadorRewardSun: nextAmbassadorRewardSun,
+    ownerPayoutSun: nextOwnerPayoutSun,
+    context: "mergeRecord"
+  });
+
   const nextAllocationAttempts =
     input.allocationAttempts !== undefined
       ? normalizeCount(input.allocationAttempts, "allocationAttempts")
@@ -695,22 +767,10 @@ function mergeRecord(
 
   return {
     ...current,
-    purchaseAmountSun:
-      input.purchaseAmountSun !== undefined
-        ? normalizeSunAmount(input.purchaseAmountSun)
-        : current.purchaseAmountSun,
-    ownerShareSun:
-      input.ownerShareSun !== undefined
-        ? normalizeSunAmount(input.ownerShareSun)
-        : current.ownerShareSun,
-    ambassadorRewardSun:
-      input.ambassadorRewardSun !== undefined
-        ? normalizeSunAmount(input.ambassadorRewardSun)
-        : current.ambassadorRewardSun,
-    ownerPayoutSun:
-      input.ownerPayoutSun !== undefined
-        ? normalizeSunAmount(input.ownerPayoutSun)
-        : current.ownerPayoutSun,
+    purchaseAmountSun: nextPurchaseAmountSun,
+    ownerShareSun: nextOwnerShareSun,
+    ambassadorRewardSun: nextAmbassadorRewardSun,
+    ownerPayoutSun: nextOwnerPayoutSun,
     ambassadorSlug:
       input.ambassadorSlug !== undefined
         ? normalizeOptionalString(input.ambassadorSlug)
@@ -1100,6 +1160,25 @@ export async function initPurchaseTables(): Promise<void> {
         THEN owner_share_sun
         ELSE owner_payout_sun
       END
+  `);
+
+  await query(`
+    DO $$
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1
+        FROM pg_constraint
+        WHERE conname = 'purchases_reward_split_check'
+      ) THEN
+        ALTER TABLE purchases
+        ADD CONSTRAINT purchases_reward_split_check
+        CHECK (
+          owner_share_sun::numeric =
+          ambassador_reward_sun::numeric + owner_payout_sun::numeric
+        ) NOT VALID;
+      END IF;
+    END
+    $$;
   `);
 
   await query(`
@@ -1505,6 +1584,13 @@ export class PostgresPurchaseStore implements PurchaseStore {
       now?: number;
     }
   ): Promise<PurchaseRecord> {
+    assertSplitConsistency({
+      ownerShareSun: input.ownerShareSun,
+      ambassadorRewardSun: input.ambassadorRewardSun,
+      ownerPayoutSun: input.ownerPayoutSun,
+      context: "markVerified"
+    });
+
     return this.update(purchaseId, {
       purchaseAmountSun: input.purchaseAmountSun,
       ownerShareSun: input.ownerShareSun,
@@ -1930,6 +2016,13 @@ export class InMemoryPurchaseStore implements PurchaseStore {
       now?: number;
     }
   ): Promise<PurchaseRecord> {
+    assertSplitConsistency({
+      ownerShareSun: input.ownerShareSun,
+      ambassadorRewardSun: input.ambassadorRewardSun,
+      ownerPayoutSun: input.ownerPayoutSun,
+      context: "markVerified"
+    });
+
     return this.update(purchaseId, {
       purchaseAmountSun: input.purchaseAmountSun,
       ownerShareSun: input.ownerShareSun,
