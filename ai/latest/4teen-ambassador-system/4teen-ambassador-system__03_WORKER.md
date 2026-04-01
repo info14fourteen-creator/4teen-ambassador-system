@@ -1,6 +1,6 @@
 # 4teen-ambassador-system — ALLOCATION WORKER
 
-Generated: 2026-04-01T10:43:07.399Z
+Generated: 2026-04-01T10:45:26.713Z
 Repository: info14fourteen-creator/4teen-ambassador-system
 Branch: main
 
@@ -8597,16 +8597,12 @@ export interface CabinetProfileIdentity {
 
 export interface CabinetProfileStats {
   totalBuyers: number;
-
   trackedVolumeSun: string;
   trackedVolumeTrx: string;
-
   claimableRewardsSun: string;
   claimableRewardsTrx: string;
-
   lifetimeRewardsSun: string;
   lifetimeRewardsTrx: string;
-
   withdrawnRewardsSun: string;
   withdrawnRewardsTrx: string;
 
@@ -8625,19 +8621,15 @@ export interface CabinetProfileWithdrawalQueue {
   availableOnChainSun: string;
   availableOnChainTrx: string;
   availableOnChainCount: number;
-
   allocatedInDbSun: string;
   allocatedInDbTrx: string;
   allocatedInDbCount: number;
-
   pendingBackendSyncSun: string;
   pendingBackendSyncTrx: string;
   pendingBackendSyncCount: number;
-
   requestedForProcessingSun: string;
   requestedForProcessingTrx: string;
   requestedForProcessingCount: number;
-
   hasProcessingWithdrawal: boolean;
 }
 
@@ -8711,15 +8703,6 @@ function safeBoolean(value: unknown): boolean {
   return Boolean(value);
 }
 
-function safeString(value: unknown, fallback = "0"): string {
-  if (value == null) {
-    return fallback;
-  }
-
-  const normalized = String(value).trim();
-  return normalized || fallback;
-}
-
 function toErrorMessage(error: unknown): string {
   if (typeof error === "string" && error.trim()) {
     return error.trim();
@@ -8760,14 +8743,6 @@ function sunToTrxString(value: string | number | bigint | null | undefined): str
   const result = fraction ? `${whole}.${fraction}` : whole;
 
   return negative ? `-${result}` : result;
-}
-
-function levelToLabel(level: number): string {
-  if (level === 0) return "Bronze";
-  if (level === 1) return "Silver";
-  if (level === 2) return "Gold";
-  if (level === 3) return "Platinum";
-  return `Unknown (${level})`;
 }
 
 function buildReferralLink(slug: string): string {
@@ -8850,19 +8825,14 @@ function mapStats(input: {
   return {
     stats: {
       totalBuyers: safeNumber(onChainStats.totalBuyers),
-
       trackedVolumeSun,
       trackedVolumeTrx: sunToTrxString(trackedVolumeSun),
-
       claimableRewardsSun,
       claimableRewardsTrx: sunToTrxString(claimableRewardsSun),
-
       lifetimeRewardsSun,
       lifetimeRewardsTrx: sunToTrxString(lifetimeRewardsSun),
-
       withdrawnRewardsSun,
       withdrawnRewardsTrx: sunToTrxString(withdrawnRewardsSun),
-
       totalVolumeSun: trackedVolumeSun,
       totalVolumeTrx: sunToTrxString(trackedVolumeSun),
       totalRewardsAccruedSun: lifetimeRewardsSun,
@@ -9139,7 +9109,6 @@ export class CabinetService {
     const registryWallet = assertNonEmpty(record.privateIdentity.wallet, "registryWallet");
     const slug = record.publicProfile.slug;
     const status = record.publicProfile.status;
-
     const dbStatsRecord = await this.store.getCabinetStatsByAmbassadorWallet(registryWallet);
 
     try {
@@ -9164,12 +9133,7 @@ export class CabinetService {
         progress: onChain.progress
       };
     } catch {
-      return this.buildFallbackProfile(
-        registryWallet,
-        slug,
-        status,
-        dbStatsRecord
-      );
+      return this.buildFallbackProfile(registryWallet, slug, status, dbStatsRecord);
     }
   }
 
