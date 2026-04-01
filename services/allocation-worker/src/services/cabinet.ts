@@ -1,8 +1,8 @@
 import { getAmbassadorRegistryRecordByWallet } from "../db/ambassadors";
 import {
   getDashboardSnapshotByWallet,
-  markDashboardSnapshotSyncFailed,
-  upsertDashboardSnapshot
+  upsertDashboardSnapshot,
+  type AmbassadorDashboardSnapshotRecord
 } from "../db/dashboardSnapshots";
 import type {
   CabinetStatsRecord,
@@ -447,9 +447,7 @@ function buildProfileFromSnapshot(input: {
   wallet: string;
   slug: string;
   status: string;
-  snapshot: Awaited<ReturnType<typeof getDashboardSnapshotByWallet>> extends infer T
-    ? NonNullable<T>
-    : never;
+  snapshot: AmbassadorDashboardSnapshotRecord;
   dbStatsRecord: CabinetStatsRecord;
 }): CabinetProfileRegisteredResult {
   const { wallet, slug, status, snapshot, dbStatsRecord } = input;
@@ -880,52 +878,73 @@ export class CabinetService {
       });
 
       try {
-        await markDashboardSnapshotSyncFailed({
-          wallet: registryWallet,
-          slug,
-          registryStatus: status,
-          syncError: errorMessage,
-          syncStatus: "failed",
-          lastSyncedAt: Date.now()
-        });
-      } catch (snapshotError) {
-        logJson("error", {
-          stage: "dashboard-snapshot-sync-failed",
-          wallet: registryWallet,
-          slug,
-          status,
-          error: toErrorMessage(snapshotError)
-        });
-      }
+        const existingSnapshot = await getDashboardSnapshotByWallet(registryWallet);
 
-      try {
-        const snapshot = await getDashboardSnapshotByWallet(registryWallet);
+        if (existingSnapshot) {
+          await upsertDashboardSnapshot({
+            wallet: existingSnapshot.wallet,
+            slug: slug,
+            registryStatus: status,
 
-        if (snapshot) {
+            existsOnChain: existingSnapshot.existsOnChain,
+            activeOnChain: existingSnapshot.activeOnChain,
+            selfRegistered: existingSnapshot.selfRegistered,
+            manualAssigned: existingSnapshot.manualAssigned,
+            overrideEnabled: existingSnapshot.overrideEnabled,
+
+            level: existingSnapshot.level,
+            effectiveLevel: existingSnapshot.effectiveLevel,
+            currentLevel: existingSnapshot.currentLevel,
+            overrideLevel: existingSnapshot.overrideLevel,
+            rewardPercent: existingSnapshot.rewardPercent,
+
+            createdAtOnChain: existingSnapshot.createdAtOnChain,
+            slugHash: existingSnapshot.slugHash,
+            metaHash: existingSnapshot.metaHash,
+
+            totalBuyers: existingSnapshot.totalBuyers,
+            trackedVolumeSun: existingSnapshot.trackedVolumeSun,
+            claimableRewardsSun: existingSnapshot.claimableRewardsSun,
+            lifetimeRewardsSun: existingSnapshot.lifetimeRewardsSun,
+            withdrawnRewardsSun: existingSnapshot.withdrawnRewardsSun,
+
+            nextThreshold: existingSnapshot.nextThreshold,
+            remainingToNextLevel: existingSnapshot.remainingToNextLevel,
+
+            rawCoreJson: existingSnapshot.rawCoreJson,
+            rawProfileJson: existingSnapshot.rawProfileJson,
+            rawProgressJson: existingSnapshot.rawProgressJson,
+            rawStatsJson: existingSnapshot.rawStatsJson,
+
+            syncStatus: "failed",
+            syncError: errorMessage,
+            lastSyncedAt: Date.now()
+          });
+
           logJson("warn", {
             stage: "dashboard-snapshot-fallback-used",
             wallet: registryWallet,
             slug,
             status,
-            snapshotSyncStatus: snapshot.syncStatus,
-            snapshotLastSyncedAt: snapshot.lastSyncedAt
+            snapshotSyncStatus: existingSnapshot.syncStatus,
+            snapshotLastSyncedAt: existingSnapshot.lastSyncedAt
           });
 
           return buildProfileFromSnapshot({
             wallet: registryWallet,
             slug,
             status,
-            snapshot,
+            snapshot: existingSnapshot,
             dbStatsRecord
           });
         }
-      } catch (snapshotReadError) {
+      } catch (snapshotError) {
         logJson("error", {
-          stage: "dashboard-snapshot-read-failed",
+          stage: "dashboard-snapshot-read-or-write-failed",
           wallet: registryWallet,
           slug,
           status,
-          error: toErrorMessage(snapshotReadError)
+          error: toErrorMessage(snapshotError)
         });
       }
 
