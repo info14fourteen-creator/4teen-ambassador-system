@@ -1,4 +1,9 @@
 import { getAmbassadorRegistryRecordByWallet } from "../db/ambassadors";
+import {
+  getDashboardSnapshotByWallet,
+  markDashboardSnapshotSyncFailed,
+  upsertDashboardSnapshot
+} from "../db/dashboardSnapshots";
 import type {
   CabinetStatsRecord,
   PurchaseProcessingStatus,
@@ -364,31 +369,18 @@ function mapStats(input: {
       totalRewardsClaimedTrx: sunToTrxString(withdrawnRewardsSun)
     },
     withdrawalQueue: {
-      /**
-       * Real withdrawable amount.
-       * Must come from on-chain contract state only.
-       */
       availableOnChainSun: claimableRewardsSun,
       availableOnChainTrx: sunToTrxString(claimableRewardsSun),
       availableOnChainCount: dbStats.availableOnChainCount,
 
-      /**
-       * Backend accounting only.
-       */
       allocatedInDbSun: dbStats.allocatedInDbSun,
       allocatedInDbTrx: sunToTrxString(dbStats.allocatedInDbSun),
       allocatedInDbCount: dbStats.allocatedInDbCount,
 
-      /**
-       * Verified / deferred / retryable queue in backend.
-       */
       pendingBackendSyncSun: dbStats.pendingBackendSyncSun,
       pendingBackendSyncTrx: sunToTrxString(dbStats.pendingBackendSyncSun),
       pendingBackendSyncCount: dbStats.pendingBackendSyncCount,
 
-      /**
-       * Already included into withdrawal processing queue.
-       */
       requestedForProcessingSun: dbStats.requestedForProcessingSun,
       requestedForProcessingTrx: sunToTrxString(dbStats.requestedForProcessingSun),
       requestedForProcessingCount: dbStats.requestedForProcessingCount,
@@ -678,6 +670,150 @@ export class CabinetService {
     };
   }
 
+  private async storeDashboardSnapshot(input: {
+    wallet: string;
+    slug: string;
+    status: string;
+    onChain: {
+      identity: CabinetProfileIdentity;
+      progress: CabinetProfileProgress;
+      stats: {
+        totalBuyers: string;
+        trackedVolumeSun: string;
+        claimableRewardsSun: string;
+        lifetimeRewardsSun: string;
+        withdrawnRewardsSun: string;
+      };
+      debug: {
+        coreRaw: any;
+        profileRaw: any;
+        progressRaw: any;
+        statsRaw: any;
+      };
+    };
+  }): Promise<void> {
+    await upsertDashboardSnapshot({
+      wallet: input.wallet,
+      slug: input.slug,
+      registryStatus: input.status,
+
+      existsOnChain: input.onChain.identity.exists,
+      activeOnChain: input.onChain.identity.active,
+      selfRegistered: input.onChain.identity.selfRegistered,
+      manualAssigned: input.onChain.identity.manualAssigned,
+      overrideEnabled: input.onChain.identity.overrideEnabled,
+
+      level: input.onChain.identity.level,
+      effectiveLevel: input.onChain.identity.effectiveLevel,
+      currentLevel: input.onChain.identity.currentLevel,
+      overrideLevel: input.onChain.identity.overrideLevel,
+      rewardPercent: input.onChain.identity.rewardPercent,
+
+      createdAtOnChain: input.onChain.identity.createdAt,
+      slugHash: input.onChain.identity.slugHash,
+      metaHash: input.onChain.identity.metaHash,
+
+      totalBuyers: safeNumber(input.onChain.stats.totalBuyers, 0),
+      trackedVolumeSun: input.onChain.stats.trackedVolumeSun,
+      claimableRewardsSun: input.onChain.stats.claimableRewardsSun,
+      lifetimeRewardsSun: input.onChain.stats.lifetimeRewardsSun,
+      withdrawnRewardsSun: input.onChain.stats.withdrawnRewardsSun,
+
+      nextThreshold: input.onChain.progress.nextThreshold,
+      remainingToNextLevel: input.onChain.progress.remainingToNextLevel,
+
+      rawCoreJson: input.onChain.debug.coreRaw,
+      rawProfileJson: input.onChain.debug.profileRaw,
+      rawProgressJson: input.onChain.debug.progressRaw,
+      rawStatsJson: input.onChain.debug.statsRaw,
+
+      syncStatus: "success",
+      syncError: null,
+      lastSyncedAt: Date.now()
+    });
+  }
+
+  private async markSnapshotFailure(input: {
+    wallet: string;
+    slug: string;
+    status: string;
+    error: unknown;
+  }): Promise<void> {
+    try {
+      await markDashboardSnapshotSyncFailed({
+        wallet: input.wallet,
+        slug: input.slug,
+        registryStatus: input.status,
+        syncError: toErrorMessage(input.error),
+        syncStatus: "failed",
+        lastSyncedAt: Date.now()
+      });
+    } catch (snapshotError) {
+      logJson("warn", {
+        stage: "snapshot-failure-write-failed",
+        wallet: input.wallet,
+        slug: input.slug,
+        status: input.status,
+        error: toErrorMessage(snapshotError)
+      });
+    }
+  }
+
+  private buildProfileFromSnapshot(input: {
+    wallet: string;
+    slug: string;
+    status: string;
+    dbStatsRecord: CabinetStatsRecord;
+    snapshot: Awaited<ReturnType<typeof getDashboardSnapshotByWallet>>;
+  }): CabinetProfileRegisteredResult {
+    const { wallet, slug, status, dbStatsRecord, snapshot } = input;
+
+    const onChainStats = {
+      totalBuyers: String(snapshot?.totalBuyers ?? 0),
+      trackedVolumeSun: snapshot?.trackedVolumeSun ?? "0",
+      claimableRewardsSun: snapshot?.claimableRewardsSun ?? "0",
+      lifetimeRewardsSun: snapshot?.lifetimeRewardsSun ?? "0",
+      withdrawnRewardsSun: snapshot?.withdrawnRewardsSun ?? "0"
+    };
+
+    const mapped = mapStats({
+      onChainStats,
+      dbStats: dbStatsRecord
+    });
+
+    return {
+      registered: true,
+      wallet,
+      slug,
+      status,
+      referralLink: buildReferralLink(slug),
+      identity: {
+        wallet,
+        exists: safeBoolean(snapshot?.existsOnChain, true),
+        active: status === "active" ? safeBoolean(snapshot?.activeOnChain, false) : false,
+        selfRegistered: safeBoolean(snapshot?.selfRegistered, false),
+        manualAssigned: safeBoolean(snapshot?.manualAssigned, false),
+        overrideEnabled: safeBoolean(snapshot?.overrideEnabled, false),
+        level: safeNumber(snapshot?.level, 0),
+        effectiveLevel: safeNumber(snapshot?.effectiveLevel, 0),
+        currentLevel: safeNumber(snapshot?.currentLevel, 0),
+        overrideLevel: safeNumber(snapshot?.overrideLevel, 0),
+        rewardPercent: safeNumber(snapshot?.rewardPercent, 0),
+        createdAt: safeNumber(snapshot?.createdAtOnChain, 0),
+        slugHash: normalizeSlugHash(snapshot?.slugHash),
+        metaHash: normalizeMetaHash(snapshot?.metaHash)
+      },
+      stats: mapped.stats,
+      withdrawalQueue: mapped.withdrawalQueue,
+      progress: {
+        currentLevel: safeNumber(snapshot?.currentLevel, 0),
+        buyersCount: safeNumber(snapshot?.totalBuyers, 0),
+        nextThreshold: safeNumber(snapshot?.nextThreshold, 0),
+        remainingToNextLevel: safeNumber(snapshot?.remainingToNextLevel, 0)
+      }
+    };
+  }
+
   private buildFallbackProfile(
     wallet: string,
     slug: string,
@@ -747,9 +883,18 @@ export class CabinetService {
     try {
       const onChain = await this.readOnChainDashboard(registryWallet);
 
+      await this.storeDashboardSnapshot({
+        wallet: registryWallet,
+        slug,
+        status,
+        onChain
+      });
+
       logJson("info", {
         stage: "onchain-dashboard-read-success",
         wallet: registryWallet,
+        slug,
+        status,
         controllerContractAddress: this.controllerContractAddress,
         identity: {
           exists: onChain.identity.exists,
@@ -792,6 +937,42 @@ export class CabinetService {
         status,
         controllerContractAddress: this.controllerContractAddress,
         error: toErrorMessage(error)
+      });
+
+      await this.markSnapshotFailure({
+        wallet: registryWallet,
+        slug,
+        status,
+        error
+      });
+
+      const snapshot = await getDashboardSnapshotByWallet(registryWallet);
+
+      if (snapshot) {
+        logJson("warn", {
+          stage: "using-dashboard-snapshot",
+          wallet: registryWallet,
+          slug,
+          status,
+          lastSyncedAt: snapshot.lastSyncedAt,
+          syncStatus: snapshot.syncStatus,
+          syncError: snapshot.syncError
+        });
+
+        return this.buildProfileFromSnapshot({
+          wallet: registryWallet,
+          slug,
+          status,
+          dbStatsRecord,
+          snapshot
+        });
+      }
+
+      logJson("warn", {
+        stage: "using-db-fallback-without-snapshot",
+        wallet: registryWallet,
+        slug,
+        status
       });
 
       return this.buildFallbackProfile(registryWallet, slug, status, dbStatsRecord);
