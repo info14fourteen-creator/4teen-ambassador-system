@@ -1,5 +1,5 @@
 import { FOURTEEN_TOKEN_CONTRACT } from "../../../shared/config/contracts";
-import { AttributionProcessor } from "./app/processAttribution";
+import type { AttributionProcessor } from "./app/processAttribution";
 import {
   PurchaseStore,
   getAllocationRetryReadyAt,
@@ -90,7 +90,7 @@ function normalizeSunAmount(value: unknown, fieldName: string): string {
 }
 
 function computeOwnerShareSun(purchaseAmountSun: string): string {
-  return String((BigInt(purchaseAmountSun) * 7n) / 100n);
+  return ((BigInt(purchaseAmountSun) * 7n) / 100n).toString();
 }
 
 function pickObjectValue(source: any, keys: string[]): unknown {
@@ -378,13 +378,11 @@ export class BuyTokensScanner {
       }
     }
 
-    const nextFingerprint = extractNextFingerprint(rawEvents);
-
     return {
       events: parsedEvents,
       processed,
       nextCursor: {
-        fingerprint: nextFingerprint
+        fingerprint: extractNextFingerprint(rawEvents)
       }
     };
   }
@@ -444,7 +442,8 @@ export class BuyTokensScanner {
       slug: localPurchase.ambassadorSlug,
       purchaseAmountSun: event.purchaseAmountSun,
       ownerShareSun: event.ownerShareSun,
-      now: event.blockTimestamp ?? Date.now()
+      now: event.blockTimestamp ?? Date.now(),
+      allocationMode: "eager"
     });
 
     if (!result.verification.canAllocate) {
