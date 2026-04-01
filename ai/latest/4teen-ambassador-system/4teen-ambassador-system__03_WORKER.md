@@ -1,6 +1,6 @@
 # 4teen-ambassador-system — ALLOCATION WORKER
 
-Generated: 2026-04-01T07:19:10.339Z
+Generated: 2026-04-01T07:59:37.512Z
 Repository: info14fourteen-creator/4teen-ambassador-system
 Branch: main
 
@@ -710,6 +710,8 @@ export interface PurchaseRecord {
   ambassadorWallet: string | null;
   purchaseAmountSun: string;
   ownerShareSun: string;
+  ambassadorRewardSun: string;
+  ownerPayoutSun: string;
   status: PurchaseProcessingStatus;
   failureReason: string | null;
   source: PurchaseSource;
@@ -785,6 +787,8 @@ export interface AttachAmbassadorToPurchaseInput {
   ambassadorWallet: string;
   purchaseAmountSun?: string;
   ownerShareSun?: string;
+  ambassadorRewardSun?: string;
+  ownerPayoutSun?: string;
   now?: number;
 }
 
@@ -794,6 +798,8 @@ export interface MarkVerifiedPurchaseInput {
   buyerWallet: string;
   purchaseAmountSun: string;
   ownerShareSun: string;
+  ambassadorRewardSun: string;
+  ownerPayoutSun: string;
   now?: number;
 }
 
@@ -805,6 +811,8 @@ export interface CreatePurchaseRecordInput {
   ambassadorWallet?: string | null;
   purchaseAmountSun?: string;
   ownerShareSun?: string;
+  ambassadorRewardSun?: string;
+  ownerPayoutSun?: string;
   source?: PurchaseSource;
   status?: PurchaseProcessingStatus;
   failureReason?: string | null;
@@ -822,6 +830,8 @@ export interface CreatePurchaseRecordInput {
 export interface UpdatePurchaseRecordInput {
   purchaseAmountSun?: string;
   ownerShareSun?: string;
+  ambassadorRewardSun?: string;
+  ownerPayoutSun?: string;
   ambassadorSlug?: string | null;
   ambassadorWallet?: string | null;
   status?: PurchaseProcessingStatus;
@@ -869,6 +879,8 @@ export interface PurchaseStore {
     input: {
       purchaseAmountSun: string;
       ownerShareSun: string;
+      ambassadorRewardSun: string;
+      ownerPayoutSun: string;
       ambassadorSlug?: string | null;
       ambassadorWallet?: string | null;
       allocationMode?: AllocationMode;
@@ -1283,6 +1295,8 @@ function createRecord(input: CreatePurchaseRecordInput): PurchaseRecord {
     ambassadorWallet: normalizeWallet(input.ambassadorWallet),
     purchaseAmountSun: normalizeSunAmount(input.purchaseAmountSun),
     ownerShareSun: normalizeSunAmount(input.ownerShareSun),
+    ambassadorRewardSun: normalizeSunAmount(input.ambassadorRewardSun),
+    ownerPayoutSun: normalizeSunAmount(input.ownerPayoutSun),
     status,
     failureReason: normalizeOptionalString(input.failureReason),
     source: normalizeSource(input.source),
@@ -1335,6 +1349,14 @@ function mergeRecord(
       input.ownerShareSun !== undefined
         ? normalizeSunAmount(input.ownerShareSun)
         : current.ownerShareSun,
+    ambassadorRewardSun:
+      input.ambassadorRewardSun !== undefined
+        ? normalizeSunAmount(input.ambassadorRewardSun)
+        : current.ambassadorRewardSun,
+    ownerPayoutSun:
+      input.ownerPayoutSun !== undefined
+        ? normalizeSunAmount(input.ownerPayoutSun)
+        : current.ownerPayoutSun,
     ambassadorSlug:
       input.ambassadorSlug !== undefined
         ? normalizeOptionalString(input.ambassadorSlug)
@@ -1387,6 +1409,8 @@ function rowToPurchaseRecord(row: any): PurchaseRecord {
     ambassadorWallet: normalizeWallet(row.ambassador_wallet),
     purchaseAmountSun: String(row.purchase_amount_sun),
     ownerShareSun: String(row.owner_share_sun),
+    ambassadorRewardSun: String(row.ambassador_reward_sun || "0"),
+    ownerPayoutSun: String(row.owner_payout_sun || "0"),
     status: String(row.status) as PurchaseProcessingStatus,
     failureReason: normalizeOptionalString(row.failure_reason),
     source: String(row.source) as PurchaseSource,
@@ -1415,10 +1439,6 @@ function rowToCabinetStatsRecord(row: any): CabinetStatsRecord {
     totalBuyers: Number(row.total_buyers || 0),
     trackedVolumeSun: String(row.tracked_volume_sun || "0"),
 
-    /**
-     * These remain zero by design.
-     * Contract-derived cabinet service must populate real on-chain fields later.
-     */
     claimableRewardsSun: "0",
     availableOnChainSun: "0",
     availableOnChainCount: 0,
@@ -1476,6 +1496,8 @@ function buildSelectSql(): string {
       ambassador_wallet,
       purchase_amount_sun,
       owner_share_sun,
+      ambassador_reward_sun,
+      owner_payout_sun,
       status,
       failure_reason,
       source,
@@ -1509,6 +1531,8 @@ export async function initPurchaseTables(): Promise<void> {
       ambassador_wallet TEXT NULL,
       purchase_amount_sun TEXT NOT NULL DEFAULT '0',
       owner_share_sun TEXT NOT NULL DEFAULT '0',
+      ambassador_reward_sun TEXT NOT NULL DEFAULT '0',
+      owner_payout_sun TEXT NOT NULL DEFAULT '0',
       status TEXT NOT NULL,
       failure_reason TEXT NULL,
       source TEXT NOT NULL,
@@ -1558,6 +1582,16 @@ export async function initPurchaseTables(): Promise<void> {
   await query(`
     ALTER TABLE purchases
     ADD COLUMN IF NOT EXISTS withdraw_session_id TEXT NULL
+  `);
+
+  await query(`
+    ALTER TABLE purchases
+    ADD COLUMN IF NOT EXISTS ambassador_reward_sun TEXT NOT NULL DEFAULT '0'
+  `);
+
+  await query(`
+    ALTER TABLE purchases
+    ADD COLUMN IF NOT EXISTS owner_payout_sun TEXT NOT NULL DEFAULT '0'
   `);
 
   await query(`
@@ -1694,6 +1728,8 @@ export class PostgresPurchaseStore implements PurchaseStore {
         ambassadorSlug: normalizeOptionalString(input.ambassadorSlug),
         purchaseAmountSun: "0",
         ownerShareSun: "0",
+        ambassadorRewardSun: "0",
+        ownerPayoutSun: "0",
         source: "frontend-attribution",
         status: "received",
         now: input.now
@@ -1725,6 +1761,8 @@ export class PostgresPurchaseStore implements PurchaseStore {
       ambassadorWallet: input.ambassadorWallet,
       purchaseAmountSun: input.purchaseAmountSun ?? "0",
       ownerShareSun: input.ownerShareSun ?? "0",
+      ambassadorRewardSun: input.ambassadorRewardSun ?? "0",
+      ownerPayoutSun: input.ownerPayoutSun ?? "0",
       now: input.now
     });
   }
@@ -1741,6 +1779,8 @@ export class PostgresPurchaseStore implements PurchaseStore {
     return this.markVerified(input.purchaseId, {
       purchaseAmountSun: input.purchaseAmountSun,
       ownerShareSun: input.ownerShareSun,
+      ambassadorRewardSun: input.ambassadorRewardSun,
+      ownerPayoutSun: input.ownerPayoutSun,
       ambassadorSlug: current.ambassadorSlug,
       ambassadorWallet: current.ambassadorWallet,
       allocationMode: current.allocationMode,
@@ -1762,6 +1802,8 @@ export class PostgresPurchaseStore implements PurchaseStore {
             ambassador_wallet,
             purchase_amount_sun,
             owner_share_sun,
+            ambassador_reward_sun,
+            owner_payout_sun,
             status,
             failure_reason,
             source,
@@ -1777,13 +1819,13 @@ export class PostgresPurchaseStore implements PurchaseStore {
             allocated_at
           )
           VALUES (
-            $1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
-            $11, $12,
-            CASE WHEN $13::BIGINT IS NULL THEN NULL ELSE TO_TIMESTAMP($13 / 1000.0) END,
-            $14, $15, $16, $17,
-            TO_TIMESTAMP($18 / 1000.0),
-            TO_TIMESTAMP($19 / 1000.0),
-            CASE WHEN $20::BIGINT IS NULL THEN NULL ELSE TO_TIMESTAMP($20 / 1000.0) END
+            $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11,
+            $12, $13, $14,
+            CASE WHEN $15::BIGINT IS NULL THEN NULL ELSE TO_TIMESTAMP($15 / 1000.0) END,
+            $16, $17, $18, $19,
+            TO_TIMESTAMP($20 / 1000.0),
+            TO_TIMESTAMP($21 / 1000.0),
+            CASE WHEN $22::BIGINT IS NULL THEN NULL ELSE TO_TIMESTAMP($22 / 1000.0) END
           )
           RETURNING
             purchase_id,
@@ -1793,6 +1835,8 @@ export class PostgresPurchaseStore implements PurchaseStore {
             ambassador_wallet,
             purchase_amount_sun,
             owner_share_sun,
+            ambassador_reward_sun,
+            owner_payout_sun,
             status,
             failure_reason,
             source,
@@ -1821,6 +1865,8 @@ export class PostgresPurchaseStore implements PurchaseStore {
           record.ambassadorWallet,
           record.purchaseAmountSun,
           record.ownerShareSun,
+          record.ambassadorRewardSun,
+          record.ownerPayoutSun,
           record.status,
           record.failureReason,
           record.source,
@@ -1862,19 +1908,21 @@ export class PostgresPurchaseStore implements PurchaseStore {
         SET
           purchase_amount_sun = $2,
           owner_share_sun = $3,
-          ambassador_slug = $4,
-          ambassador_wallet = $5,
-          status = $6,
-          failure_reason = $7,
-          allocation_mode = $8,
-          allocation_attempts = $9,
-          last_allocation_attempt_at = CASE WHEN $10::BIGINT IS NULL THEN NULL ELSE TO_TIMESTAMP($10 / 1000.0) END,
-          last_allocation_error_code = $11,
-          last_allocation_error_message = $12,
-          deferred_reason = $13,
-          withdraw_session_id = $14,
-          updated_at = TO_TIMESTAMP($15 / 1000.0),
-          allocated_at = CASE WHEN $16::BIGINT IS NULL THEN NULL ELSE TO_TIMESTAMP($16 / 1000.0) END
+          ambassador_reward_sun = $4,
+          owner_payout_sun = $5,
+          ambassador_slug = $6,
+          ambassador_wallet = $7,
+          status = $8,
+          failure_reason = $9,
+          allocation_mode = $10,
+          allocation_attempts = $11,
+          last_allocation_attempt_at = CASE WHEN $12::BIGINT IS NULL THEN NULL ELSE TO_TIMESTAMP($12 / 1000.0) END,
+          last_allocation_error_code = $13,
+          last_allocation_error_message = $14,
+          deferred_reason = $15,
+          withdraw_session_id = $16,
+          updated_at = TO_TIMESTAMP($17 / 1000.0),
+          allocated_at = CASE WHEN $18::BIGINT IS NULL THEN NULL ELSE TO_TIMESTAMP($18 / 1000.0) END
         WHERE purchase_id = $1
         RETURNING
           purchase_id,
@@ -1884,6 +1932,8 @@ export class PostgresPurchaseStore implements PurchaseStore {
           ambassador_wallet,
           purchase_amount_sun,
           owner_share_sun,
+          ambassador_reward_sun,
+          owner_payout_sun,
           status,
           failure_reason,
           source,
@@ -1908,6 +1958,8 @@ export class PostgresPurchaseStore implements PurchaseStore {
         normalizedPurchaseId,
         updated.purchaseAmountSun,
         updated.ownerShareSun,
+        updated.ambassadorRewardSun,
+        updated.ownerPayoutSun,
         updated.ambassadorSlug,
         updated.ambassadorWallet,
         updated.status,
@@ -1932,6 +1984,8 @@ export class PostgresPurchaseStore implements PurchaseStore {
     input: {
       purchaseAmountSun: string;
       ownerShareSun: string;
+      ambassadorRewardSun: string;
+      ownerPayoutSun: string;
       ambassadorSlug?: string | null;
       ambassadorWallet?: string | null;
       allocationMode?: AllocationMode;
@@ -1941,6 +1995,8 @@ export class PostgresPurchaseStore implements PurchaseStore {
     return this.update(purchaseId, {
       purchaseAmountSun: input.purchaseAmountSun,
       ownerShareSun: input.ownerShareSun,
+      ambassadorRewardSun: input.ambassadorRewardSun,
+      ownerPayoutSun: input.ownerPayoutSun,
       ambassadorSlug: input.ambassadorSlug,
       ambassadorWallet: input.ambassadorWallet,
       status: "verified",
@@ -2240,27 +2296,27 @@ export class PostgresPurchaseStore implements PurchaseStore {
               'allocation_failed_final',
               'withdraw_included',
               'withdraw_completed'
-            ) THEN owner_share_sun::numeric
+            ) THEN ambassador_reward_sun::numeric
             ELSE 0
           END)::text, '0') AS lifetime_rewards_sun,
 
           COALESCE(SUM(CASE
-            WHEN status = 'withdraw_completed' THEN owner_share_sun::numeric
+            WHEN status = 'withdraw_completed' THEN ambassador_reward_sun::numeric
             ELSE 0
           END)::text, '0') AS withdrawn_rewards_sun,
 
           COALESCE(SUM(CASE
             WHEN status = 'allocated'
               AND withdraw_session_id IS NULL
-              AND owner_share_sun::numeric > 0
-            THEN owner_share_sun::numeric
+              AND ambassador_reward_sun::numeric > 0
+            THEN ambassador_reward_sun::numeric
             ELSE 0
           END)::text, '0') AS allocated_in_db_sun,
 
           COUNT(*) FILTER (
             WHERE status = 'allocated'
               AND withdraw_session_id IS NULL
-              AND owner_share_sun::numeric > 0
+              AND ambassador_reward_sun::numeric > 0
           ) AS allocated_in_db_count,
 
           COALESCE(SUM(CASE
@@ -2271,8 +2327,8 @@ export class PostgresPurchaseStore implements PurchaseStore {
               'allocation_failed_retryable'
             )
               AND withdraw_session_id IS NULL
-              AND owner_share_sun::numeric > 0
-            THEN owner_share_sun::numeric
+              AND ambassador_reward_sun::numeric > 0
+            THEN ambassador_reward_sun::numeric
             ELSE 0
           END)::text, '0') AS pending_backend_sync_sun,
 
@@ -2284,21 +2340,21 @@ export class PostgresPurchaseStore implements PurchaseStore {
               'allocation_failed_retryable'
             )
               AND withdraw_session_id IS NULL
-              AND owner_share_sun::numeric > 0
+              AND ambassador_reward_sun::numeric > 0
           ) AS pending_backend_sync_count,
 
           COALESCE(SUM(CASE
             WHEN status IN ('withdraw_included')
               AND withdraw_session_id IS NOT NULL
-              AND owner_share_sun::numeric > 0
-            THEN owner_share_sun::numeric
+              AND ambassador_reward_sun::numeric > 0
+            THEN ambassador_reward_sun::numeric
             ELSE 0
           END)::text, '0') AS requested_for_processing_sun,
 
           COUNT(*) FILTER (
             WHERE status IN ('withdraw_included')
               AND withdraw_session_id IS NOT NULL
-              AND owner_share_sun::numeric > 0
+              AND ambassador_reward_sun::numeric > 0
           ) AS requested_for_processing_count
         FROM purchases
         WHERE ambassador_wallet = $1
@@ -2372,6 +2428,8 @@ export class InMemoryPurchaseStore implements PurchaseStore {
       ambassadorSlug: normalizeOptionalString(input.ambassadorSlug),
       purchaseAmountSun: "0",
       ownerShareSun: "0",
+      ambassadorRewardSun: "0",
+      ownerPayoutSun: "0",
       source: "frontend-attribution",
       status: "received",
       now: input.now
@@ -2391,6 +2449,8 @@ export class InMemoryPurchaseStore implements PurchaseStore {
       ambassadorWallet: input.ambassadorWallet,
       purchaseAmountSun: input.purchaseAmountSun ?? "0",
       ownerShareSun: input.ownerShareSun ?? "0",
+      ambassadorRewardSun: input.ambassadorRewardSun ?? "0",
+      ownerPayoutSun: input.ownerPayoutSun ?? "0",
       now: input.now
     });
   }
@@ -2407,6 +2467,8 @@ export class InMemoryPurchaseStore implements PurchaseStore {
     return this.markVerified(input.purchaseId, {
       purchaseAmountSun: input.purchaseAmountSun,
       ownerShareSun: input.ownerShareSun,
+      ambassadorRewardSun: input.ambassadorRewardSun,
+      ownerPayoutSun: input.ownerPayoutSun,
       ambassadorSlug: current.ambassadorSlug,
       ambassadorWallet: current.ambassadorWallet,
       allocationMode: current.allocationMode,
@@ -2453,6 +2515,8 @@ export class InMemoryPurchaseStore implements PurchaseStore {
     input: {
       purchaseAmountSun: string;
       ownerShareSun: string;
+      ambassadorRewardSun: string;
+      ownerPayoutSun: string;
       ambassadorSlug?: string | null;
       ambassadorWallet?: string | null;
       allocationMode?: AllocationMode;
@@ -2462,6 +2526,8 @@ export class InMemoryPurchaseStore implements PurchaseStore {
     return this.update(purchaseId, {
       purchaseAmountSun: input.purchaseAmountSun,
       ownerShareSun: input.ownerShareSun,
+      ambassadorRewardSun: input.ambassadorRewardSun,
+      ownerPayoutSun: input.ownerPayoutSun,
       ambassadorSlug: input.ambassadorSlug,
       ambassadorWallet: input.ambassadorWallet,
       status: "verified",
@@ -2744,7 +2810,7 @@ export class InMemoryPurchaseStore implements PurchaseStore {
         buyers.add(row.buyerWallet);
       }
 
-      const rewardAmount = BigInt(row.ownerShareSun || "0");
+      const rewardAmount = BigInt(row.ambassadorRewardSun || "0");
 
       const contributesVolume =
         row.status === "verified" ||
@@ -2758,11 +2824,11 @@ export class InMemoryPurchaseStore implements PurchaseStore {
 
       if (contributesVolume) {
         trackedVolumeSun = sumSunStrings(trackedVolumeSun, row.purchaseAmountSun);
-        lifetimeRewardsSun = sumSunStrings(lifetimeRewardsSun, row.ownerShareSun);
+        lifetimeRewardsSun = sumSunStrings(lifetimeRewardsSun, row.ambassadorRewardSun);
       }
 
       if (row.status === "withdraw_completed" && rewardAmount > 0n) {
-        withdrawnRewardsSun = sumSunStrings(withdrawnRewardsSun, row.ownerShareSun);
+        withdrawnRewardsSun = sumSunStrings(withdrawnRewardsSun, row.ambassadorRewardSun);
       }
 
       const isAllocatedInDb =
@@ -2771,7 +2837,7 @@ export class InMemoryPurchaseStore implements PurchaseStore {
         rewardAmount > 0n;
 
       if (isAllocatedInDb) {
-        allocatedInDbSun = sumSunStrings(allocatedInDbSun, row.ownerShareSun);
+        allocatedInDbSun = sumSunStrings(allocatedInDbSun, row.ambassadorRewardSun);
         allocatedInDbCount += 1;
       }
 
@@ -2784,7 +2850,10 @@ export class InMemoryPurchaseStore implements PurchaseStore {
         rewardAmount > 0n;
 
       if (isPendingBackendSync) {
-        pendingBackendSyncSun = sumSunStrings(pendingBackendSyncSun, row.ownerShareSun);
+        pendingBackendSyncSun = sumSunStrings(
+          pendingBackendSyncSun,
+          row.ambassadorRewardSun
+        );
         pendingBackendSyncCount += 1;
       }
 
@@ -2796,7 +2865,7 @@ export class InMemoryPurchaseStore implements PurchaseStore {
       if (isRequestedForProcessing) {
         requestedForProcessingSun = sumSunStrings(
           requestedForProcessingSun,
-          row.ownerShareSun
+          row.ambassadorRewardSun
         );
         requestedForProcessingCount += 1;
       }
