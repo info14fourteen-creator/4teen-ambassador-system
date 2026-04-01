@@ -73,7 +73,10 @@ function normalizeTxHash(value: string): string {
   return assertNonEmpty(value, "txHash").toLowerCase();
 }
 
-function normalizeSunAmount(value: string | number | bigint, fieldName: string): string {
+function normalizeSunAmount(
+  value: string | number | bigint,
+  fieldName: string
+): string {
   const normalized = String(value).trim();
 
   if (!/^\d+$/.test(normalized)) {
@@ -116,7 +119,10 @@ async function resolveAmbassadorWallet(params: {
   slugHash: string;
   existingPurchase?: PurchaseRecord | null;
   controllerClient: ControllerClient;
-}): Promise<{ ambassadorWallet: string | null; source: "existing" | "local" | "chain" | "none" }> {
+}): Promise<{
+  ambassadorWallet: string | null;
+  source: "existing" | "local" | "chain" | "none";
+}> {
   const existingWallet = String(params.existingPurchase?.ambassadorWallet || "").trim();
 
   if (existingWallet) {
@@ -135,7 +141,9 @@ async function resolveAmbassadorWallet(params: {
     };
   }
 
-  const chainResolved = await params.controllerClient.getAmbassadorBySlugHash(params.slugHash);
+  const chainResolved = await params.controllerClient.getAmbassadorBySlugHash(
+    params.slugHash
+  );
 
   if (chainResolved.ambassadorWallet) {
     return {
@@ -245,7 +253,9 @@ export class AttributionService {
       };
     }
 
-    const existingBuyerAmbassador = await this.controllerClient.getBuyerAmbassador(buyerWallet);
+    const existingBuyerAmbassador = await this.controllerClient.getBuyerAmbassador(
+      buyerWallet
+    );
 
     if (
       existingBuyerAmbassador &&
@@ -310,7 +320,10 @@ export class AttributionService {
     const txHash = normalizeTxHash(input.txHash);
     const buyerWallet = normalizeWallet(input.buyerWallet, "buyerWallet");
     const slug = normalizeIncomingSlug(input.slug);
-    const purchaseAmountSun = normalizeSunAmount(input.purchaseAmountSun, "purchaseAmountSun");
+    const purchaseAmountSun = normalizeSunAmount(
+      input.purchaseAmountSun,
+      "purchaseAmountSun"
+    );
     const ownerShareSun = normalizeSunAmount(input.ownerShareSun, "ownerShareSun");
     const now = input.now ?? Date.now();
 
@@ -329,7 +342,9 @@ export class AttributionService {
       throw new Error("Purchase buyerWallet does not match existing record");
     }
 
-    const alreadyProcessedOnChain = await this.controllerClient.isPurchaseProcessed(purchaseId);
+    const alreadyProcessedOnChain = await this.controllerClient.isPurchaseProcessed(
+      purchaseId
+    );
 
     if (alreadyProcessedOnChain) {
       const allocated = await this.store.markAllocated(purchaseId, {
@@ -376,7 +391,9 @@ export class AttributionService {
       };
     }
 
-    const existingBuyerAmbassador = await this.controllerClient.getBuyerAmbassador(buyerWallet);
+    const existingBuyerAmbassador = await this.controllerClient.getBuyerAmbassador(
+      buyerWallet
+    );
 
     if (
       existingBuyerAmbassador &&
