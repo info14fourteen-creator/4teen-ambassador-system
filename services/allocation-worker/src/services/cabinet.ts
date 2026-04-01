@@ -164,6 +164,16 @@ function safeNumber(value: unknown, fallback = 0): number {
   return fallback;
 }
 
+function toBigIntSafe(value: unknown): bigint {
+  const normalized = String(value ?? "0").trim();
+
+  try {
+    return BigInt(/^\d+$/.test(normalized) ? normalized : "0");
+  } catch {
+    return 0n;
+  }
+}
+
 function sunToTrxString(value: string | number | bigint | null | undefined): string {
   const raw = String(value ?? "0").trim();
 
@@ -239,6 +249,14 @@ function toErrorMessage(error: unknown): string {
   return "Unknown error";
 }
 
+function choosePreferredSun(primary: string, fallback: string): string {
+  return toBigIntSafe(primary) > 0n ? primary : fallback;
+}
+
+function choosePreferredNumber(primary: number, fallback: number): number {
+  return primary > 0 ? primary : fallback;
+}
+
 function mapStats(input: {
   onChainStats: {
     totalBuyers: string;
@@ -254,14 +272,31 @@ function mapStats(input: {
 } {
   const { onChainStats, dbStats } = input;
 
-  const trackedVolumeSun = onChainStats.trackedVolumeSun;
+  const totalBuyers = choosePreferredNumber(
+    safeNumber(onChainStats.totalBuyers),
+    dbStats.totalBuyers
+  );
+
+  const trackedVolumeSun = choosePreferredSun(
+    onChainStats.trackedVolumeSun,
+    dbStats.trackedVolumeSun
+  );
+
+  const lifetimeRewardsSun = choosePreferredSun(
+    onChainStats.lifetimeRewardsSun,
+    dbStats.lifetimeRewardsSun
+  );
+
+  const withdrawnRewardsSun = choosePreferredSun(
+    onChainStats.withdrawnRewardsSun,
+    dbStats.withdrawnRewardsSun
+  );
+
   const claimableRewardsSun = onChainStats.claimableRewardsSun;
-  const lifetimeRewardsSun = onChainStats.lifetimeRewardsSun;
-  const withdrawnRewardsSun = onChainStats.withdrawnRewardsSun;
 
   return {
     stats: {
-      totalBuyers: safeNumber(onChainStats.totalBuyers),
+      totalBuyers,
       trackedVolumeSun,
       trackedVolumeTrx: sunToTrxString(trackedVolumeSun),
       claimableRewardsSun,
@@ -400,7 +435,7 @@ function buildProfileFromSnapshot(input: {
     withdrawalQueue: mapped.withdrawalQueue,
     progress: {
       currentLevel: snapshot.currentLevel,
-      buyersCount: snapshot.totalBuyers,
+      buyersCount: choosePreferredNumber(snapshot.totalBuyers, dbStatsRecord.totalBuyers),
       nextThreshold: snapshot.nextThreshold,
       remainingToNextLevel: snapshot.remainingToNextLevel
     }
@@ -442,11 +477,11 @@ export class CabinetService {
   ): CabinetProfileRegisteredResult {
     const mapped = mapStats({
       onChainStats: {
-        totalBuyers: String(dbStatsRecord.totalBuyers || 0),
-        trackedVolumeSun: dbStatsRecord.trackedVolumeSun || "0",
+        totalBuyers: "0",
+        trackedVolumeSun: "0",
         claimableRewardsSun: "0",
-        lifetimeRewardsSun: dbStatsRecord.lifetimeRewardsSun || "0",
-        withdrawnRewardsSun: dbStatsRecord.withdrawnRewardsSun || "0"
+        lifetimeRewardsSun: "0",
+        withdrawnRewardsSun: "0"
       },
       dbStats: dbStatsRecord
     });
@@ -527,7 +562,9 @@ export class CabinetService {
         slug,
         status,
         snapshotSyncStatus: snapshot.syncStatus,
-        snapshotLastSyncedAt: snapshot.lastSyncedAt
+        snapshotLastSyncedAt: snapshot.lastSyncedAt,
+        dbTotalBuyers: dbStatsRecord.totalBuyers,
+        dbTrackedVolumeSun: dbStatsRecord.trackedVolumeSun
       });
 
       return buildProfileFromSnapshot({
@@ -543,7 +580,9 @@ export class CabinetService {
       stage: "dashboard-snapshot-missed-fallback-served",
       wallet: registryWallet,
       slug,
-      status
+      status,
+      dbTotalBuyers: dbStatsRecord.totalBuyers,
+      dbTrackedVolumeSun: dbStatsRecord.trackedVolumeSun
     });
 
     return this.buildFallbackProfile(registryWallet, slug, status, dbStatsRecord);
