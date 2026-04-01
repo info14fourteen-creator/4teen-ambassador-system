@@ -1,6 +1,6 @@
 # 4teen-ambassador-system — ALLOCATION WORKER
 
-Generated: 2026-04-01T14:25:45.200Z
+Generated: 2026-04-01T14:39:25.549Z
 Repository: info14fourteen-creator/4teen-ambassador-system
 Branch: main
 
@@ -8224,6 +8224,7 @@ import {
   initAmbassadorRegistryTables,
   isSlugTaken
 } from "./db/ambassadors";
+import { initDashboardSnapshotTables } from "./db/dashboardSnapshots";
 import { initPurchaseTables } from "./db/purchases";
 import { prepareAmbassadorWithdrawal } from "./jobs/prepareAmbassadorWithdrawal";
 import { processAmbassadorPendingQueue } from "./jobs/processAmbassadorPendingQueue";
@@ -8932,6 +8933,7 @@ async function bootstrap() {
   const TronWeb = getTronWebConstructor();
 
   await initAmbassadorRegistryTables();
+  await initDashboardSnapshotTables();
   await initPurchaseTables();
 
   const tronWeb = new TronWeb({
