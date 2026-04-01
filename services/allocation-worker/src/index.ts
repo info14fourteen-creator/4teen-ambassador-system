@@ -1,6 +1,3 @@
-import crypto from "node:crypto";
-import { keccak_256 } from "@noble/hashes/sha3";
-import { utf8ToBytes } from "@noble/hashes/utils";
 import { AllocationService, type AllocationDecision } from "./domain/allocation";
 import { AttributionService } from "./domain/attribution";
 import { AttributionProcessor } from "./app/processAttribution";
@@ -15,6 +12,7 @@ import {
   TronControllerClient,
   type TronControllerAllocationExecutorConfig
 } from "./tron/controller";
+import { derivePurchaseId, hashSlugToBytes32Hex } from "./tron/hashing";
 import {
   createGasStationClientFromEnv,
   type GasStationClient
@@ -43,7 +41,9 @@ export interface FrontendAttributionInput {
 
 export interface FrontendAttributionResult {
   stage: "frontend-attribution";
-  attribution: Awaited<ReturnType<AttributionProcessor["processFrontendAttribution"]>>["attribution"];
+  attribution: Awaited<
+    ReturnType<AttributionProcessor["processFrontendAttribution"]>
+  >["attribution"];
 }
 
 export interface ReplayFailedAllocationApiResult {
@@ -166,7 +166,9 @@ export interface AllocationWorkerProcessor {
     }
   ): Promise<{
     ambassadorWallet: string;
-    processed: Awaited<ReturnType<AllocationService["tryAllocateVerifiedPurchase"]>>[];
+    processed: Awaited<
+      ReturnType<AllocationService["tryAllocateVerifiedPurchase"]>
+    >[];
     stoppedEarly: boolean;
     stopReason: string | null;
   }>;
@@ -323,24 +325,6 @@ function isFinalPurchaseStatus(status: PurchaseRecord["status"]): boolean {
     status === "ignored" ||
     status === "allocation_failed_final"
   );
-}
-
-function bytesToHex(bytes: Uint8Array): string {
-  return Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
-}
-
-function hashSlugToBytes32Hex(slug: string): string {
-  const bytes = utf8ToBytes(String(slug || "").trim().toLowerCase());
-  return `0x${bytesToHex(keccak_256(bytes))}`;
-}
-
-function derivePurchaseId(input: { txHash: string; buyerWallet: string }): string {
-  const payload = `${normalizeTxHash(input.txHash)}:${normalizeWallet(
-    input.buyerWallet,
-    "buyerWallet"
-  ).toLowerCase()}`;
-
-  return `0x${crypto.createHash("sha256").update(payload).digest("hex")}`;
 }
 
 async function readAmbassadorRewardPercent(input: {
@@ -549,7 +533,10 @@ class AllocationWorkerProcessorImpl implements AllocationWorkerProcessor {
   ): Promise<ProcessChainEventResult> {
     const txHash = normalizeTxHash(input.txHash);
     const buyerWallet = normalizeWallet(input.buyerWallet, "buyerWallet");
-    const purchaseAmountSun = parseAmountAsString(input.purchaseAmountSun, "purchaseAmountSun");
+    const purchaseAmountSun = parseAmountAsString(
+      input.purchaseAmountSun,
+      "purchaseAmountSun"
+    );
     const ownerShareSun = parseAmountAsString(input.ownerShareSun, "ownerShareSun");
     const blockTimestamp = Number(input.blockTimestamp);
     const allocationMode = input.allocationMode ?? "eager";
@@ -595,7 +582,9 @@ class AllocationWorkerProcessorImpl implements AllocationWorkerProcessor {
           status: "wallet-mismatch",
           purchase,
           slug: purchase.ambassadorSlug,
-          slugHash: purchase.ambassadorSlug ? hashSlugToBytes32Hex(purchase.ambassadorSlug) : null,
+          slugHash: purchase.ambassadorSlug
+            ? hashSlugToBytes32Hex(purchase.ambassadorSlug)
+            : null,
           ambassadorWallet: purchase.ambassadorWallet,
           reason: "Buyer wallet mismatch for txHash"
         },
@@ -603,7 +592,9 @@ class AllocationWorkerProcessorImpl implements AllocationWorkerProcessor {
           status: "ignored",
           purchase,
           slug: purchase.ambassadorSlug,
-          slugHash: purchase.ambassadorSlug ? hashSlugToBytes32Hex(purchase.ambassadorSlug) : null,
+          slugHash: purchase.ambassadorSlug
+            ? hashSlugToBytes32Hex(purchase.ambassadorSlug)
+            : null,
           ambassadorWallet: purchase.ambassadorWallet,
           reason: "Buyer wallet mismatch for txHash",
           canAllocate: false
@@ -619,7 +610,9 @@ class AllocationWorkerProcessorImpl implements AllocationWorkerProcessor {
           status: "duplicate-local-record",
           purchase,
           slug: purchase.ambassadorSlug,
-          slugHash: purchase.ambassadorSlug ? hashSlugToBytes32Hex(purchase.ambassadorSlug) : null,
+          slugHash: purchase.ambassadorSlug
+            ? hashSlugToBytes32Hex(purchase.ambassadorSlug)
+            : null,
           ambassadorWallet: purchase.ambassadorWallet,
           reason: "Purchase already finalized"
         },
@@ -627,7 +620,9 @@ class AllocationWorkerProcessorImpl implements AllocationWorkerProcessor {
           status: "already-finalized",
           purchase,
           slug: purchase.ambassadorSlug,
-          slugHash: purchase.ambassadorSlug ? hashSlugToBytes32Hex(purchase.ambassadorSlug) : null,
+          slugHash: purchase.ambassadorSlug
+            ? hashSlugToBytes32Hex(purchase.ambassadorSlug)
+            : null,
           ambassadorWallet: purchase.ambassadorWallet,
           reason: `Purchase already finalized with status: ${purchase.status}`,
           canAllocate: false
@@ -851,7 +846,9 @@ class AllocationWorkerProcessorImpl implements AllocationWorkerProcessor {
     }
   ): Promise<{
     ambassadorWallet: string;
-    processed: Awaited<ReturnType<AllocationService["tryAllocateVerifiedPurchase"]>>[];
+    processed: Awaited<
+      ReturnType<AllocationService["tryAllocateVerifiedPurchase"]>
+    >[];
     stoppedEarly: boolean;
     stopReason: string | null;
   }> {
