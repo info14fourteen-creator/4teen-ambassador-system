@@ -1,6 +1,6 @@
 # 4teen-ambassador-system — ALLOCATION WORKER
 
-Generated: 2026-04-01T16:19:07.380Z
+Generated: 2026-04-01T16:25:13.357Z
 Repository: info14fourteen-creator/4teen-ambassador-system
 Branch: main
 
@@ -755,15 +755,6 @@ export interface UpsertAmbassadorDashboardSnapshotInput {
   lastSyncedAt?: number;
 }
 
-export interface MarkDashboardSnapshotSyncFailedInput {
-  wallet: string;
-  slug?: string | null;
-  registryStatus?: string | null;
-  syncError: string;
-  syncStatus?: DashboardSnapshotSyncStatus;
-  lastSyncedAt?: number;
-}
-
 function assertNonEmpty(value: string, fieldName: string): string {
   const normalized = String(value || "").trim();
 
@@ -1262,31 +1253,40 @@ export async function upsertDashboardSnapshot(
   return rowToSnapshotRecord(result.rows[0]);
 }
 
-export async function updateDashboardSnapshotSyncState(input: {
+export async function markDashboardSnapshotSyncFailed(input: {
   wallet: string;
   slug?: string | null;
   registryStatus?: string | null;
-  syncStatus: DashboardSnapshotSyncStatus;
-  syncError?: string | null;
+  syncError: string;
+  syncStatus?: DashboardSnapshotSyncStatus;
   lastSyncedAt?: number;
-}): Promise<AmbassadorDashboardSnapshotRecord | null> {
+}): Promise<AmbassadorDashboardSnapshotRecord> {
   const wallet = assertNonEmpty(input.wallet, "wallet");
-  const syncStatus = normalizeSyncStatus(input.syncStatus);
-  const syncError = normalizeOptionalString(input.syncError);
+  const syncError = assertNonEmpty(input.syncError, "syncError");
+  const syncStatus = normalizeSyncStatus(input.syncStatus ?? "failed");
   const lastSyncedAt =
     normalizeTimestamp(input.lastSyncedAt ?? Date.now(), "lastSyncedAt") ?? Date.now();
 
   const result = await query(
     `
-      UPDATE ambassador_dashboard_snapshots
-      SET
-        slug = COALESCE($2, slug),
-        registry_status = COALESCE($3, registry_status),
-        sync_status = $4,
-        sync_error = $5,
-        last_synced_at = $6,
+      INSERT INTO ambassador_dashboard_snapshots (
+        wallet,
+        slug,
+        registry_status,
+        sync_status,
+        sync_error,
+        last_synced_at,
+        updated_at
+      )
+      VALUES ($1, $2, $3, $4, $5, $6, NOW())
+      ON CONFLICT (wallet)
+      DO UPDATE SET
+        slug = COALESCE(EXCLUDED.slug, ambassador_dashboard_snapshots.slug),
+        registry_status = COALESCE(EXCLUDED.registry_status, ambassador_dashboard_snapshots.registry_status),
+        sync_status = EXCLUDED.sync_status,
+        sync_error = EXCLUDED.sync_error,
+        last_synced_at = EXCLUDED.last_synced_at,
         updated_at = NOW()
-      WHERE wallet = $1
       RETURNING
         wallet,
         slug,
@@ -1331,40 +1331,7 @@ export async function updateDashboardSnapshotSyncState(input: {
     ]
   );
 
-  const row = result.rows[0];
-  return row ? rowToSnapshotRecord(row) : null;
-}
-
-export async function markDashboardSnapshotSyncFailed(
-  input: MarkDashboardSnapshotSyncFailedInput
-): Promise<AmbassadorDashboardSnapshotRecord | null> {
-  const wallet = assertNonEmpty(input.wallet, "wallet");
-  const syncError = assertNonEmpty(input.syncError, "syncError");
-  const syncStatus = normalizeSyncStatus(input.syncStatus ?? "failed");
-  const lastSyncedAt =
-    normalizeTimestamp(input.lastSyncedAt ?? Date.now(), "lastSyncedAt") ?? Date.now();
-
-  const existing = await getDashboardSnapshotByWallet(wallet);
-
-  if (existing) {
-    return updateDashboardSnapshotSyncState({
-      wallet,
-      slug: input.slug ?? null,
-      registryStatus: input.registryStatus ?? null,
-      syncStatus,
-      syncError,
-      lastSyncedAt
-    });
-  }
-
-  return upsertDashboardSnapshot({
-    wallet,
-    slug: input.slug ?? null,
-    registryStatus: input.registryStatus ?? null,
-    syncStatus,
-    syncError,
-    lastSyncedAt
-  });
+  return rowToSnapshotRecord(result.rows[0]);
 }
 ```
 
