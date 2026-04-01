@@ -1,6 +1,6 @@
 # 4teen-ambassador-system — ALLOCATION WORKER
 
-Generated: 2026-04-01T10:25:15.184Z
+Generated: 2026-04-01T10:32:35.663Z
 Repository: info14fourteen-creator/4teen-ambassador-system
 Branch: main
 
@@ -7511,7 +7511,6 @@ function loadEnv(): EnvConfig {
     tronPrivateKey: assertNonEmpty(process.env.TRON_PRIVATE_KEY, "TRON_PRIVATE_KEY"),
     scanPageSize: parsePositiveInteger(process.env.SCAN_PAGE_SIZE, 50, "SCAN_PAGE_SIZE"),
     allowedOrigins: parseAllowedOrigins(process.env.ALLOWED_ORIGINS),
-
     gasStationEnabled,
     gasStationApiBaseUrl: normalizeOptionalString(
       process.env.GASSTATION_API_BASE_URL ?? process.env.GASSTATION_BASE_URL
@@ -7522,7 +7521,6 @@ function loadEnv(): EnvConfig {
     gasStationApiSecret: normalizeOptionalString(
       process.env.GASSTATION_API_SECRET ?? process.env.GASSTATION_SECRET_KEY
     ),
-
     gasStationMinBandwidth: parsePositiveInteger(
       process.env.GASSTATION_MIN_BANDWIDTH,
       5000,
@@ -7802,18 +7800,18 @@ function classifyHttpStatus(error: unknown): number {
   return 500;
 }
 
-function parseAllocationMode(value: unknown): "eager" | "claim-first" | undefined {
-  const normalized = String(value ?? "").trim().toLowerCase();
-
-  if (normalized === "eager") {
-    return "eager";
-  }
-
-  if (normalized === "claim-first" || normalized === "claim") {
-    return "claim-first";
-  }
-
-  return undefined;
+function createLogger() {
+  return {
+    info(payload: Record<string, unknown>) {
+      console.log(JSON.stringify({ level: "info", ...payload }));
+    },
+    warn(payload: Record<string, unknown>) {
+      console.warn(JSON.stringify({ level: "warn", ...payload }));
+    },
+    error(payload: Record<string, unknown>) {
+      console.error(JSON.stringify({ level: "error", ...payload }));
+    }
+  };
 }
 
 function createGasStationClientOrThrow(env: EnvConfig) {
@@ -7822,6 +7820,265 @@ function createGasStationClientOrThrow(env: EnvConfig) {
   }
 
   return createGasStationClientFromEnv();
+}
+
+async function handleHealth(
+  req: http.IncomingMessage,
+  res: http.ServerResponse,
+  env: EnvConfig,
+  controllerContractAddress: string
+): Promise<void> {
+  sendJson(req, res, env, 200, {
+    ok: true,
+    service: "allocation-worker",
+    timestamp: Date.now(),
+    controllerContractAddress,
+    gasStation: {
+      enabled: env.gasStationEnabled,
+      apiBaseUrl: env.gasStationApiBaseUrl || null,
+      minBandwidth: env.gasStationMinBandwidth,
+      minEnergy: env.gasStationMinEnergy,
+      serviceChargeType: env.gasStationServiceChargeType
+    },
+    allocationThresholds: {
+      minBandwidth: env.allocationMinBandwidth,
+      minEnergy: env.allocationMinEnergy
+    }
+  });
+}
+
+async function handleGasStationBalanceDebug(
+  req: http.IncomingMessage,
+  res: http.ServerResponse,
+  env: EnvConfig,
+  tronWeb: any
+): Promise<void> {
+  const client = createGasStationClientOrThrow(env);
+  const gasBalance = await client.getBalance();
+
+  const operatorAddress = normalizeAddress(
+    tronWeb?.defaultAddress?.base58 || tronWeb?.defaultAddress?.hex || "",
+    "operatorAddress"
+  );
+
+  const operatorBalanceSun = Number(await tronWeb.trx.getBalance(operatorAddress));
+  const serviceBalanceSun = parseTrxAmountToSun(gasBalance.balance, "gasStation.balance");
+  const depositAddress = normalizeAddress(
+    String((gasBalance as any).deposit_address || ""),
+    "deposit_address"
+  );
+
+  const availableForTopUpSun = Math.max(
+    0,
+    operatorBalanceSun - OPERATOR_REMAINING_RESERVE_SUN
+  );
+
+  const needsTopUp = serviceBalanceSun < GASSTATION_LOW_BALANCE_SUN;
+  const canTopUp =
+    operatorBalanceSun >= OPERATOR_MIN_BALANCE_FOR_TOPUP_SUN &&
+    availableForTopUpSun >= GASSTATION_LOW_BALANCE_SUN;
+
+  const recommendedTopUpSun = canTopUp ? availableForTopUpSun : 0;
+
+  sendJson(req, res, env, 200, {
+    ok: true,
+    result: {
+      gasStation: {
+        balanceSun: serviceBalanceSun,
+        balanceTrx: sunToTrxString(serviceBalanceSun),
+        depositAddress,
+        lowBalanceThresholdSun: GASSTATION_LOW_BALANCE_SUN,
+        lowBalanceThresholdTrx: sunToTrxString(GASSTATION_LOW_BALANCE_SUN),
+        needsTopUp
+      },
+      operator: {
+        address: operatorAddress,
+        balanceSun: operatorBalanceSun,
+        balanceTrx: sunToTrxString(operatorBalanceSun),
+        minBalanceForTopUpSun: OPERATOR_MIN_BALANCE_FOR_TOPUP_SUN,
+        minBalanceForTopUpTrx: sunToTrxString(OPERATOR_MIN_BALANCE_FOR_TOPUP_SUN),
+        reserveAfterTopUpSun: OPERATOR_REMAINING_RESERVE_SUN,
+        reserveAfterTopUpTrx: sunToTrxString(OPERATOR_REMAINING_RESERVE_SUN),
+        availableForTopUpSun,
+        availableForTopUpTrx: sunToTrxString(availableForTopUpSun),
+        canTopUp,
+        recommendedTopUpSun,
+        recommendedTopUpTrx: sunToTrxString(recommendedTopUpSun)
+      }
+    }
+  });
+}
+
+async function handleGasStationOrderCheckDebug(
+  req: http.IncomingMessage,
+  res: http.ServerResponse,
+  env: EnvConfig,
+  tronWeb: any,
+  controllerContractAddress: string
+): Promise<void> {
+  const client = createGasStationClientOrThrow(env);
+
+  const operatorAddress = normalizeAddress(
+    tronWeb?.defaultAddress?.base58 || tronWeb?.defaultAddress?.hex || "",
+    "operatorAddress"
+  );
+
+  const [gasBalance, accountResources, accountInfo, operatorBalanceSunRaw] =
+    await Promise.all([
+      client.getBalance(),
+      tronWeb.trx.getAccountResources(operatorAddress),
+      tronWeb.trx.getAccount(operatorAddress),
+      tronWeb.trx.getBalance(operatorAddress)
+    ]);
+
+  const operatorBalanceSun = toNumberSafe(operatorBalanceSunRaw);
+  const serviceBalanceSun = parseTrxAmountToSun(gasBalance.balance, "gasStation.balance");
+  const depositAddress = normalizeAddress(
+    String((gasBalance as any).deposit_address || ""),
+    "deposit_address"
+  );
+
+  const energyLimit = toNumberSafe(accountResources?.EnergyLimit);
+  const energyUsed = toNumberSafe(accountResources?.EnergyUsed);
+  const energyAvailable = Math.max(0, energyLimit - energyUsed);
+
+  const freeNetLimit = Math.max(
+    toNumberSafe(accountInfo?.freeNetLimit),
+    toNumberSafe(accountInfo?.free_net_limit)
+  );
+  const freeNetUsed = Math.max(
+    toNumberSafe(accountInfo?.freeNetUsed),
+    toNumberSafe(accountInfo?.free_net_used)
+  );
+  const netLimit = Math.max(
+    toNumberSafe(accountInfo?.NetLimit),
+    toNumberSafe(accountInfo?.net_limit)
+  );
+  const netUsed = Math.max(
+    toNumberSafe(accountInfo?.NetUsed),
+    toNumberSafe(accountInfo?.net_used)
+  );
+
+  const freeBandwidthAvailable = Math.max(0, freeNetLimit - freeNetUsed);
+  const paidBandwidthAvailable = Math.max(0, netLimit - netUsed);
+  const bandwidthAvailable = freeBandwidthAvailable + paidBandwidthAvailable;
+
+  const missingEnergy = Math.max(0, env.allocationMinEnergy - energyAvailable);
+  const missingBandwidth = Math.max(0, env.allocationMinBandwidth - bandwidthAvailable);
+
+  const energyToBuy =
+    missingEnergy > 0
+      ? Math.max(env.gasStationMinEnergy, missingEnergy, 64400)
+      : 0;
+
+  const bandwidthToBuy =
+    missingBandwidth > 0
+      ? Math.max(env.gasStationMinBandwidth, missingBandwidth, 5000)
+      : 0;
+
+  const availableForTopUpSun = Math.max(
+    0,
+    operatorBalanceSun - OPERATOR_REMAINING_RESERVE_SUN
+  );
+
+  const needsTopUp = serviceBalanceSun < GASSTATION_LOW_BALANCE_SUN;
+  const canTopUp =
+    operatorBalanceSun >= OPERATOR_MIN_BALANCE_FOR_TOPUP_SUN &&
+    availableForTopUpSun >= GASSTATION_LOW_BALANCE_SUN;
+
+  let energyEstimate: unknown = null;
+  let energyEstimateError: { message: string; code: string | null } | null = null;
+
+  if (energyToBuy > 0) {
+    try {
+      energyEstimate = await client.estimateEnergyOrder({
+        receiveAddress: operatorAddress,
+        addressTo: operatorAddress,
+        contractAddress: controllerContractAddress,
+        serviceChargeType: env.gasStationServiceChargeType
+      });
+    } catch (error) {
+      energyEstimateError = {
+        message: toErrorMessage(error),
+        code: extractErrorCode(error)
+      };
+    }
+  }
+
+  let bandwidthPrice: unknown = null;
+  let bandwidthPriceError: { message: string; code: string | null } | null = null;
+
+  if (bandwidthToBuy > 0) {
+    try {
+      bandwidthPrice = await client.getPrice({
+        serviceChargeType: env.gasStationServiceChargeType,
+        resourceValue: bandwidthToBuy
+      });
+    } catch (error) {
+      bandwidthPriceError = {
+        message: toErrorMessage(error),
+        code: extractErrorCode(error)
+      };
+    }
+  }
+
+  sendJson(req, res, env, 200, {
+    ok: true,
+    result: {
+      gasStation: {
+        balanceSun: serviceBalanceSun,
+        balanceTrx: sunToTrxString(serviceBalanceSun),
+        depositAddress,
+        lowBalanceThresholdSun: GASSTATION_LOW_BALANCE_SUN,
+        lowBalanceThresholdTrx: sunToTrxString(GASSTATION_LOW_BALANCE_SUN),
+        needsTopUp
+      },
+      operator: {
+        address: operatorAddress,
+        balanceSun: operatorBalanceSun,
+        balanceTrx: sunToTrxString(operatorBalanceSun),
+        minBalanceForTopUpSun: OPERATOR_MIN_BALANCE_FOR_TOPUP_SUN,
+        minBalanceForTopUpTrx: sunToTrxString(OPERATOR_MIN_BALANCE_FOR_TOPUP_SUN),
+        reserveAfterTopUpSun: OPERATOR_REMAINING_RESERVE_SUN,
+        reserveAfterTopUpTrx: sunToTrxString(OPERATOR_REMAINING_RESERVE_SUN),
+        availableForTopUpSun,
+        availableForTopUpTrx: sunToTrxString(availableForTopUpSun),
+        canTopUp
+      },
+      resources: {
+        current: {
+          energyAvailable,
+          bandwidthAvailable
+        },
+        thresholds: {
+          allocationMinEnergy: env.allocationMinEnergy,
+          allocationMinBandwidth: env.allocationMinBandwidth,
+          gasStationMinEnergy: env.gasStationMinEnergy,
+          gasStationMinBandwidth: env.gasStationMinBandwidth
+        },
+        missing: {
+          missingEnergy,
+          missingBandwidth
+        },
+        buyPlan: {
+          energyToBuy,
+          bandwidthToBuy
+        }
+      },
+      checks: {
+        energyEstimate: energyEstimate
+          ? { ok: true, result: energyEstimate }
+          : energyToBuy > 0
+            ? { ok: false, error: energyEstimateError }
+            : { ok: true, skipped: true, reason: "Energy is already sufficient" },
+        bandwidthPrice: bandwidthPrice
+          ? { ok: true, result: bandwidthPrice }
+          : bandwidthToBuy > 0
+            ? { ok: false, error: bandwidthPriceError }
+            : { ok: true, skipped: true, reason: "Bandwidth is already sufficient" }
+      }
+    }
+  });
 }
 
 async function bootstrap() {
@@ -7836,29 +8093,21 @@ async function bootstrap() {
     privateKey: env.tronPrivateKey
   });
 
-  const resolvedControllerContractAddress =
+  const controllerContractAddress =
     env.controllerContractAddress || DEFAULT_CONTROLLER_CONTRACT;
+
+  const logger = createLogger();
 
   const worker = createAllocationWorker({
     tronWeb,
-    controllerContractAddress: resolvedControllerContractAddress,
-    logger: {
-      info(payload) {
-        console.log(JSON.stringify({ level: "info", ...payload }));
-      },
-      warn(payload) {
-        console.warn(JSON.stringify({ level: "warn", ...payload }));
-      },
-      error(payload) {
-        console.error(JSON.stringify({ level: "error", ...payload }));
-      }
-    }
+    controllerContractAddress,
+    logger
   });
 
   const cabinetService = createCabinetService({
     store: worker.store,
     tronWeb,
-    controllerContractAddress: resolvedControllerContractAddress,
+    controllerContractAddress,
     processor: worker.processor
   });
 
@@ -7885,248 +8134,17 @@ async function bootstrap() {
       }
 
       if (method === "GET" && pathname === "/health") {
-        sendJson(req, res, env, 200, {
-          ok: true,
-          service: "allocation-worker",
-          timestamp: Date.now(),
-          controllerContractAddress: resolvedControllerContractAddress,
-          gasStation: {
-            enabled: env.gasStationEnabled,
-            apiBaseUrl: env.gasStationApiBaseUrl || null,
-            minBandwidth: env.gasStationMinBandwidth,
-            minEnergy: env.gasStationMinEnergy,
-            serviceChargeType: env.gasStationServiceChargeType
-          },
-          allocationThresholds: {
-            minBandwidth: env.allocationMinBandwidth,
-            minEnergy: env.allocationMinEnergy
-          }
-        });
+        await handleHealth(req, res, env, controllerContractAddress);
         return;
       }
 
       if (method === "GET" && pathname === "/debug/gasstation/balance") {
-        const client = createGasStationClientOrThrow(env);
-        const gasBalance = await client.getBalance();
-
-        const operatorAddress = normalizeAddress(
-          tronWeb?.defaultAddress?.base58 || tronWeb?.defaultAddress?.hex || "",
-          "operatorAddress"
-        );
-
-        const operatorBalanceSun = Number(await tronWeb.trx.getBalance(operatorAddress));
-        const serviceBalanceSun = parseTrxAmountToSun(gasBalance.balance, "gasStation.balance");
-        const depositAddress = normalizeAddress(
-          String((gasBalance as any).deposit_address || ""),
-          "deposit_address"
-        );
-
-        const availableForTopUpSun = Math.max(
-          0,
-          operatorBalanceSun - OPERATOR_REMAINING_RESERVE_SUN
-        );
-
-        const needsTopUp = serviceBalanceSun < GASSTATION_LOW_BALANCE_SUN;
-        const canTopUp =
-          operatorBalanceSun >= OPERATOR_MIN_BALANCE_FOR_TOPUP_SUN &&
-          availableForTopUpSun >= GASSTATION_LOW_BALANCE_SUN;
-
-        const recommendedTopUpSun = canTopUp ? availableForTopUpSun : 0;
-
-        sendJson(req, res, env, 200, {
-          ok: true,
-          result: {
-            gasStation: {
-              balanceSun: serviceBalanceSun,
-              balanceTrx: sunToTrxString(serviceBalanceSun),
-              depositAddress,
-              lowBalanceThresholdSun: GASSTATION_LOW_BALANCE_SUN,
-              lowBalanceThresholdTrx: sunToTrxString(GASSTATION_LOW_BALANCE_SUN),
-              needsTopUp
-            },
-            operator: {
-              address: operatorAddress,
-              balanceSun: operatorBalanceSun,
-              balanceTrx: sunToTrxString(operatorBalanceSun),
-              minBalanceForTopUpSun: OPERATOR_MIN_BALANCE_FOR_TOPUP_SUN,
-              minBalanceForTopUpTrx: sunToTrxString(OPERATOR_MIN_BALANCE_FOR_TOPUP_SUN),
-              reserveAfterTopUpSun: OPERATOR_REMAINING_RESERVE_SUN,
-              reserveAfterTopUpTrx: sunToTrxString(OPERATOR_REMAINING_RESERVE_SUN),
-              availableForTopUpSun,
-              availableForTopUpTrx: sunToTrxString(availableForTopUpSun),
-              canTopUp,
-              recommendedTopUpSun,
-              recommendedTopUpTrx: sunToTrxString(recommendedTopUpSun)
-            }
-          }
-        });
+        await handleGasStationBalanceDebug(req, res, env, tronWeb);
         return;
       }
 
       if (method === "GET" && pathname === "/debug/gasstation/order-check") {
-        const client = createGasStationClientOrThrow(env);
-
-        const operatorAddress = normalizeAddress(
-          tronWeb?.defaultAddress?.base58 || tronWeb?.defaultAddress?.hex || "",
-          "operatorAddress"
-        );
-
-        const [gasBalance, accountResources, accountInfo, operatorBalanceSunRaw] =
-          await Promise.all([
-            client.getBalance(),
-            tronWeb.trx.getAccountResources(operatorAddress),
-            tronWeb.trx.getAccount(operatorAddress),
-            tronWeb.trx.getBalance(operatorAddress)
-          ]);
-
-        const operatorBalanceSun = toNumberSafe(operatorBalanceSunRaw);
-        const serviceBalanceSun = parseTrxAmountToSun(gasBalance.balance, "gasStation.balance");
-        const depositAddress = normalizeAddress(
-          String((gasBalance as any).deposit_address || ""),
-          "deposit_address"
-        );
-
-        const energyLimit = toNumberSafe(accountResources?.EnergyLimit);
-        const energyUsed = toNumberSafe(accountResources?.EnergyUsed);
-        const energyAvailable = Math.max(0, energyLimit - energyUsed);
-
-        const freeNetLimit = Math.max(
-          toNumberSafe(accountInfo?.freeNetLimit),
-          toNumberSafe(accountInfo?.free_net_limit)
-        );
-        const freeNetUsed = Math.max(
-          toNumberSafe(accountInfo?.freeNetUsed),
-          toNumberSafe(accountInfo?.free_net_used)
-        );
-        const netLimit = Math.max(
-          toNumberSafe(accountInfo?.NetLimit),
-          toNumberSafe(accountInfo?.net_limit)
-        );
-        const netUsed = Math.max(
-          toNumberSafe(accountInfo?.NetUsed),
-          toNumberSafe(accountInfo?.net_used)
-        );
-
-        const freeBandwidthAvailable = Math.max(0, freeNetLimit - freeNetUsed);
-        const paidBandwidthAvailable = Math.max(0, netLimit - netUsed);
-        const bandwidthAvailable = freeBandwidthAvailable + paidBandwidthAvailable;
-
-        const missingEnergy = Math.max(0, env.allocationMinEnergy - energyAvailable);
-        const missingBandwidth = Math.max(0, env.allocationMinBandwidth - bandwidthAvailable);
-
-        const energyToBuy =
-          missingEnergy > 0
-            ? Math.max(env.gasStationMinEnergy, missingEnergy, 64400)
-            : 0;
-
-        const bandwidthToBuy =
-          missingBandwidth > 0
-            ? Math.max(env.gasStationMinBandwidth, missingBandwidth, 5000)
-            : 0;
-
-        const availableForTopUpSun = Math.max(
-          0,
-          operatorBalanceSun - OPERATOR_REMAINING_RESERVE_SUN
-        );
-
-        const needsTopUp = serviceBalanceSun < GASSTATION_LOW_BALANCE_SUN;
-        const canTopUp =
-          operatorBalanceSun >= OPERATOR_MIN_BALANCE_FOR_TOPUP_SUN &&
-          availableForTopUpSun >= GASSTATION_LOW_BALANCE_SUN;
-
-        let energyEstimate: unknown = null;
-        let energyEstimateError: { message: string; code: string | null } | null = null;
-
-        if (energyToBuy > 0) {
-          try {
-            energyEstimate = await client.estimateEnergyOrder({
-              receiveAddress: operatorAddress,
-              addressTo: operatorAddress,
-              contractAddress: resolvedControllerContractAddress,
-              serviceChargeType: env.gasStationServiceChargeType
-            });
-          } catch (error) {
-            energyEstimateError = {
-              message: toErrorMessage(error),
-              code: extractErrorCode(error)
-            };
-          }
-        }
-
-        let bandwidthPrice: unknown = null;
-        let bandwidthPriceError: { message: string; code: string | null } | null = null;
-
-        if (bandwidthToBuy > 0) {
-          try {
-            bandwidthPrice = await client.getPrice({
-              serviceChargeType: env.gasStationServiceChargeType,
-              resourceValue: bandwidthToBuy
-            });
-          } catch (error) {
-            bandwidthPriceError = {
-              message: toErrorMessage(error),
-              code: extractErrorCode(error)
-            };
-          }
-        }
-
-        sendJson(req, res, env, 200, {
-          ok: true,
-          result: {
-            gasStation: {
-              balanceSun: serviceBalanceSun,
-              balanceTrx: sunToTrxString(serviceBalanceSun),
-              depositAddress,
-              lowBalanceThresholdSun: GASSTATION_LOW_BALANCE_SUN,
-              lowBalanceThresholdTrx: sunToTrxString(GASSTATION_LOW_BALANCE_SUN),
-              needsTopUp
-            },
-            operator: {
-              address: operatorAddress,
-              balanceSun: operatorBalanceSun,
-              balanceTrx: sunToTrxString(operatorBalanceSun),
-              minBalanceForTopUpSun: OPERATOR_MIN_BALANCE_FOR_TOPUP_SUN,
-              minBalanceForTopUpTrx: sunToTrxString(OPERATOR_MIN_BALANCE_FOR_TOPUP_SUN),
-              reserveAfterTopUpSun: OPERATOR_REMAINING_RESERVE_SUN,
-              reserveAfterTopUpTrx: sunToTrxString(OPERATOR_REMAINING_RESERVE_SUN),
-              availableForTopUpSun,
-              availableForTopUpTrx: sunToTrxString(availableForTopUpSun),
-              canTopUp
-            },
-            resources: {
-              current: {
-                energyAvailable,
-                bandwidthAvailable
-              },
-              thresholds: {
-                allocationMinEnergy: env.allocationMinEnergy,
-                allocationMinBandwidth: env.allocationMinBandwidth,
-                gasStationMinEnergy: env.gasStationMinEnergy,
-                gasStationMinBandwidth: env.gasStationMinBandwidth
-              },
-              missing: {
-                missingEnergy,
-                missingBandwidth
-              },
-              buyPlan: {
-                energyToBuy,
-                bandwidthToBuy
-              }
-            },
-            checks: {
-              energyEstimate: energyEstimate
-                ? { ok: true, result: energyEstimate }
-                : energyToBuy > 0
-                  ? { ok: false, error: energyEstimateError }
-                  : { ok: true, skipped: true, reason: "Energy is already sufficient" },
-              bandwidthPrice: bandwidthPrice
-                ? { ok: true, result: bandwidthPrice }
-                : bandwidthToBuy > 0
-                  ? { ok: false, error: bandwidthPriceError }
-                  : { ok: true, skipped: true, reason: "Bandwidth is already sufficient" }
-            }
-          }
-        });
+        await handleGasStationOrderCheckDebug(req, res, env, tronWeb, controllerContractAddress);
         return;
       }
 
@@ -8405,8 +8423,6 @@ async function bootstrap() {
           "buyerWallet"
         );
         const slug = normalizeIncomingSlug(body.slug);
-        const allocationMode = parseAllocationMode(body.allocationMode);
-
         const feeLimitSun =
           body.feeLimitSun !== undefined
             ? parsePositiveInteger(String(body.feeLimitSun), 1, "feeLimitSun")
@@ -8416,14 +8432,13 @@ async function bootstrap() {
           txHash,
           buyerWallet,
           slug,
-          now: Date.now(),
-          allocationMode,
-          feeLimitSun
+          now: Date.now()
         });
 
         sendJson(req, res, env, 200, {
           ok: true,
-          result
+          result,
+          feeLimitSun: feeLimitSun ?? null
         });
         return;
       }
@@ -8505,7 +8520,7 @@ async function bootstrap() {
         message: "allocation-worker started",
         port: env.port,
         allowedOrigins: env.allowedOrigins,
-        controllerContractAddress: resolvedControllerContractAddress,
+        controllerContractAddress,
         gasStation: {
           enabled: env.gasStationEnabled,
           apiBaseUrl: env.gasStationApiBaseUrl || null,
