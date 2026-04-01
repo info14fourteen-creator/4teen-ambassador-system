@@ -113,13 +113,16 @@ export async function dailyMaintenance(
         ok: true,
         job: "dailyMaintenance",
         stage: "replayDeferredPurchases-finished",
-        replay: {
-          scanned: result.replayDeferredPurchases.scanned,
-          allocated: result.replayDeferredPurchases.allocated,
-          deferred: result.replayDeferredPurchases.deferred,
-          skipped: result.replayDeferredPurchases.skipped,
-          failed: result.replayDeferredPurchases.failed
-        }
+        replay: result.replayDeferredPurchases
+          ? {
+              scanned: result.replayDeferredPurchases.scanned,
+              attempted: result.replayDeferredPurchases.attempted,
+              allocated: result.replayDeferredPurchases.allocated,
+              deferred: result.replayDeferredPurchases.deferred,
+              skipped: result.replayDeferredPurchases.skipped,
+              failed: result.replayDeferredPurchases.failed
+            }
+          : null
       })
     );
 
@@ -135,13 +138,17 @@ export async function dailyMaintenance(
         ok: true,
         job: "dailyMaintenance",
         stage: "processAmbassadorPendingQueue-finished",
-        queue: {
-          scanned: result.processAmbassadorPendingQueue.scanned,
-          allocated: result.processAmbassadorPendingQueue.allocated,
-          deferred: result.processAmbassadorPendingQueue.deferred,
-          skipped: result.processAmbassadorPendingQueue.skipped,
-          failed: result.processAmbassadorPendingQueue.failed
-        }
+        queue: result.processAmbassadorPendingQueue
+          ? {
+              scanned: result.processAmbassadorPendingQueue.scanned,
+              allocated: result.processAmbassadorPendingQueue.allocated,
+              deferred: result.processAmbassadorPendingQueue.deferred,
+              skipped: result.processAmbassadorPendingQueue.skipped,
+              failed: result.processAmbassadorPendingQueue.failed,
+              stoppedEarly: result.processAmbassadorPendingQueue.stoppedEarly,
+              stopReason: result.processAmbassadorPendingQueue.stopReason
+            }
+          : null
       })
     );
 
@@ -158,6 +165,7 @@ export async function dailyMaintenance(
         replayDeferredPurchases: result.replayDeferredPurchases
           ? {
               scanned: result.replayDeferredPurchases.scanned,
+              attempted: result.replayDeferredPurchases.attempted,
               allocated: result.replayDeferredPurchases.allocated,
               deferred: result.replayDeferredPurchases.deferred,
               skipped: result.replayDeferredPurchases.skipped,
@@ -170,7 +178,9 @@ export async function dailyMaintenance(
               allocated: result.processAmbassadorPendingQueue.allocated,
               deferred: result.processAmbassadorPendingQueue.deferred,
               skipped: result.processAmbassadorPendingQueue.skipped,
-              failed: result.processAmbassadorPendingQueue.failed
+              failed: result.processAmbassadorPendingQueue.failed,
+              stoppedEarly: result.processAmbassadorPendingQueue.stoppedEarly,
+              stopReason: result.processAmbassadorPendingQueue.stopReason
             }
           : null
       })
