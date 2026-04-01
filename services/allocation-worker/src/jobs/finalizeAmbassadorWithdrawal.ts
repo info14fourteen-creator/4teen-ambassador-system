@@ -121,7 +121,7 @@ async function loadWithdrawIncludedPurchases(
     withdrawSessionId?: string;
     limit: number;
   }
-): Promise<any[]> {
+) {
   const rows = await worker.store.listPendingByAmbassador({
     ambassadorWallet: options.ambassadorWallet,
     statuses: ["withdraw_included"],
@@ -135,6 +135,60 @@ async function loadWithdrawIncludedPurchases(
   return rows.filter((purchase) => {
     return String(purchase.withdrawSessionId || "").trim() === options.withdrawSessionId;
   });
+}
+
+function buildSkippedItem(
+  purchase: any,
+  reason: string
+): FinalizeAmbassadorWithdrawalJobItem {
+  const previousStatus = String(purchase?.status || "").trim() || "unknown";
+  const currentWithdrawSessionId = String(purchase?.withdrawSessionId || "").trim();
+
+  return {
+    purchaseId: String(purchase?.purchaseId || "").trim(),
+    txHash: String(purchase?.txHash || "").trim(),
+    buyerWallet: String(purchase?.buyerWallet || "").trim(),
+    ambassadorSlug: String(purchase?.ambassadorSlug || "").trim(),
+    ambassadorWallet: String(purchase?.ambassadorWallet || "").trim(),
+    purchaseAmountSun: String(purchase?.purchaseAmountSun ?? "0"),
+    ownerShareSun: String(purchase?.ownerShareSun ?? "0"),
+    previousStatus,
+    status: previousStatus,
+    withdrawSessionId: currentWithdrawSessionId || null,
+    finalized: false,
+    reason
+  };
+}
+
+function buildFinalizedItem(
+  updated: any,
+  fallbackPurchase: any
+): FinalizeAmbassadorWithdrawalJobItem {
+  const previousStatus = String(fallbackPurchase?.status || "").trim() || "withdraw_included";
+  const currentWithdrawSessionId = String(
+    updated?.withdrawSessionId || fallbackPurchase?.withdrawSessionId || ""
+  ).trim();
+
+  return {
+    purchaseId: String(updated?.purchaseId || fallbackPurchase?.purchaseId || "").trim(),
+    txHash: String(updated?.txHash || fallbackPurchase?.txHash || "").trim(),
+    buyerWallet: String(updated?.buyerWallet || fallbackPurchase?.buyerWallet || "").trim(),
+    ambassadorSlug: String(
+      updated?.ambassadorSlug || fallbackPurchase?.ambassadorSlug || ""
+    ).trim(),
+    ambassadorWallet: String(
+      updated?.ambassadorWallet || fallbackPurchase?.ambassadorWallet || ""
+    ).trim(),
+    purchaseAmountSun: String(
+      updated?.purchaseAmountSun ?? fallbackPurchase?.purchaseAmountSun ?? "0"
+    ),
+    ownerShareSun: String(updated?.ownerShareSun ?? fallbackPurchase?.ownerShareSun ?? "0"),
+    previousStatus,
+    status: String(updated?.status || "withdraw_completed"),
+    withdrawSessionId: currentWithdrawSessionId || null,
+    finalized: true,
+    reason: null
+  };
 }
 
 export async function finalizeAmbassadorWithdrawal(
@@ -187,7 +241,7 @@ export async function finalizeAmbassadorWithdrawal(
       JSON.stringify({
         ok: true,
         job: "finalizeAmbassadorWithdrawal",
-        message: "Loaded purchases for withdrawal finalization",
+        stage: "loaded",
         ambassadorSlug,
         ambassadorWallet,
         withdrawSessionId: requestedWithdrawSessionId,
@@ -204,7 +258,7 @@ export async function finalizeAmbassadorWithdrawal(
         JSON.stringify({
           ok: true,
           job: "finalizeAmbassadorWithdrawal",
-          message: "No withdraw_included purchases found for finalization",
+          stage: "finished-empty",
           ambassadorSlug,
           ambassadorWallet,
           withdrawSessionId: requestedWithdrawSessionId,
@@ -223,20 +277,12 @@ export async function finalizeAmbassadorWithdrawal(
 
       if (previousStatus !== "withdraw_included") {
         result.skipped += 1;
-        result.items.push({
-          purchaseId: String(purchase.purchaseId || ""),
-          txHash: String(purchase.txHash || ""),
-          buyerWallet: String(purchase.buyerWallet || ""),
-          ambassadorSlug: String(purchase.ambassadorSlug || ""),
-          ambassadorWallet: String(purchase.ambassadorWallet || ""),
-          purchaseAmountSun: String(purchase.purchaseAmountSun ?? "0"),
-          ownerShareSun: String(purchase.ownerShareSun ?? "0"),
-          previousStatus,
-          status: previousStatus || "unknown",
-          withdrawSessionId: currentWithdrawSessionId || null,
-          finalized: false,
-          reason: `Unsupported status for withdrawal finalization: ${previousStatus || "unknown"}`
-        });
+        result.items.push(
+          buildSkippedItem(
+            purchase,
+            `Unsupported status for withdrawal finalization: ${previousStatus || "unknown"}`
+          )
+        );
         continue;
       }
 
@@ -245,20 +291,7 @@ export async function finalizeAmbassadorWithdrawal(
         currentWithdrawSessionId !== requestedWithdrawSessionId
       ) {
         result.skipped += 1;
-        result.items.push({
-          purchaseId: String(purchase.purchaseId || ""),
-          txHash: String(purchase.txHash || ""),
-          buyerWallet: String(purchase.buyerWallet || ""),
-          ambassadorSlug: String(purchase.ambassadorSlug || ""),
-          ambassadorWallet: String(purchase.ambassadorWallet || ""),
-          purchaseAmountSun: String(purchase.purchaseAmountSun ?? "0"),
-          ownerShareSun: String(purchase.ownerShareSun ?? "0"),
-          previousStatus,
-          status: previousStatus,
-          withdrawSessionId: currentWithdrawSessionId || null,
-          finalized: false,
-          reason: "Withdraw session mismatch"
-        });
+        result.items.push(buildSkippedItem(purchase, "Withdraw session mismatch"));
         continue;
       }
 
@@ -268,21 +301,7 @@ export async function finalizeAmbassadorWithdrawal(
       });
 
       result.finalized += 1;
-
-      result.items.push({
-        purchaseId: String(updated?.purchaseId || purchase.purchaseId || ""),
-        txHash: String(updated?.txHash || purchase.txHash || ""),
-        buyerWallet: String(updated?.buyerWallet || purchase.buyerWallet || ""),
-        ambassadorSlug: String(updated?.ambassadorSlug || purchase.ambassadorSlug || ""),
-        ambassadorWallet: String(updated?.ambassadorWallet || purchase.ambassadorWallet || ""),
-        purchaseAmountSun: String(updated?.purchaseAmountSun ?? purchase.purchaseAmountSun ?? "0"),
-        ownerShareSun: String(updated?.ownerShareSun ?? purchase.ownerShareSun ?? "0"),
-        previousStatus,
-        status: String(updated?.status || "withdraw_completed"),
-        withdrawSessionId: String(updated?.withdrawSessionId || currentWithdrawSessionId || "") || null,
-        finalized: true,
-        reason: null
-      });
+      result.items.push(buildFinalizedItem(updated, purchase));
     }
 
     result.finishedAt = Date.now();
@@ -291,7 +310,7 @@ export async function finalizeAmbassadorWithdrawal(
       JSON.stringify({
         ok: true,
         job: "finalizeAmbassadorWithdrawal",
-        message: "Ambassador withdrawal finalization finished",
+        stage: "finished",
         ambassadorSlug,
         ambassadorWallet,
         withdrawSessionId: requestedWithdrawSessionId,
@@ -312,11 +331,13 @@ export async function finalizeAmbassadorWithdrawal(
       JSON.stringify({
         ok: false,
         job: "finalizeAmbassadorWithdrawal",
+        stage: "failed",
         ambassadorSlug,
         ambassadorWallet,
         withdrawSessionId: requestedWithdrawSessionId,
         txid,
-        error: toErrorMessage(error)
+        error: toErrorMessage(error),
+        durationMs: result.finishedAt - result.startedAt
       })
     );
 
