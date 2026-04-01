@@ -74,9 +74,6 @@ export interface CabinetProfileStats {
   withdrawnRewardsSun: string;
   withdrawnRewardsTrx: string;
 
-  /**
-   * Backward-compatible aliases for older UI consumers.
-   */
   totalVolumeSun: string;
   totalVolumeTrx: string;
   totalRewardsAccruedSun: string;
@@ -298,6 +295,7 @@ function pickFirstDefined(
 ): unknown {
   for (const candidate of candidates) {
     const keys = candidate.keys ?? [];
+
     for (const key of keys) {
       const value = pickTupleValue(source, candidate.index, key);
       if (value !== undefined && value !== null && value !== "") {
@@ -445,6 +443,61 @@ function logJson(level: "info" | "warn" | "error", payload: Record<string, unkno
   console.log(line);
 }
 
+function buildProfileFromSnapshot(input: {
+  wallet: string;
+  slug: string;
+  status: string;
+  snapshot: Awaited<ReturnType<typeof getDashboardSnapshotByWallet>> extends infer T
+    ? NonNullable<T>
+    : never;
+  dbStatsRecord: CabinetStatsRecord;
+}): CabinetProfileRegisteredResult {
+  const { wallet, slug, status, snapshot, dbStatsRecord } = input;
+
+  const mapped = mapStats({
+    onChainStats: {
+      totalBuyers: String(snapshot.totalBuyers),
+      trackedVolumeSun: snapshot.trackedVolumeSun,
+      claimableRewardsSun: snapshot.claimableRewardsSun,
+      lifetimeRewardsSun: snapshot.lifetimeRewardsSun,
+      withdrawnRewardsSun: snapshot.withdrawnRewardsSun
+    },
+    dbStats: dbStatsRecord
+  });
+
+  return {
+    registered: true,
+    wallet,
+    slug,
+    status,
+    referralLink: buildReferralLink(slug),
+    identity: {
+      wallet,
+      exists: snapshot.existsOnChain,
+      active: status === "active" ? snapshot.activeOnChain : false,
+      selfRegistered: snapshot.selfRegistered,
+      manualAssigned: snapshot.manualAssigned,
+      overrideEnabled: snapshot.overrideEnabled,
+      level: snapshot.effectiveLevel,
+      effectiveLevel: snapshot.effectiveLevel,
+      currentLevel: snapshot.currentLevel,
+      overrideLevel: snapshot.overrideLevel,
+      rewardPercent: snapshot.rewardPercent,
+      createdAt: snapshot.createdAtOnChain ?? 0,
+      slugHash: normalizeSlugHash(snapshot.slugHash),
+      metaHash: snapshot.metaHash
+    },
+    stats: mapped.stats,
+    withdrawalQueue: mapped.withdrawalQueue,
+    progress: {
+      currentLevel: snapshot.currentLevel,
+      buyersCount: snapshot.totalBuyers,
+      nextThreshold: snapshot.nextThreshold,
+      remainingToNextLevel: snapshot.remainingToNextLevel
+    }
+  };
+}
+
 export class CabinetService {
   private readonly store: PurchaseStore;
   private readonly tronWeb: any;
@@ -496,9 +549,7 @@ export class CabinetService {
     try {
       return await method(wallet).call();
     } catch (error) {
-      throw new Error(
-        `${methodName}(${wallet}) failed: ${toErrorMessage(error)}`
-      );
+      throw new Error(`${methodName}(${wallet}) failed: ${toErrorMessage(error)}`);
     }
   }
 
@@ -670,150 +721,6 @@ export class CabinetService {
     };
   }
 
-  private async storeDashboardSnapshot(input: {
-    wallet: string;
-    slug: string;
-    status: string;
-    onChain: {
-      identity: CabinetProfileIdentity;
-      progress: CabinetProfileProgress;
-      stats: {
-        totalBuyers: string;
-        trackedVolumeSun: string;
-        claimableRewardsSun: string;
-        lifetimeRewardsSun: string;
-        withdrawnRewardsSun: string;
-      };
-      debug: {
-        coreRaw: any;
-        profileRaw: any;
-        progressRaw: any;
-        statsRaw: any;
-      };
-    };
-  }): Promise<void> {
-    await upsertDashboardSnapshot({
-      wallet: input.wallet,
-      slug: input.slug,
-      registryStatus: input.status,
-
-      existsOnChain: input.onChain.identity.exists,
-      activeOnChain: input.onChain.identity.active,
-      selfRegistered: input.onChain.identity.selfRegistered,
-      manualAssigned: input.onChain.identity.manualAssigned,
-      overrideEnabled: input.onChain.identity.overrideEnabled,
-
-      level: input.onChain.identity.level,
-      effectiveLevel: input.onChain.identity.effectiveLevel,
-      currentLevel: input.onChain.identity.currentLevel,
-      overrideLevel: input.onChain.identity.overrideLevel,
-      rewardPercent: input.onChain.identity.rewardPercent,
-
-      createdAtOnChain: input.onChain.identity.createdAt,
-      slugHash: input.onChain.identity.slugHash,
-      metaHash: input.onChain.identity.metaHash,
-
-      totalBuyers: safeNumber(input.onChain.stats.totalBuyers, 0),
-      trackedVolumeSun: input.onChain.stats.trackedVolumeSun,
-      claimableRewardsSun: input.onChain.stats.claimableRewardsSun,
-      lifetimeRewardsSun: input.onChain.stats.lifetimeRewardsSun,
-      withdrawnRewardsSun: input.onChain.stats.withdrawnRewardsSun,
-
-      nextThreshold: input.onChain.progress.nextThreshold,
-      remainingToNextLevel: input.onChain.progress.remainingToNextLevel,
-
-      rawCoreJson: input.onChain.debug.coreRaw,
-      rawProfileJson: input.onChain.debug.profileRaw,
-      rawProgressJson: input.onChain.debug.progressRaw,
-      rawStatsJson: input.onChain.debug.statsRaw,
-
-      syncStatus: "success",
-      syncError: null,
-      lastSyncedAt: Date.now()
-    });
-  }
-
-  private async markSnapshotFailure(input: {
-    wallet: string;
-    slug: string;
-    status: string;
-    error: unknown;
-  }): Promise<void> {
-    try {
-      await markDashboardSnapshotSyncFailed({
-        wallet: input.wallet,
-        slug: input.slug,
-        registryStatus: input.status,
-        syncError: toErrorMessage(input.error),
-        syncStatus: "failed",
-        lastSyncedAt: Date.now()
-      });
-    } catch (snapshotError) {
-      logJson("warn", {
-        stage: "snapshot-failure-write-failed",
-        wallet: input.wallet,
-        slug: input.slug,
-        status: input.status,
-        error: toErrorMessage(snapshotError)
-      });
-    }
-  }
-
-  private buildProfileFromSnapshot(input: {
-    wallet: string;
-    slug: string;
-    status: string;
-    dbStatsRecord: CabinetStatsRecord;
-    snapshot: Awaited<ReturnType<typeof getDashboardSnapshotByWallet>>;
-  }): CabinetProfileRegisteredResult {
-    const { wallet, slug, status, dbStatsRecord, snapshot } = input;
-
-    const onChainStats = {
-      totalBuyers: String(snapshot?.totalBuyers ?? 0),
-      trackedVolumeSun: snapshot?.trackedVolumeSun ?? "0",
-      claimableRewardsSun: snapshot?.claimableRewardsSun ?? "0",
-      lifetimeRewardsSun: snapshot?.lifetimeRewardsSun ?? "0",
-      withdrawnRewardsSun: snapshot?.withdrawnRewardsSun ?? "0"
-    };
-
-    const mapped = mapStats({
-      onChainStats,
-      dbStats: dbStatsRecord
-    });
-
-    return {
-      registered: true,
-      wallet,
-      slug,
-      status,
-      referralLink: buildReferralLink(slug),
-      identity: {
-        wallet,
-        exists: safeBoolean(snapshot?.existsOnChain, true),
-        active: status === "active" ? safeBoolean(snapshot?.activeOnChain, false) : false,
-        selfRegistered: safeBoolean(snapshot?.selfRegistered, false),
-        manualAssigned: safeBoolean(snapshot?.manualAssigned, false),
-        overrideEnabled: safeBoolean(snapshot?.overrideEnabled, false),
-        level: safeNumber(snapshot?.level, 0),
-        effectiveLevel: safeNumber(snapshot?.effectiveLevel, 0),
-        currentLevel: safeNumber(snapshot?.currentLevel, 0),
-        overrideLevel: safeNumber(snapshot?.overrideLevel, 0),
-        rewardPercent: safeNumber(snapshot?.rewardPercent, 0),
-        createdAt: safeNumber(snapshot?.createdAtOnChain, 0),
-        slugHash: normalizeSlugHash(snapshot?.slugHash),
-        metaHash: normalizeMetaHash(snapshot?.metaHash)
-      },
-      stats: mapped.stats,
-      withdrawalQueue: mapped.withdrawalQueue,
-      progress: {
-        currentLevel: safeNumber(snapshot?.currentLevel, 0),
-        buyersCount: safeNumber(snapshot?.totalBuyers, 0),
-        nextThreshold: safeNumber(snapshot?.nextThreshold, 0),
-        remainingToNextLevel: safeNumber(snapshot?.remainingToNextLevel, 0)
-      }
-    };
-  }
-
   private buildFallbackProfile(
     wallet: string,
     slug: string,
@@ -883,18 +790,49 @@ export class CabinetService {
     try {
       const onChain = await this.readOnChainDashboard(registryWallet);
 
-      await this.storeDashboardSnapshot({
+      await upsertDashboardSnapshot({
         wallet: registryWallet,
         slug,
-        status,
-        onChain
+        registryStatus: status,
+
+        existsOnChain: onChain.identity.exists,
+        activeOnChain: onChain.identity.active,
+        selfRegistered: onChain.identity.selfRegistered,
+        manualAssigned: onChain.identity.manualAssigned,
+        overrideEnabled: onChain.identity.overrideEnabled,
+
+        level: onChain.identity.level,
+        effectiveLevel: onChain.identity.effectiveLevel,
+        currentLevel: onChain.identity.currentLevel,
+        overrideLevel: onChain.identity.overrideLevel,
+        rewardPercent: onChain.identity.rewardPercent,
+
+        createdAtOnChain: onChain.identity.createdAt || null,
+        slugHash: onChain.identity.slugHash,
+        metaHash: onChain.identity.metaHash,
+
+        totalBuyers: safeNumber(onChain.stats.totalBuyers),
+        trackedVolumeSun: onChain.stats.trackedVolumeSun,
+        claimableRewardsSun: onChain.stats.claimableRewardsSun,
+        lifetimeRewardsSun: onChain.stats.lifetimeRewardsSun,
+        withdrawnRewardsSun: onChain.stats.withdrawnRewardsSun,
+
+        nextThreshold: onChain.progress.nextThreshold,
+        remainingToNextLevel: onChain.progress.remainingToNextLevel,
+
+        rawCoreJson: onChain.debug.coreRaw,
+        rawProfileJson: onChain.debug.profileRaw,
+        rawProgressJson: onChain.debug.progressRaw,
+        rawStatsJson: onChain.debug.statsRaw,
+
+        syncStatus: "success",
+        syncError: null,
+        lastSyncedAt: Date.now()
       });
 
       logJson("info", {
         stage: "onchain-dashboard-read-success",
         wallet: registryWallet,
-        slug,
-        status,
         controllerContractAddress: this.controllerContractAddress,
         identity: {
           exists: onChain.identity.exists,
@@ -930,50 +868,66 @@ export class CabinetService {
         progress: onChain.progress
       };
     } catch (error) {
+      const errorMessage = toErrorMessage(error);
+
       logJson("error", {
         stage: "onchain-dashboard-read-failed",
         wallet: registryWallet,
         slug,
         status,
         controllerContractAddress: this.controllerContractAddress,
-        error: toErrorMessage(error)
+        error: errorMessage
       });
 
-      await this.markSnapshotFailure({
-        wallet: registryWallet,
-        slug,
-        status,
-        error
-      });
-
-      const snapshot = await getDashboardSnapshotByWallet(registryWallet);
-
-      if (snapshot) {
-        logJson("warn", {
-          stage: "using-dashboard-snapshot",
+      try {
+        await markDashboardSnapshotSyncFailed({
           wallet: registryWallet,
           slug,
-          status,
-          lastSyncedAt: snapshot.lastSyncedAt,
-          syncStatus: snapshot.syncStatus,
-          syncError: snapshot.syncError
+          registryStatus: status,
+          syncError: errorMessage,
+          syncStatus: "failed",
+          lastSyncedAt: Date.now()
         });
-
-        return this.buildProfileFromSnapshot({
+      } catch (snapshotError) {
+        logJson("error", {
+          stage: "dashboard-snapshot-sync-failed",
           wallet: registryWallet,
           slug,
           status,
-          dbStatsRecord,
-          snapshot
+          error: toErrorMessage(snapshotError)
         });
       }
 
-      logJson("warn", {
-        stage: "using-db-fallback-without-snapshot",
-        wallet: registryWallet,
-        slug,
-        status
-      });
+      try {
+        const snapshot = await getDashboardSnapshotByWallet(registryWallet);
+
+        if (snapshot) {
+          logJson("warn", {
+            stage: "dashboard-snapshot-fallback-used",
+            wallet: registryWallet,
+            slug,
+            status,
+            snapshotSyncStatus: snapshot.syncStatus,
+            snapshotLastSyncedAt: snapshot.lastSyncedAt
+          });
+
+          return buildProfileFromSnapshot({
+            wallet: registryWallet,
+            slug,
+            status,
+            snapshot,
+            dbStatsRecord
+          });
+        }
+      } catch (snapshotReadError) {
+        logJson("error", {
+          stage: "dashboard-snapshot-read-failed",
+          wallet: registryWallet,
+          slug,
+          status,
+          error: toErrorMessage(snapshotReadError)
+        });
+      }
 
       return this.buildFallbackProfile(registryWallet, slug, status, dbStatsRecord);
     }
