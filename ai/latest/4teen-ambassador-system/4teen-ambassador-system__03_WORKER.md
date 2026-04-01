@@ -1,6 +1,6 @@
 # 4teen-ambassador-system — ALLOCATION WORKER
 
-Generated: 2026-04-01T11:57:37.271Z
+Generated: 2026-04-01T12:15:02.163Z
 Repository: info14fourteen-creator/4teen-ambassador-system
 Branch: main
 
@@ -9229,6 +9229,14 @@ const DEFAULT_SERVICE_CHARGE_TYPE = "10010";
 const MIN_ENERGY_ORDER = 64_400;
 const MIN_BANDWIDTH_ORDER = 5_000;
 
+type TaggedGasStationError = Error & {
+  code?: string;
+  retryAfterMs?: number | null;
+  cause?: unknown;
+  status?: number;
+  rawBody?: string | null;
+};
+
 function assertNonEmpty(value: string | undefined, fieldName: string): string {
   const normalized = String(value || "").trim();
 
@@ -9304,14 +9312,8 @@ function createTaggedError(
     status?: number;
     rawBody?: string | null;
   }
-): Error {
-  const error = new Error(message) as Error & {
-    code?: string;
-    retryAfterMs?: number | null;
-    cause?: unknown;
-    status?: number;
-    rawBody?: string | null;
-  };
+): TaggedGasStationError {
+  const error = new Error(message) as TaggedGasStationError;
 
   if (extras?.code) {
     error.code = extras.code;
@@ -9392,7 +9394,6 @@ async function requestJson<T>(params: {
 
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
-
   const dispatcher = proxyUrl ? new ProxyAgent(proxyUrl) : undefined;
 
   try {
@@ -9545,13 +9546,11 @@ export class GasStationClient {
   }
 
   async getBalance(time?: string): Promise<GasStationBalanceResult> {
-    const payload = {
-      time: time ?? String(Math.floor(Date.now() / 1000))
-    };
-
     return this.getJson<GasStationBalanceResult>(
       "/api/mpc/tron/gas/balance",
-      payload,
+      {
+        time: time ?? String(Math.floor(Date.now() / 1000))
+      },
       "GET"
     );
   }
@@ -9586,19 +9585,17 @@ export class GasStationClient {
     contractAddress: string;
     serviceChargeType?: string;
   }): Promise<GasStationEstimateResult> {
-    const payload = {
-      receive_address: assertNonEmpty(input.receiveAddress, "receiveAddress"),
-      address_to: assertNonEmpty(input.addressTo, "addressTo"),
-      contract_address: assertNonEmpty(input.contractAddress, "contractAddress"),
-      service_charge_type: assertNonEmpty(
-        input.serviceChargeType ?? DEFAULT_SERVICE_CHARGE_TYPE,
-        "serviceChargeType"
-      )
-    };
-
     return this.getJson<GasStationEstimateResult>(
       "/api/tron/gas/estimate",
-      payload,
+      {
+        receive_address: assertNonEmpty(input.receiveAddress, "receiveAddress"),
+        address_to: assertNonEmpty(input.addressTo, "addressTo"),
+        contract_address: assertNonEmpty(input.contractAddress, "contractAddress"),
+        service_charge_type: assertNonEmpty(
+          input.serviceChargeType ?? DEFAULT_SERVICE_CHARGE_TYPE,
+          "serviceChargeType"
+        )
+      },
       "GET"
     );
   }
@@ -9615,20 +9612,18 @@ export class GasStationClient {
       throw new Error(`energyNum must be at least ${MIN_ENERGY_ORDER}`);
     }
 
-    const payload = {
-      request_id: assertNonEmpty(input.requestId, "requestId"),
-      receive_address: assertNonEmpty(input.receiveAddress, "receiveAddress"),
-      buy_type: 0,
-      service_charge_type: assertNonEmpty(
-        input.serviceChargeType ?? DEFAULT_SERVICE_CHARGE_TYPE,
-        "serviceChargeType"
-      ),
-      energy_num: energyNum
-    };
-
     return this.getJson<GasStationCreateOrderResult>(
       "/api/tron/gas/create_order",
-      payload,
+      {
+        request_id: assertNonEmpty(input.requestId, "requestId"),
+        receive_address: assertNonEmpty(input.receiveAddress, "receiveAddress"),
+        buy_type: 0,
+        service_charge_type: assertNonEmpty(
+          input.serviceChargeType ?? DEFAULT_SERVICE_CHARGE_TYPE,
+          "serviceChargeType"
+        ),
+        energy_num: energyNum
+      },
       "POST"
     );
   }
@@ -9645,20 +9640,18 @@ export class GasStationClient {
       throw new Error(`netNum must be at least ${MIN_BANDWIDTH_ORDER}`);
     }
 
-    const payload = {
-      request_id: assertNonEmpty(input.requestId, "requestId"),
-      receive_address: assertNonEmpty(input.receiveAddress, "receiveAddress"),
-      buy_type: 0,
-      service_charge_type: assertNonEmpty(
-        input.serviceChargeType ?? DEFAULT_SERVICE_CHARGE_TYPE,
-        "serviceChargeType"
-      ),
-      net_num: netNum
-    };
-
     return this.getJson<GasStationCreateOrderResult>(
       "/api/tron/gas/create_order",
-      payload,
+      {
+        request_id: assertNonEmpty(input.requestId, "requestId"),
+        receive_address: assertNonEmpty(input.receiveAddress, "receiveAddress"),
+        buy_type: 0,
+        service_charge_type: assertNonEmpty(
+          input.serviceChargeType ?? DEFAULT_SERVICE_CHARGE_TYPE,
+          "serviceChargeType"
+        ),
+        net_num: netNum
+      },
       "POST"
     );
   }
