@@ -529,6 +529,10 @@ function buildProfileFromSnapshot(input: {
 }
 
 function isSnapshotFresh(snapshot: AmbassadorDashboardSnapshotRecord, now: number): boolean {
+  if (snapshot.syncStatus !== "success" && snapshot.syncStatus !== "partial") {
+    return false;
+  }
+
   return now - snapshot.lastSyncedAt <= getSnapshotTtlMs();
 }
 
@@ -1010,7 +1014,12 @@ export class CabinetService {
       try {
         const latestSnapshot = await getDashboardSnapshotByWallet(registryWallet);
 
-        if (latestSnapshot) {
+        if (
+          latestSnapshot &&
+          (latestSnapshot.syncStatus === "success" ||
+            latestSnapshot.syncStatus === "partial" ||
+            latestSnapshot.syncStatus === "failed")
+        ) {
           logJson("warn", {
             stage: "dashboard-snapshot-fallback-used-after-refetch",
             wallet: registryWallet,
