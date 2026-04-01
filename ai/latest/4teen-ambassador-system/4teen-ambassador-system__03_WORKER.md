@@ -1,6 +1,6 @@
 # 4teen-ambassador-system — ALLOCATION WORKER
 
-Generated: 2026-04-01T11:47:50.072Z
+Generated: 2026-04-01T11:52:01.927Z
 Repository: info14fourteen-creator/4teen-ambassador-system
 Branch: main
 
@@ -365,6 +365,25 @@ function rowToPrivateIdentity(row: any): AmbassadorPrivateIdentity {
   };
 }
 
+function rowToRegistryRecord(row: any): AmbassadorRegistryRecord {
+  return {
+    publicProfile: {
+      id: String(row.id),
+      slug: String(row.slug),
+      slugHash: String(row.slug_hash),
+      status: String(row.status) as AmbassadorRegistryStatus,
+      createdAt: Number(row.public_created_at_ms),
+      updatedAt: Number(row.public_updated_at_ms)
+    },
+    privateIdentity: {
+      ambassadorId: String(row.ambassador_id),
+      wallet: String(row.wallet),
+      createdAt: Number(row.private_created_at_ms),
+      updatedAt: Number(row.private_updated_at_ms)
+    }
+  };
+}
+
 function isUniqueViolation(error: unknown): boolean {
   return (
     !!error &&
@@ -394,6 +413,10 @@ function mapRegistryWriteError(error: unknown): Error {
 
   const constraint = getConstraintName(error);
 
+  if (constraint.includes("slug_hash")) {
+    return new Error("Slug hash is already taken");
+  }
+
   if (constraint.includes("slug")) {
     return new Error("Slug is already taken");
   }
@@ -403,6 +426,27 @@ function mapRegistryWriteError(error: unknown): Error {
   }
 
   return new Error("Ambassador registration conflict");
+}
+
+function buildRegistryJoinSelect(whereClause: string): string {
+  return `
+    SELECT
+      p.id,
+      p.slug,
+      p.slug_hash,
+      p.status,
+      FLOOR(EXTRACT(EPOCH FROM p.created_at) * 1000) AS public_created_at_ms,
+      FLOOR(EXTRACT(EPOCH FROM p.updated_at) * 1000) AS public_updated_at_ms,
+      i.ambassador_id,
+      i.wallet,
+      FLOOR(EXTRACT(EPOCH FROM i.created_at) * 1000) AS private_created_at_ms,
+      FLOOR(EXTRACT(EPOCH FROM i.updated_at) * 1000) AS private_updated_at_ms
+    FROM ambassador_public_profiles p
+    INNER JOIN ambassador_private_identities i
+      ON i.ambassador_id = p.id
+    ${whereClause}
+    LIMIT 1
+  `;
 }
 
 export async function initAmbassadorRegistryTables(): Promise<void> {
@@ -515,48 +559,12 @@ export async function getAmbassadorRegistryRecordByWallet(
   const normalizedWallet = normalizeWallet(wallet);
 
   const result = await query(
-    `
-      SELECT
-        p.id,
-        p.slug,
-        p.slug_hash,
-        p.status,
-        FLOOR(EXTRACT(EPOCH FROM p.created_at) * 1000) AS public_created_at_ms,
-        FLOOR(EXTRACT(EPOCH FROM p.updated_at) * 1000) AS public_updated_at_ms,
-        i.ambassador_id,
-        i.wallet,
-        FLOOR(EXTRACT(EPOCH FROM i.created_at) * 1000) AS private_created_at_ms,
-        FLOOR(EXTRACT(EPOCH FROM i.updated_at) * 1000) AS private_updated_at_ms
-      FROM ambassador_public_profiles p
-      INNER JOIN ambassador_private_identities i
-        ON i.ambassador_id = p.id
-      WHERE i.wallet = $1
-      LIMIT 1
-    `,
+    buildRegistryJoinSelect("WHERE i.wallet = $1"),
     [normalizedWallet]
   );
 
   const row = result.rows[0];
-  if (!row) {
-    return null;
-  }
-
-  return {
-    publicProfile: {
-      id: String(row.id),
-      slug: String(row.slug),
-      slugHash: String(row.slug_hash),
-      status: String(row.status) as AmbassadorRegistryStatus,
-      createdAt: Number(row.public_created_at_ms),
-      updatedAt: Number(row.public_updated_at_ms)
-    },
-    privateIdentity: {
-      ambassadorId: String(row.ambassador_id),
-      wallet: String(row.wallet),
-      createdAt: Number(row.private_created_at_ms),
-      updatedAt: Number(row.private_updated_at_ms)
-    }
-  };
+  return row ? rowToRegistryRecord(row) : null;
 }
 
 export async function createAmbassadorRegistryRecord(
