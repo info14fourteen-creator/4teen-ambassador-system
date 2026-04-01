@@ -2,8 +2,7 @@ import {
   AttributionDecision,
   AttributionService,
   FrontendAttributionInput,
-  PrepareVerifiedPurchaseResult,
-  VerifiedPurchaseInput
+  PrepareVerifiedPurchaseResult
 } from "../domain/attribution";
 import {
   AllocationDecision,
@@ -46,6 +45,27 @@ function assertNonEmpty(value: string, fieldName: string): string {
   }
 
   return normalized;
+}
+
+function getReadableErrorMessage(error: unknown, fallback: string): string {
+  if (
+    error &&
+    typeof error === "object" &&
+    "message" in error &&
+    typeof (error as { message?: unknown }).message === "string"
+  ) {
+    const message = String((error as { message: string }).message || "").trim();
+
+    if (message) {
+      return message;
+    }
+  }
+
+  if (typeof error === "string" && error.trim()) {
+    return error.trim();
+  }
+
+  return fallback;
 }
 
 export class AttributionProcessor {
@@ -96,12 +116,7 @@ export class AttributionProcessor {
         now
       });
     } catch (error) {
-      const message =
-        error && typeof error === "object" && "message" in error
-          ? String((error as { message?: unknown }).message || "").trim()
-          : "";
-
-      throw new Error(message || "Failed to capture frontend attribution");
+      throw new Error(getReadableErrorMessage(error, "Failed to capture frontend attribution"));
     }
 
     const purchaseId = attribution.purchase.purchaseId;
@@ -129,6 +144,7 @@ export class AttributionProcessor {
     const allocation = await this.allocationService.executeAllocation({
       purchaseId,
       feeLimitSun: input.feeLimitSun,
+      allocationMode: "eager",
       now
     });
 
