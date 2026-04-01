@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-04-01T17:08:16.165Z",
+  "generatedAt": "2026-04-01T17:09:32.691Z",
   "repository": "info14fourteen-creator/4teen-ambassador-system",
   "branch": "main",
   "repoName": "4teen-ambassador-system",
@@ -34,6 +34,7 @@
     "services/allocation-worker/src/run-scan.ts",
     "services/allocation-worker/src/server.ts",
     "services/allocation-worker/src/services/cabinet.ts",
+    "services/allocation-worker/src/services/dashboardRefresh.ts",
     "services/allocation-worker/src/services/gasStation.ts",
     "services/allocation-worker/src/tron/controller.ts",
     "services/allocation-worker/src/tron/hashing.ts",
@@ -100,6 +101,7 @@
         "services/allocation-worker/src/run-scan.ts",
         "services/allocation-worker/src/server.ts",
         "services/allocation-worker/src/services/cabinet.ts",
+        "services/allocation-worker/src/services/dashboardRefresh.ts",
         "services/allocation-worker/src/services/gasStation.ts",
         "services/allocation-worker/src/tron/controller.ts",
         "services/allocation-worker/src/tron/hashing.ts",
