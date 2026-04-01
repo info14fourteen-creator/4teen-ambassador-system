@@ -1,6 +1,6 @@
 # 4teen-ambassador-system — ALLOCATION WORKER
 
-Generated: 2026-04-01T07:59:37.512Z
+Generated: 2026-04-01T08:09:20.068Z
 Repository: info14fourteen-creator/4teen-ambassador-system
 Branch: main
 
@@ -4245,6 +4245,105 @@ function parseStringEnv(value: string | undefined, fallback: string): string {
   return normalized || fallback;
 }
 
+function safeNumber(value: unknown, fallback = 0): number {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value;
+  }
+
+  if (typeof value === "bigint") {
+    return Number(value);
+  }
+
+  if (typeof value === "string" && value.trim()) {
+    const parsed = Number(value);
+    if (Number.isFinite(parsed)) {
+      return parsed;
+    }
+  }
+
+  return fallback;
+}
+
+function pickTupleValue(source: any, index: number, ...keys: string[]): any {
+  if (Array.isArray(source)) {
+    if (source[index] !== undefined) {
+      return source[index];
+    }
+  }
+
+  if (source && typeof source === "object") {
+    for (const key of keys) {
+      if (key && key in source) {
+        return source[key];
+      }
+    }
+
+    const numericKey = String(index);
+    if (numericKey in source) {
+      return source[numericKey];
+    }
+
+    const values = Object.values(source);
+    if (values[index] !== undefined) {
+      return values[index];
+    }
+  }
+
+  return undefined;
+}
+
+function dividePercentFloor(amountSun: string, percent: number): string {
+  if (percent <= 0) {
+    return "0";
+  }
+
+  if (percent >= 100) {
+    return amountSun;
+  }
+
+  return ((BigInt(amountSun) * BigInt(percent)) / 100n).toString();
+}
+
+function subtractSun(left: string, right: string): string {
+  const result = BigInt(left) - BigInt(right);
+  return result > 0n ? result.toString() : "0";
+}
+
+async function readAmbassadorRewardPercent(input: {
+  tronWeb: any;
+  controllerContractAddress?: string;
+  ambassadorWallet: string;
+}): Promise<number> {
+  const tronWeb = input.tronWeb;
+
+  if (!tronWeb) {
+    throw new Error("tronWeb is required to read ambassador reward percent");
+  }
+
+  const controllerContractAddress = assertNonEmpty(
+    input.controllerContractAddress,
+    "controllerContractAddress"
+  );
+
+  const contract = await tronWeb.contract().at(controllerContractAddress);
+
+  if (typeof contract.getDashboardCore !== "function") {
+    throw new Error("Controller contract does not expose getDashboardCore()");
+  }
+
+  const coreRaw = await contract.getDashboardCore(input.ambassadorWallet).call();
+  const rewardPercent = safeNumber(
+    pickTupleValue(coreRaw, 3, "rewardPercent"),
+    0
+  );
+
+  if (!Number.isFinite(rewardPercent) || rewardPercent < 0) {
+    return 0;
+  }
+
+  return Math.floor(rewardPercent);
+}
+
 function mapAllocationAttemptToApiResult(
   result: Awaited<ReturnType<AllocationService["tryAllocateVerifiedPurchase"]>>
 ): {
@@ -4365,15 +4464,21 @@ class AllocationWorkerProcessorImpl implements AllocationWorkerProcessor {
   private readonly store: PurchaseStore;
   private readonly allocation: AllocationService;
   private readonly logger?: WorkerLogger;
+  private readonly tronWeb: any;
+  private readonly controllerContractAddress?: string;
 
   constructor(options: {
     store: PurchaseStore;
     allocation: AllocationService;
+    tronWeb: any;
+    controllerContractAddress?: string;
     logger?: WorkerLogger;
   }) {
     this.store = options.store;
     this.allocation = options.allocation;
     this.allocationService = options.allocation;
+    this.tronWeb = options.tronWeb;
+    this.controllerContractAddress = options.controllerContractAddress;
     this.logger = options.logger;
   }
 
@@ -4430,6 +4535,8 @@ class AllocationWorkerProcessorImpl implements AllocationWorkerProcessor {
         ambassadorWallet: ambassador.wallet,
         purchaseAmountSun: "0",
         ownerShareSun: "0",
+        ambassadorRewardSun: "0",
+        ownerPayoutSun: "0",
         now
       });
     }
@@ -4577,12 +4684,40 @@ class AllocationWorkerProcessorImpl implements AllocationWorkerProcessor {
       };
     }
 
+    let ambassadorRewardSun = "0";
+    let ownerPayoutSun = ownerShareSun;
+
+    if (purchase.ambassadorWallet) {
+      const rewardPercent = await readAmbassadorRewardPercent({
+        tronWeb: this.tronWeb,
+        controllerContractAddress: this.controllerContractAddress,
+        ambassadorWallet: purchase.ambassadorWallet
+      });
+
+      ambassadorRewardSun = dividePercentFloor(ownerShareSun, rewardPercent);
+      ownerPayoutSun = subtractSun(ownerShareSun, ambassadorRewardSun);
+
+      this.logger?.info?.({
+        scope: "allocation",
+        stage: "reward-share-calculated",
+        purchaseId: purchase.purchaseId,
+        txHash,
+        ambassadorWallet: purchase.ambassadorWallet,
+        ownerShareSun,
+        rewardPercent,
+        ambassadorRewardSun,
+        ownerPayoutSun
+      });
+    }
+
     const verifiedPurchase = await this.store.markVerifiedPurchase({
       purchaseId: purchase.purchaseId,
       txHash,
       buyerWallet,
       purchaseAmountSun,
       ownerShareSun,
+      ambassadorRewardSun,
+      ownerPayoutSun,
       now: blockTimestamp
     });
 
@@ -4810,6 +4945,8 @@ export function createAllocationWorker(
   const processor = new AllocationWorkerProcessorImpl({
     store,
     allocation,
+    tronWeb: options.tronWeb,
+    controllerContractAddress: options.controllerContractAddress,
     logger: options.logger
   });
 
