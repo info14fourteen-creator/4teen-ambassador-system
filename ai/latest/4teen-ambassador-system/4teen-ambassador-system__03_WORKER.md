@@ -1,6 +1,6 @@
 # 4teen-ambassador-system — ALLOCATION WORKER
 
-Generated: 2026-04-01T19:56:56.823Z
+Generated: 2026-04-01T20:04:20.305Z
 Repository: info14fourteen-creator/4teen-ambassador-system
 Branch: main
 
@@ -2616,7 +2616,10 @@ function normalizeWallet(value: string | null | undefined): string | null {
   return normalizeOptionalString(value);
 }
 
-function normalizeSunAmount(value: string | number | bigint | undefined): string {
+function normalizeSunAmount(
+  value: string | number | bigint | undefined,
+  fieldName = "sunAmount"
+): string {
   if (value == null) {
     return "0";
   }
@@ -2624,7 +2627,7 @@ function normalizeSunAmount(value: string | number | bigint | undefined): string
   const normalized = String(value).trim();
 
   if (!/^\d+$/.test(normalized)) {
-    throw new Error("SUN amount must be a non-negative integer string");
+    throw new Error(`${fieldName} must be a non-negative integer string`);
   }
 
   return normalized;
@@ -2731,9 +2734,12 @@ function assertSplitConsistency(input: {
   ownerPayoutSun: string;
   context: string;
 }): void {
-  const ownerShareSun = normalizeSunAmount(input.ownerShareSun);
-  const ambassadorRewardSun = normalizeSunAmount(input.ambassadorRewardSun);
-  const ownerPayoutSun = normalizeSunAmount(input.ownerPayoutSun);
+  const ownerShareSun = normalizeSunAmount(input.ownerShareSun, "ownerShareSun");
+  const ambassadorRewardSun = normalizeSunAmount(
+    input.ambassadorRewardSun,
+    "ambassadorRewardSun"
+  );
+  const ownerPayoutSun = normalizeSunAmount(input.ownerPayoutSun, "ownerPayoutSun");
 
   const ownerShare = BigInt(ownerShareSun);
   const reward = BigInt(ambassadorRewardSun);
@@ -2882,10 +2888,13 @@ export function isPurchaseReadyForAllocationRetry(
 function createRecord(input: CreatePurchaseRecordInput): PurchaseRecord {
   const now = input.now ?? Date.now();
   const status = normalizeStatus(input.status);
-  const purchaseAmountSun = normalizeSunAmount(input.purchaseAmountSun);
-  const ownerShareSun = normalizeSunAmount(input.ownerShareSun);
-  const ambassadorRewardSun = normalizeSunAmount(input.ambassadorRewardSun);
-  const ownerPayoutSun = normalizeSunAmount(input.ownerPayoutSun);
+  const purchaseAmountSun = normalizeSunAmount(input.purchaseAmountSun, "purchaseAmountSun");
+  const ownerShareSun = normalizeSunAmount(input.ownerShareSun, "ownerShareSun");
+  const ambassadorRewardSun = normalizeSunAmount(
+    input.ambassadorRewardSun,
+    "ambassadorRewardSun"
+  );
+  const ownerPayoutSun = normalizeSunAmount(input.ownerPayoutSun, "ownerPayoutSun");
 
   assertSplitConsistency({
     ownerShareSun,
@@ -2941,22 +2950,22 @@ function mergeRecord(
 
   const nextPurchaseAmountSun =
     input.purchaseAmountSun !== undefined
-      ? normalizeSunAmount(input.purchaseAmountSun)
+      ? normalizeSunAmount(input.purchaseAmountSun, "purchaseAmountSun")
       : current.purchaseAmountSun;
 
   const nextOwnerShareSun =
     input.ownerShareSun !== undefined
-      ? normalizeSunAmount(input.ownerShareSun)
+      ? normalizeSunAmount(input.ownerShareSun, "ownerShareSun")
       : current.ownerShareSun;
 
   const nextAmbassadorRewardSun =
     input.ambassadorRewardSun !== undefined
-      ? normalizeSunAmount(input.ambassadorRewardSun)
+      ? normalizeSunAmount(input.ambassadorRewardSun, "ambassadorRewardSun")
       : current.ambassadorRewardSun;
 
   const nextOwnerPayoutSun =
     input.ownerPayoutSun !== undefined
-      ? normalizeSunAmount(input.ownerPayoutSun)
+      ? normalizeSunAmount(input.ownerPayoutSun, "ownerPayoutSun")
       : current.ownerPayoutSun;
 
   assertSplitConsistency({
@@ -3369,12 +3378,25 @@ export async function initPurchaseTables(): Promise<void> {
       ambassador_reward_sun = CASE
         WHEN ambassador_reward_sun IS NULL OR TRIM(ambassador_reward_sun) = '' THEN '0'
         ELSE ambassador_reward_sun
-      END,
+      END
+  `);
+
+  await query(`
+    UPDATE purchases
+    SET
       owner_payout_sun = CASE
         WHEN owner_payout_sun IS NULL
           OR TRIM(owner_payout_sun) = ''
-          OR owner_payout_sun = '0'
-        THEN owner_share_sun
+        THEN GREATEST(
+          owner_share_sun::numeric - ambassador_reward_sun::numeric,
+          0
+        )::text
+        WHEN owner_payout_sun = '0'
+          AND owner_share_sun::numeric >= ambassador_reward_sun::numeric
+        THEN GREATEST(
+          owner_share_sun::numeric - ambassador_reward_sun::numeric,
+          0
+        )::text
         ELSE owner_payout_sun
       END
   `);
@@ -3390,8 +3412,13 @@ export async function initPurchaseTables(): Promise<void> {
         ALTER TABLE purchases
         ADD CONSTRAINT purchases_reward_split_check
         CHECK (
-          owner_share_sun::numeric =
-          ambassador_reward_sun::numeric + owner_payout_sun::numeric
+          owner_share_sun::numeric >= 0
+          AND ambassador_reward_sun::numeric >= 0
+          AND owner_payout_sun::numeric >= 0
+          AND ambassador_reward_sun::numeric <= owner_share_sun::numeric
+          AND owner_payout_sun::numeric <= owner_share_sun::numeric
+          AND owner_share_sun::numeric =
+              ambassador_reward_sun::numeric + owner_payout_sun::numeric
         ) NOT VALID;
       END IF;
     END
