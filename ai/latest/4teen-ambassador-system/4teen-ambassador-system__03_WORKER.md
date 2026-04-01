@@ -1,6 +1,6 @@
 # 4teen-ambassador-system — ALLOCATION WORKER
 
-Generated: 2026-04-01T15:02:38.502Z
+Generated: 2026-04-01T15:13:24.439Z
 Repository: info14fourteen-creator/4teen-ambassador-system
 Branch: main
 
@@ -8261,6 +8261,38 @@ const GASSTATION_LOW_BALANCE_SUN = 8_500_000;
 const OPERATOR_MIN_BALANCE_FOR_TOPUP_SUN = 11_000_000;
 const OPERATOR_REMAINING_RESERVE_SUN = 2_000_000;
 
+function logFatal(stage: string, error: unknown): void {
+  const message =
+    error instanceof Error
+      ? error.message
+      : typeof error === "string"
+        ? error
+        : "Unknown fatal error";
+
+  const stack =
+    error instanceof Error && error.stack ? error.stack : null;
+
+  console.error(
+    JSON.stringify({
+      level: "fatal",
+      scope: "server",
+      stage,
+      message,
+      stack
+    })
+  );
+}
+
+process.on("uncaughtException", (error) => {
+  logFatal("uncaught-exception", error);
+  process.exit(1);
+});
+
+process.on("unhandledRejection", (reason) => {
+  logFatal("unhandled-rejection", reason);
+  process.exit(1);
+});
+
 function getTronWebConstructor(): TronWebConstructor {
   const candidate =
     (TronWebModule as any)?.TronWeb ??
@@ -8932,9 +8964,16 @@ async function bootstrap() {
   const env = loadEnv();
   const TronWeb = getTronWebConstructor();
 
+  console.log(JSON.stringify({ level: "info", scope: "server", stage: "bootstrap-started" }));
+
   await initAmbassadorRegistryTables();
+  console.log(JSON.stringify({ level: "info", scope: "server", stage: "ambassadors-tables-ready" }));
+
   await initDashboardSnapshotTables();
+  console.log(JSON.stringify({ level: "info", scope: "server", stage: "dashboard-snapshots-tables-ready" }));
+
   await initPurchaseTables();
+  console.log(JSON.stringify({ level: "info", scope: "server", stage: "purchase-tables-ready" }));
 
   const tronWeb = new TronWeb({
     fullHost: env.tronFullHost,
@@ -9386,7 +9425,10 @@ async function bootstrap() {
   });
 }
 
-void bootstrap();
+void bootstrap().catch((error) => {
+  logFatal("bootstrap-failed", error);
+  process.exit(1);
+});
 ```
 
 ---
