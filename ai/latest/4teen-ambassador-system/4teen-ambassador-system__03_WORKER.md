@@ -1,6 +1,6 @@
 # 4teen-ambassador-system — ALLOCATION WORKER
 
-Generated: 2026-04-01T13:07:55.643Z
+Generated: 2026-04-01T13:14:50.169Z
 Repository: info14fourteen-creator/4teen-ambassador-system
 Branch: main
 
@@ -7052,7 +7052,7 @@ export async function replayDeferredPurchases(
 
 ```ts
 import { FOURTEEN_TOKEN_CONTRACT } from "../../../shared/config/contracts";
-import type { PurchaseStore } from "./db/purchases";
+import type { AllocationMode, PurchaseStore } from "./db/purchases";
 import {
   getAllocationRetryReadyAt,
   isPurchaseReadyForAllocationRetry,
@@ -7070,7 +7070,7 @@ export interface RunScanConfig {
       ownerShareSun: string;
       feeLimitSun?: number;
       now?: number;
-      allocationMode?: string;
+      allocationMode?: AllocationMode;
     }): Promise<{
       stage: "verified-purchase";
       purchaseId: string | null;
