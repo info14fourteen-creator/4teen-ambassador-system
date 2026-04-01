@@ -1,6 +1,7 @@
 import { getAmbassadorRegistryRecordByWallet } from "../db/ambassadors";
 import {
   getDashboardSnapshotByWallet,
+  markDashboardSnapshotSyncFailed,
   upsertDashboardSnapshot,
   type AmbassadorDashboardSnapshotRecord
 } from "../db/dashboardSnapshots";
@@ -135,6 +136,9 @@ const DEFAULT_PENDING_STATUSES: PurchaseProcessingStatus[] = [
 const ZERO_BYTES32 =
   "0x0000000000000000000000000000000000000000000000000000000000000000";
 
+const DEFAULT_SNAPSHOT_TTL_MS = 120_000;
+const DEFAULT_MIN_ONCHAIN_RETRY_AFTER_FAILURE_MS = 60_000;
+
 function assertNonEmpty(value: string, fieldName: string): string {
   const normalized = String(value || "").trim();
 
@@ -143,6 +147,34 @@ function assertNonEmpty(value: string, fieldName: string): string {
   }
 
   return normalized;
+}
+
+function parsePositiveIntegerEnv(value: string | undefined, fallback: number): number {
+  if (value == null || String(value).trim() === "") {
+    return fallback;
+  }
+
+  const parsed = Number(value);
+
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return fallback;
+  }
+
+  return Math.floor(parsed);
+}
+
+function getSnapshotTtlMs(): number {
+  return parsePositiveIntegerEnv(
+    process.env.CABINET_SNAPSHOT_TTL_MS,
+    DEFAULT_SNAPSHOT_TTL_MS
+  );
+}
+
+function getSnapshotMinRetryAfterFailureMs(): number {
+  return parsePositiveIntegerEnv(
+    process.env.CABINET_SNAPSHOT_MIN_RETRY_AFTER_FAILURE_MS,
+    DEFAULT_MIN_ONCHAIN_RETRY_AFTER_FAILURE_MS
+  );
 }
 
 function safeNumber(value: unknown, fallback = 0): number {
@@ -496,6 +528,21 @@ function buildProfileFromSnapshot(input: {
   };
 }
 
+function isSnapshotFresh(snapshot: AmbassadorDashboardSnapshotRecord, now: number): boolean {
+  return now - snapshot.lastSyncedAt <= getSnapshotTtlMs();
+}
+
+function shouldSkipOnChainRefreshAfterFailure(
+  snapshot: AmbassadorDashboardSnapshotRecord,
+  now: number
+): boolean {
+  if (snapshot.syncStatus !== "failed") {
+    return false;
+  }
+
+  return now - snapshot.lastSyncedAt < getSnapshotMinRetryAfterFailureMs();
+}
+
 export class CabinetService {
   private readonly store: PurchaseStore;
   private readonly tronWeb: any;
@@ -770,6 +817,7 @@ export class CabinetService {
   }
 
   async getProfileByWallet(wallet: string): Promise<CabinetProfileResult> {
+    const now = Date.now();
     const normalizedWallet = assertNonEmpty(wallet, "wallet");
     const record = await getAmbassadorRegistryRecordByWallet(normalizedWallet);
 
@@ -785,10 +833,64 @@ export class CabinetService {
     const status = record.publicProfile.status;
     const dbStatsRecord = await this.store.getCabinetStatsByAmbassadorWallet(registryWallet);
 
+    let snapshot: AmbassadorDashboardSnapshotRecord | null = null;
+
+    try {
+      snapshot = await getDashboardSnapshotByWallet(registryWallet);
+    } catch (snapshotReadError) {
+      logJson("error", {
+        stage: "dashboard-snapshot-read-failed-before-serve",
+        wallet: registryWallet,
+        slug,
+        status,
+        error: toErrorMessage(snapshotReadError)
+      });
+    }
+
+    if (snapshot && isSnapshotFresh(snapshot, now)) {
+      logJson("info", {
+        stage: "dashboard-snapshot-hit-fresh",
+        wallet: registryWallet,
+        slug,
+        status,
+        snapshotSyncStatus: snapshot.syncStatus,
+        snapshotLastSyncedAt: snapshot.lastSyncedAt
+      });
+
+      return buildProfileFromSnapshot({
+        wallet: registryWallet,
+        slug,
+        status,
+        snapshot,
+        dbStatsRecord
+      });
+    }
+
+    if (snapshot && shouldSkipOnChainRefreshAfterFailure(snapshot, now)) {
+      logJson("warn", {
+        stage: "dashboard-snapshot-hit-stale-after-failure",
+        wallet: registryWallet,
+        slug,
+        status,
+        snapshotSyncStatus: snapshot.syncStatus,
+        snapshotLastSyncedAt: snapshot.lastSyncedAt,
+        retryAfterMs:
+          getSnapshotMinRetryAfterFailureMs() - Math.max(0, now - snapshot.lastSyncedAt)
+      });
+
+      return buildProfileFromSnapshot({
+        wallet: registryWallet,
+        slug,
+        status,
+        snapshot,
+        dbStatsRecord
+      });
+    }
+
     try {
       const onChain = await this.readOnChainDashboard(registryWallet);
 
-      await upsertDashboardSnapshot({
+      const persistedSnapshot = await upsertDashboardSnapshot({
         wallet: registryWallet,
         slug,
         registryStatus: status,
@@ -825,12 +927,14 @@ export class CabinetService {
 
         syncStatus: "success",
         syncError: null,
-        lastSyncedAt: Date.now()
+        lastSyncedAt: now
       });
 
       logJson("info", {
         stage: "onchain-dashboard-read-success",
         wallet: registryWallet,
+        slug,
+        status,
         controllerContractAddress: this.controllerContractAddress,
         identity: {
           exists: onChain.identity.exists,
@@ -846,25 +950,13 @@ export class CabinetService {
         stats: onChain.stats
       });
 
-      const mapped = mapStats({
-        onChainStats: onChain.stats,
-        dbStats: dbStatsRecord
-      });
-
-      return {
-        registered: true,
+      return buildProfileFromSnapshot({
         wallet: registryWallet,
         slug,
         status,
-        referralLink: buildReferralLink(slug),
-        identity: {
-          ...onChain.identity,
-          active: status === "active" ? onChain.identity.active : false
-        },
-        stats: mapped.stats,
-        withdrawalQueue: mapped.withdrawalQueue,
-        progress: onChain.progress
-      };
+        snapshot: persistedSnapshot,
+        dbStatsRecord
+      });
     } catch (error) {
       const errorMessage = toErrorMessage(error);
 
@@ -878,73 +970,71 @@ export class CabinetService {
       });
 
       try {
-        const existingSnapshot = await getDashboardSnapshotByWallet(registryWallet);
+        await markDashboardSnapshotSyncFailed({
+          wallet: registryWallet,
+          slug,
+          registryStatus: status,
+          syncError: errorMessage,
+          syncStatus: snapshot ? "partial" : "failed",
+          lastSyncedAt: now
+        });
+      } catch (snapshotWriteError) {
+        logJson("error", {
+          stage: "dashboard-snapshot-sync-failed",
+          wallet: registryWallet,
+          slug,
+          status,
+          error: toErrorMessage(snapshotWriteError)
+        });
+      }
 
-        if (existingSnapshot) {
-          await upsertDashboardSnapshot({
-            wallet: existingSnapshot.wallet,
-            slug: slug,
-            registryStatus: status,
+      if (snapshot) {
+        logJson("warn", {
+          stage: "dashboard-snapshot-fallback-used",
+          wallet: registryWallet,
+          slug,
+          status,
+          snapshotSyncStatus: snapshot.syncStatus,
+          snapshotLastSyncedAt: snapshot.lastSyncedAt
+        });
 
-            existsOnChain: existingSnapshot.existsOnChain,
-            activeOnChain: existingSnapshot.activeOnChain,
-            selfRegistered: existingSnapshot.selfRegistered,
-            manualAssigned: existingSnapshot.manualAssigned,
-            overrideEnabled: existingSnapshot.overrideEnabled,
+        return buildProfileFromSnapshot({
+          wallet: registryWallet,
+          slug,
+          status,
+          snapshot,
+          dbStatsRecord
+        });
+      }
 
-            level: existingSnapshot.level,
-            effectiveLevel: existingSnapshot.effectiveLevel,
-            currentLevel: existingSnapshot.currentLevel,
-            overrideLevel: existingSnapshot.overrideLevel,
-            rewardPercent: existingSnapshot.rewardPercent,
+      try {
+        const latestSnapshot = await getDashboardSnapshotByWallet(registryWallet);
 
-            createdAtOnChain: existingSnapshot.createdAtOnChain,
-            slugHash: existingSnapshot.slugHash,
-            metaHash: existingSnapshot.metaHash,
-
-            totalBuyers: existingSnapshot.totalBuyers,
-            trackedVolumeSun: existingSnapshot.trackedVolumeSun,
-            claimableRewardsSun: existingSnapshot.claimableRewardsSun,
-            lifetimeRewardsSun: existingSnapshot.lifetimeRewardsSun,
-            withdrawnRewardsSun: existingSnapshot.withdrawnRewardsSun,
-
-            nextThreshold: existingSnapshot.nextThreshold,
-            remainingToNextLevel: existingSnapshot.remainingToNextLevel,
-
-            rawCoreJson: existingSnapshot.rawCoreJson,
-            rawProfileJson: existingSnapshot.rawProfileJson,
-            rawProgressJson: existingSnapshot.rawProgressJson,
-            rawStatsJson: existingSnapshot.rawStatsJson,
-
-            syncStatus: "failed",
-            syncError: errorMessage,
-            lastSyncedAt: Date.now()
-          });
-
+        if (latestSnapshot) {
           logJson("warn", {
-            stage: "dashboard-snapshot-fallback-used",
+            stage: "dashboard-snapshot-fallback-used-after-refetch",
             wallet: registryWallet,
             slug,
             status,
-            snapshotSyncStatus: existingSnapshot.syncStatus,
-            snapshotLastSyncedAt: existingSnapshot.lastSyncedAt
+            snapshotSyncStatus: latestSnapshot.syncStatus,
+            snapshotLastSyncedAt: latestSnapshot.lastSyncedAt
           });
 
           return buildProfileFromSnapshot({
             wallet: registryWallet,
             slug,
             status,
-            snapshot: existingSnapshot,
+            snapshot: latestSnapshot,
             dbStatsRecord
           });
         }
-      } catch (snapshotError) {
+      } catch (snapshotReadError) {
         logJson("error", {
-          stage: "dashboard-snapshot-read-or-write-failed",
+          stage: "dashboard-snapshot-read-failed-after-onchain-failure",
           wallet: registryWallet,
           slug,
           status,
-          error: toErrorMessage(snapshotError)
+          error: toErrorMessage(snapshotReadError)
         });
       }
 
