@@ -1,6 +1,6 @@
 # 4teen-ambassador-system — BUILD AND WORKFLOWS
 
-Generated: 2026-04-01T09:44:30.347Z
+Generated: 2026-04-01T09:46:04.685Z
 Repository: info14fourteen-creator/4teen-ambassador-system
 Branch: main
 
@@ -144,7 +144,7 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-          git add ai/latest
+          git add -A ai/latest
 
           if git diff --cached --quiet; then
             echo "No AI bundle changes to commit."
@@ -155,23 +155,20 @@ jobs:
 
       - name: Print links
         run: |
-          echo "AI map:"
-          echo "https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/${GITHUB_REF_NAME}/ai/latest/ai-project-map.txt"
+          echo "AI snapshot directory:"
+          echo "https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/${GITHUB_REF_NAME}/ai/latest/4teen-ambassador-system/"
           echo
-          echo "AI core bundle:"
-          echo "https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/${GITHUB_REF_NAME}/ai/latest/ai-bundle-core.txt"
+          echo "AI project map:"
+          echo "https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/${GITHUB_REF_NAME}/ai/latest/4teen-ambassador-system/4teen-ambassador-system__ai-project-map.txt"
           echo
-          echo "AI cabinet bundle:"
-          echo "https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/${GITHUB_REF_NAME}/ai/latest/ai-bundle-cabinet.txt"
+          echo "AI links:"
+          echo "https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/${GITHUB_REF_NAME}/ai/latest/4teen-ambassador-system/4teen-ambassador-system__links.txt"
           echo
-          echo "AI site bundle:"
-          echo "https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/${GITHUB_REF_NAME}/ai/latest/ai-bundle-site.txt"
+          echo "AI manifest:"
+          echo "https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/${GITHUB_REF_NAME}/ai/latest/4teen-ambassador-system/4teen-ambassador-system__manifest.json"
           echo
-          echo "AI worker bundle:"
-          echo "https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/${GITHUB_REF_NAME}/ai/latest/ai-bundle-worker.txt"
-          echo
-          echo "AI telegram bundle:"
-          echo "https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/${GITHUB_REF_NAME}/ai/latest/ai-bundle-telegram.txt"
+          echo "AI zip archive:"
+          echo "https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/${GITHUB_REF_NAME}/ai/latest/4teen-ambassador-system.zip"
           echo
           echo "Working rules:"
           echo "https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/${GITHUB_REF_NAME}/ai/WORKING_RULES.md"
@@ -181,12 +178,11 @@ jobs:
           {
             echo "## AI bundle links"
             echo
-            echo "- AI map: https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/${GITHUB_REF_NAME}/ai/latest/ai-project-map.txt"
-            echo "- AI core bundle: https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/${GITHUB_REF_NAME}/ai/latest/ai-bundle-core.txt"
-            echo "- AI cabinet bundle: https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/${GITHUB_REF_NAME}/ai/latest/ai-bundle-cabinet.txt"
-            echo "- AI site bundle: https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/${GITHUB_REF_NAME}/ai/latest/ai-bundle-site.txt"
-            echo "- AI worker bundle: https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/${GITHUB_REF_NAME}/ai/latest/ai-bundle-worker.txt"
-            echo "- AI telegram bundle: https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/${GITHUB_REF_NAME}/ai/latest/ai-bundle-telegram.txt"
+            echo "- Snapshot directory: https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/${GITHUB_REF_NAME}/ai/latest/4teen-ambassador-system/"
+            echo "- Project map: https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/${GITHUB_REF_NAME}/ai/latest/4teen-ambassador-system/4teen-ambassador-system__ai-project-map.txt"
+            echo "- Links: https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/${GITHUB_REF_NAME}/ai/latest/4teen-ambassador-system/4teen-ambassador-system__links.txt"
+            echo "- Manifest: https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/${GITHUB_REF_NAME}/ai/latest/4teen-ambassador-system/4teen-ambassador-system__manifest.json"
+            echo "- Zip archive: https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/${GITHUB_REF_NAME}/ai/latest/4teen-ambassador-system.zip"
             echo "- Working rules: https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/${GITHUB_REF_NAME}/ai/WORKING_RULES.md"
           } >> "$GITHUB_STEP_SUMMARY"
 ```
