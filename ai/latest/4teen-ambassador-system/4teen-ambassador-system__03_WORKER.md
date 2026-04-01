@@ -1,6 +1,6 @@
 # 4teen-ambassador-system — ALLOCATION WORKER
 
-Generated: 2026-04-01T17:33:17.522Z
+Generated: 2026-04-01T17:36:31.877Z
 Repository: info14fourteen-creator/4teen-ambassador-system
 Branch: main
 
@@ -5446,8 +5446,7 @@ async function readAmbassadorRewardData(input: {
   source:
     | "getRewardPercent"
     | "getDashboardCore"
-    | "getEffectiveLevel+getRewardPercentByLevel"
-    | "ambassadorLevels+getRewardPercentByLevel";
+    | "getEffectiveLevel+getRewardPercentByLevel";
   raw: Record<string, unknown>;
 }> {
   const contract = await getControllerContractInstance({
@@ -5474,7 +5473,9 @@ async function readAmbassadorRewardData(input: {
         try {
           const effectiveLevelRaw = await contract.getEffectiveLevel(ambassadorWallet).call();
           raw.getEffectiveLevel = effectiveLevelRaw;
-          effectiveLevel = safeNumber(pickTupleValue(effectiveLevelRaw, 0), 0);
+          effectiveLevel = Math.floor(
+            safeNumber(pickTupleValue(effectiveLevelRaw, 0), 0)
+          );
         } catch (error) {
           raw.getEffectiveLevelError =
             error instanceof Error ? error.message : String(error);
@@ -5502,9 +5503,8 @@ async function readAmbassadorRewardData(input: {
         "getDashboardCore.rewardPercent"
       );
 
-      const effectiveLevel = safeNumber(
-        pickTupleValue(coreRaw, 2, "effectiveLevel"),
-        0
+      const effectiveLevel = Math.floor(
+        safeNumber(pickTupleValue(coreRaw, 2, "effectiveLevel"), 0)
       );
 
       return {
@@ -5532,8 +5532,10 @@ async function readAmbassadorRewardData(input: {
         throw new Error("Invalid effective level");
       }
 
+      const normalizedLevel = Math.floor(effectiveLevel);
+
       const rewardPercentByLevelRaw = await contract
-        .getRewardPercentByLevel(Math.floor(effectiveLevel))
+        .getRewardPercentByLevel(normalizedLevel)
         .call();
 
       raw.getRewardPercentByLevel = rewardPercentByLevelRaw;
@@ -5545,49 +5547,12 @@ async function readAmbassadorRewardData(input: {
 
       return {
         rewardPercent,
-        effectiveLevel: Math.floor(effectiveLevel),
+        effectiveLevel: normalizedLevel,
         source: "getEffectiveLevel+getRewardPercentByLevel",
         raw
       };
     } catch (error) {
       raw.getEffectiveLevelPlusByLevelError =
-        error instanceof Error ? error.message : String(error);
-    }
-  }
-
-  if (
-    typeof contract.ambassadorLevels === "function" &&
-    typeof contract.getRewardPercentByLevel === "function"
-  ) {
-    try {
-      const levelsRaw = await contract.ambassadorLevels(ambassadorWallet).call();
-      raw.ambassadorLevels = levelsRaw;
-
-      const effectiveLevel = safeNumber(pickTupleValue(levelsRaw, 0), Number.NaN);
-
-      if (!Number.isFinite(effectiveLevel) || effectiveLevel < 0) {
-        throw new Error("Invalid ambassadorLevels effective level");
-      }
-
-      const rewardPercentByLevelRaw = await contract
-        .getRewardPercentByLevel(Math.floor(effectiveLevel))
-        .call();
-
-      raw.getRewardPercentByLevel = rewardPercentByLevelRaw;
-
-      const rewardPercent = parsePercentStrict(
-        pickTupleValue(rewardPercentByLevelRaw, 0),
-        "getRewardPercentByLevel"
-      );
-
-      return {
-        rewardPercent,
-        effectiveLevel: Math.floor(effectiveLevel),
-        source: "ambassadorLevels+getRewardPercentByLevel",
-        raw
-      };
-    } catch (error) {
-      raw.ambassadorLevelsPlusByLevelError =
         error instanceof Error ? error.message : String(error);
     }
   }
