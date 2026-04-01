@@ -1,6 +1,6 @@
 # 4teen-ambassador-system — ALLOCATION WORKER
 
-Generated: 2026-04-01T10:19:36.539Z
+Generated: 2026-04-01T10:21:55.459Z
 Repository: info14fourteen-creator/4teen-ambassador-system
 Branch: main
 
@@ -3043,6 +3043,20 @@ interface ClassifiedAllocationError {
   message: string;
 }
 
+const CLAIM_QUEUE_ELIGIBLE_STATUSES = new Set<PurchaseRecord["status"]>([
+  "verified",
+  "deferred",
+  "allocation_failed_retryable"
+]);
+
+const FINAL_PURCHASE_STATUSES = new Set<PurchaseRecord["status"]>([
+  "allocated",
+  "withdraw_included",
+  "withdraw_completed",
+  "ignored",
+  "allocation_failed_final"
+]);
+
 function toErrorMessage(error: unknown): string {
   if (typeof error === "string" && error.trim()) {
     return error.trim();
@@ -3062,7 +3076,8 @@ function toErrorMessage(error: unknown): string {
   }
 
   try {
-    return JSON.stringify(error);
+    const serialized = JSON.stringify(error);
+    return serialized || "Unknown allocation error";
   } catch {
     return "Unknown allocation error";
   }
@@ -3302,21 +3317,21 @@ function classifyAllocationError(error: unknown): ClassifiedAllocationError {
 }
 
 function isFinalPurchaseStatus(status: PurchaseRecord["status"]): boolean {
-  return (
-    status === "allocated" ||
-    status === "withdraw_included" ||
-    status === "withdraw_completed" ||
-    status === "ignored" ||
-    status === "allocation_failed_final"
-  );
+  return FINAL_PURCHASE_STATUSES.has(status);
 }
 
 function isClaimQueueEligible(status: PurchaseRecord["status"]): boolean {
-  return (
-    status === "verified" ||
-    status === "deferred" ||
-    status === "allocation_failed_retryable"
-  );
+  return CLAIM_QUEUE_ELIGIBLE_STATUSES.has(status);
+}
+
+function assertAmbassadorWallet(value: string): string {
+  const normalized = String(value || "").trim();
+
+  if (!normalized) {
+    throw new Error("ambassadorWallet is required");
+  }
+
+  return normalized;
 }
 
 export class AllocationService {
@@ -3419,11 +3434,7 @@ export class AllocationService {
   async prepareWithdrawBatch(
     input: PrepareWithdrawBatchInput
   ): Promise<PrepareWithdrawBatchResult> {
-    const ambassadorWallet = String(input.ambassadorWallet || "").trim();
-
-    if (!ambassadorWallet) {
-      throw new Error("ambassadorWallet is required");
-    }
+    const ambassadorWallet = assertAmbassadorWallet(input.ambassadorWallet);
 
     const purchases = await this.store.listPendingByAmbassador({
       ambassadorWallet,
@@ -3439,11 +3450,7 @@ export class AllocationService {
   async allocatePendingBatch(
     input: AllocatePendingBatchInput
   ): Promise<AllocatePendingBatchResult> {
-    const ambassadorWallet = String(input.ambassadorWallet || "").trim();
-
-    if (!ambassadorWallet) {
-      throw new Error("ambassadorWallet is required");
-    }
+    const ambassadorWallet = assertAmbassadorWallet(input.ambassadorWallet);
 
     const pending = await this.store.listPendingByAmbassador({
       ambassadorWallet,
@@ -3623,16 +3630,13 @@ export class AllocationService {
       }
 
       if (classified.kind === "retryable" || classified.kind === "unknown") {
-        const failed = await this.store.markAllocationRetryableFailed(
-          inProgress.purchaseId,
-          {
-            reason: classified.reason,
-            allocationMode,
-            errorCode: classified.code,
-            errorMessage: classified.message,
-            now: this.now()
-          }
-        );
+        const failed = await this.store.markAllocationRetryableFailed(inProgress.purchaseId, {
+          reason: classified.reason,
+          allocationMode,
+          errorCode: classified.code,
+          errorMessage: classified.message,
+          now: this.now()
+        });
 
         return {
           status: "retryable-failed",
@@ -3644,16 +3648,13 @@ export class AllocationService {
         };
       }
 
-      const finalFailed = await this.store.markAllocationFinalFailed(
-        inProgress.purchaseId,
-        {
-          reason: classified.reason,
-          allocationMode,
-          errorCode: classified.code,
-          errorMessage: classified.message,
-          now: this.now()
-        }
-      );
+      const finalFailed = await this.store.markAllocationFinalFailed(inProgress.purchaseId, {
+        reason: classified.reason,
+        allocationMode,
+        errorCode: classified.code,
+        errorMessage: classified.message,
+        now: this.now()
+      });
 
       return {
         status: "final-failed",
