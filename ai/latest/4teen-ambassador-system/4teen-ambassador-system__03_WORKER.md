@@ -1,6 +1,6 @@
 # 4teen-ambassador-system — ALLOCATION WORKER
 
-Generated: 2026-04-01T19:53:16.484Z
+Generated: 2026-04-01T19:56:56.823Z
 Repository: info14fourteen-creator/4teen-ambassador-system
 Branch: main
 
@@ -4746,6 +4746,26 @@ const FINAL_PURCHASE_STATUSES = new Set<PurchaseRecord["status"]>([
   "allocation_failed_final"
 ]);
 
+function assertNonEmpty(value: string, fieldName: string): string {
+  const normalized = String(value || "").trim();
+
+  if (!normalized) {
+    throw new Error(`${fieldName} is required`);
+  }
+
+  return normalized;
+}
+
+function normalizeTxid(value: unknown): string {
+  const normalized = String(value || "").trim();
+
+  if (!normalized) {
+    throw new Error("Allocation executor returned empty txid");
+  }
+
+  return normalized;
+}
+
 function toErrorMessage(error: unknown): string {
   if (typeof error === "string" && error.trim()) {
     return error.trim();
@@ -5201,7 +5221,7 @@ export class AllocationService {
     }
 
     if (!isClaimQueueEligible(purchase.status) && purchase.status !== "allocation_in_progress") {
-      const refreshed = await this.store.markAllocationRetryableFailed(purchase.purchaseId, {
+      const finalFailed = await this.store.markAllocationFinalFailed(purchase.purchaseId, {
         reason: `Purchase is not eligible for allocation from status: ${purchase.status}`,
         allocationMode,
         errorCode: "INVALID_STATUS",
@@ -5210,10 +5230,10 @@ export class AllocationService {
       });
 
       return {
-        status: "retryable-failed",
-        purchase: refreshed,
+        status: "final-failed",
+        purchase: finalFailed,
         txid: null,
-        reason: refreshed.failureReason,
+        reason: finalFailed.failureReason,
         errorCode: "INVALID_STATUS",
         errorMessage: `Purchase is not eligible for allocation from status: ${purchase.status}`
       };
@@ -5259,6 +5279,8 @@ export class AllocationService {
         feeLimitSun: options.feeLimitSun
       });
 
+      const txid = normalizeTxid(execution?.txid);
+
       const allocated = await this.store.markAllocated(inProgress.purchaseId, {
         ambassadorWallet: inProgress.ambassadorWallet,
         allocationMode,
@@ -5272,13 +5294,13 @@ export class AllocationService {
         txHash: allocated.txHash,
         ambassadorWallet: allocated.ambassadorWallet,
         allocationMode,
-        txid: execution.txid
+        txid
       });
 
       return {
         status: "allocated",
         purchase: allocated,
-        txid: execution.txid,
+        txid,
         reason: null,
         errorCode: null,
         errorMessage: null
