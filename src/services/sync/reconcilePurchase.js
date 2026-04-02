@@ -20,36 +20,56 @@ const { ensureOperatorResources } = require('../gasStation');
 const { rebuildAmbassadorBuyers } = require('./rebuildAmbassadorBuyers');
 const { syncAmbassador } = require('./syncAmbassador');
 
+function normalizeSlug(value) {
+  return String(value || '')
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]/g, '')
+    .slice(0, 24);
+}
+
+function isValidSlug(value) {
+  return /^[a-z0-9_-]{3,24}$/.test(String(value || ''));
+}
+
 async function reconcilePurchase(txHash, options = {}) {
   const normalizedTxHash = String(txHash || '').toLowerCase();
+  const incomingSlug = isValidSlug(normalizeSlug(options.slug))
+    ? normalizeSlug(options.slug)
+    : null;
+
   const existing = await getPurchaseByTxHash(normalizedTxHash);
-
-  const candidateSlugHash =
-    options.candidateSlugHash ||
-    existing?.candidate_slug_hash ||
-    null;
-
-  let candidateAmbassadorWallet =
-    options.candidateAmbassadorWallet ||
-    existing?.candidate_ambassador_wallet ||
-    null;
-
   const parsed = await getBuyEventByTxHash(normalizedTxHash);
   const purchaseId = makePurchaseId(normalizedTxHash, parsed.buyerWallet);
+
+  let candidateSlug = incomingSlug;
+  let candidateSlugHash = existing?.candidate_slug_hash || null;
+  let candidateAmbassadorWallet = existing?.candidate_ambassador_wallet || null;
 
   await upsertCandidatePurchase({
     txHash: normalizedTxHash,
     purchaseId,
     buyerWallet: parsed.buyerWallet,
-    candidateSlugHash,
-    candidateAmbassadorWallet
+    candidateSlug: candidateSlug || null,
+    candidateSlugHash: candidateSlugHash || null,
+    candidateAmbassadorWallet: candidateAmbassadorWallet || null
   });
 
-  if (!candidateAmbassadorWallet && candidateSlugHash) {
-    candidateAmbassadorWallet = await getAmbassadorBySlugHash(candidateSlugHash);
+  const alreadyBoundAmbassadorWallet = await getBuyerAmbassador(parsed.buyerWallet);
+
+  let resolvedAmbassadorWallet = alreadyBoundAmbassadorWallet || null;
+  let resolutionSource = alreadyBoundAmbassadorWallet ? 'controller_binding' : 'none';
+
+  if (!resolvedAmbassadorWallet && candidateSlugHash) {
+    const resolvedFromSlugHash = await getAmbassadorBySlugHash(candidateSlugHash);
+
+    if (resolvedFromSlugHash) {
+      candidateAmbassadorWallet = resolvedFromSlugHash;
+      resolvedAmbassadorWallet = resolvedFromSlugHash;
+      resolutionSource = 'incoming_slug_hash';
+    }
   }
 
-  let boundAmbassadorWallet = await getBuyerAmbassador(parsed.buyerWallet);
   const alreadyProcessed = await isPurchaseProcessed(purchaseId);
 
   let resourcePlan = {
@@ -61,27 +81,46 @@ async function reconcilePurchase(txHash, options = {}) {
   };
 
   let controllerTxHash = null;
+  let finalStatus = 'detected';
+  let processingError = null;
+  let bindingAtUsed = null;
 
-  if (!alreadyProcessed) {
-    if (!boundAmbassadorWallet && !candidateAmbassadorWallet) {
-      throw new Error('Buyer is not bound and ambassador candidate was not provided');
-    }
-
+  if (alreadyProcessed) {
+    finalStatus = 'processed';
+  } else if (alreadyBoundAmbassadorWallet) {
     resourcePlan = await ensureOperatorResources();
 
     controllerTxHash = await recordVerifiedPurchase({
       purchaseId,
       buyerWallet: parsed.buyerWallet,
-      ambassadorCandidate: boundAmbassadorWallet || candidateAmbassadorWallet,
+      ambassadorCandidate: alreadyBoundAmbassadorWallet,
       purchaseAmountSun: parsed.purchaseAmountSun,
       ownerShareSun: parsed.ownerShareSun
     });
 
-    boundAmbassadorWallet = await getBuyerAmbassador(parsed.buyerWallet);
-  }
+    resolvedAmbassadorWallet = await getBuyerAmbassador(parsed.buyerWallet);
+    resolutionSource = 'controller_binding';
+    finalStatus = 'processed';
+    bindingAtUsed = parsed.tokenBlockTime;
+  } else if (candidateAmbassadorWallet) {
+    resourcePlan = await ensureOperatorResources();
 
-  const resolvedAmbassadorWallet = boundAmbassadorWallet || candidateAmbassadorWallet || null;
-  const bindingAtUsed = parsed.tokenBlockTime;
+    controllerTxHash = await recordVerifiedPurchase({
+      purchaseId,
+      buyerWallet: parsed.buyerWallet,
+      ambassadorCandidate: candidateAmbassadorWallet,
+      purchaseAmountSun: parsed.purchaseAmountSun,
+      ownerShareSun: parsed.ownerShareSun
+    });
+
+    resolvedAmbassadorWallet = await getBuyerAmbassador(parsed.buyerWallet);
+    resolutionSource = 'incoming_candidate';
+    finalStatus = 'processed';
+    bindingAtUsed = parsed.tokenBlockTime;
+  } else {
+    finalStatus = 'awaiting_candidate';
+    processingError = 'Buyer is not bound and referral was not resolved';
+  }
 
   const client = await pool.connect();
 
@@ -101,7 +140,7 @@ async function reconcilePurchase(txHash, options = {}) {
 
     await upsertBuyer({
       buyerWallet: parsed.buyerWallet,
-      boundAmbassadorWallet: resolvedAmbassadorWallet,
+      boundAmbassadorWallet: resolvedAmbassadorWallet || null,
       txHash: normalizedTxHash,
       blockTime: parsed.tokenBlockTime
     }, client);
@@ -112,7 +151,7 @@ async function reconcilePurchase(txHash, options = {}) {
         ambassadorWallet: resolvedAmbassadorWallet,
         oldAmbassadorWallet: null,
         bindingAt: parsed.tokenBlockTime,
-        source: 'immediate_after_buy',
+        source: 'after_buy_allocation',
         eventName: 'BuyerBound',
         bindingTxHash: controllerTxHash
       }, client);
@@ -127,22 +166,27 @@ async function reconcilePurchase(txHash, options = {}) {
       tokenAmountRaw: parsed.tokenAmountRaw,
       tokenBlockNumber: parsed.tokenBlockNumber,
       tokenBlockTime: parsed.tokenBlockTime,
-      candidateSlugHash,
-      candidateAmbassadorWallet,
-      resolvedAmbassadorWallet,
+      candidateSlug: candidateSlug || null,
+      candidateSlugHash: candidateSlugHash || null,
+      candidateAmbassadorWallet: candidateAmbassadorWallet || null,
+      resolvedAmbassadorWallet: resolvedAmbassadorWallet || null,
       controllerProcessed: Boolean(alreadyProcessed || controllerTxHash),
       controllerProcessedTxHash: controllerTxHash || null,
       controllerProcessedAt: controllerTxHash ? new Date().toISOString() : null,
-      bindingAtUsed
+      bindingAtUsed,
+      status: finalStatus,
+      processingError
     }, client);
 
     await client.query('COMMIT');
   } catch (error) {
     await client.query('ROLLBACK');
+
     await markPurchaseError({
       txHash: normalizedTxHash,
       errorMessage: error.message
     });
+
     throw error;
   } finally {
     client.release();
@@ -163,10 +207,13 @@ async function reconcilePurchase(txHash, options = {}) {
     txHash: normalizedTxHash,
     purchaseId,
     buyerWallet: parsed.buyerWallet,
-    resolvedAmbassadorWallet,
+    resolvedAmbassadorWallet: resolvedAmbassadorWallet || null,
+    resolutionSource,
     controllerProcessed: Boolean(alreadyProcessed || controllerTxHash),
     controllerTxHash: controllerTxHash || null,
-    resourcePlan
+    resourcePlan,
+    status: finalStatus,
+    processingError
   };
 }
 
