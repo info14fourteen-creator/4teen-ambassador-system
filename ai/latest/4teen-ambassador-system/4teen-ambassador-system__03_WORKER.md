@@ -1,6 +1,6 @@
 # 4teen-ambassador-system — ALLOCATION WORKER
 
-Generated: 2026-04-01T20:06:40.515Z
+Generated: 2026-04-02T07:54:24.038Z
 Repository: info14fourteen-creator/4teen-ambassador-system
 Branch: main
 
@@ -12053,6 +12053,20 @@ function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function logJson(payload: Record<string, unknown>): void {
+  try {
+    console.log(JSON.stringify(payload));
+  } catch {
+    console.log(
+      JSON.stringify({
+        level: "warn",
+        scope: "logger",
+        stage: "log-json-failed"
+      })
+    );
+  }
+}
+
 function getErrorMessage(error: unknown): string {
   if (typeof error === "string" && error.trim()) {
     return error.trim();
@@ -12625,7 +12639,24 @@ export class TronControllerClient implements ControllerClient {
     const requiredServiceBalanceSun = Math.max(requiredSun, GASSTATION_LOW_BALANCE_SUN);
     const beforeGasStation = await this.getGasStationBalanceSnapshot();
 
+    logJson({
+      level: "info",
+      scope: "gasstation",
+      stage: "topup-check",
+      requiredSun,
+      requiredServiceBalanceSun,
+      currentServiceBalanceSun: beforeGasStation.balanceSun,
+      depositAddress: beforeGasStation.depositAddress
+    });
+
     if (beforeGasStation.balanceSun >= requiredServiceBalanceSun) {
+      logJson({
+        level: "info",
+        scope: "gasstation",
+        stage: "topup-skipped-enough-balance",
+        requiredServiceBalanceSun,
+        currentServiceBalanceSun: beforeGasStation.balanceSun
+      });
       return;
     }
 
@@ -12636,6 +12667,16 @@ export class TronControllerClient implements ControllerClient {
       0,
       operatorSnapshot.trxBalanceSun - OPERATOR_REMAINING_RESERVE_SUN
     );
+
+    logJson({
+      level: "info",
+      scope: "gasstation",
+      stage: "topup-operator-balance",
+      operatorAddress,
+      operatorBalanceSun: operatorSnapshot.trxBalanceSun,
+      availableToTopUpSun,
+      requiredServiceBalanceSun
+    });
 
     if (
       operatorSnapshot.trxBalanceSun < OPERATOR_MIN_BALANCE_FOR_TOPUP_SUN ||
@@ -12670,6 +12711,16 @@ export class TronControllerClient implements ControllerClient {
 
     const txid = extractTxidFromSendTransactionResult(transferResult);
 
+    logJson({
+      level: "info",
+      scope: "gasstation",
+      stage: "topup-transfer-sent",
+      operatorAddress,
+      depositAddress: beforeGasStation.depositAddress,
+      topupAmountSun: availableToTopUpSun,
+      txid
+    });
+
     let afterTopUp: GasStationBalanceSnapshot;
 
     try {
@@ -12699,6 +12750,16 @@ export class TronControllerClient implements ControllerClient {
       );
     }
 
+    logJson({
+      level: "info",
+      scope: "gasstation",
+      stage: "topup-settled",
+      txid,
+      beforeBalanceSun: beforeGasStation.balanceSun,
+      afterBalanceSun: afterTopUp.balanceSun,
+      requiredServiceBalanceSun
+    });
+
     if (afterTopUp.balanceSun < requiredServiceBalanceSun) {
       throw createTaggedError(
         `GasStation service balance was topped up, but it is still not enough for resource order. BalanceSun=${afterTopUp.balanceSun}, RequiredSun=${requiredServiceBalanceSun}`,
@@ -12727,6 +12788,20 @@ export class TronControllerClient implements ControllerClient {
         requirement.targetBandwidth <= 0 ||
         snapshot.bandwidthAvailable >= requirement.targetBandwidth;
 
+      logJson({
+        level: "info",
+        scope: "resource",
+        stage: "delivery-poll",
+        attempt: attempt + 1,
+        operatorAddress,
+        energyAvailable: snapshot.energyAvailable,
+        bandwidthAvailable: snapshot.bandwidthAvailable,
+        targetEnergy: requirement.targetEnergy,
+        targetBandwidth: requirement.targetBandwidth,
+        energyOk,
+        bandwidthOk
+      });
+
       if (energyOk && bandwidthOk) {
         await delay(RESOURCE_STABILIZATION_DELAY_MS);
 
@@ -12737,6 +12812,19 @@ export class TronControllerClient implements ControllerClient {
         const stableBandwidthOk =
           requirement.targetBandwidth <= 0 ||
           stableSnapshot.bandwidthAvailable >= requirement.targetBandwidth;
+
+        logJson({
+          level: "info",
+          scope: "resource",
+          stage: "delivery-stable-check",
+          operatorAddress,
+          energyAvailable: stableSnapshot.energyAvailable,
+          bandwidthAvailable: stableSnapshot.bandwidthAvailable,
+          targetEnergy: requirement.targetEnergy,
+          targetBandwidth: requirement.targetBandwidth,
+          stableEnergyOk,
+          stableBandwidthOk
+        });
 
         if (stableEnergyOk && stableBandwidthOk) {
           return stableSnapshot;
@@ -12762,7 +12850,39 @@ export class TronControllerClient implements ControllerClient {
     const missingEnergy = Math.max(0, requirement.targetEnergy - before.energyAvailable);
     const missingBandwidth = Math.max(0, requirement.targetBandwidth - before.bandwidthAvailable);
 
+    logJson({
+      level: "info",
+      scope: "resource",
+      stage: "before-rental",
+      operationId,
+      operatorAddress,
+      contractAddress: this.contractAddress,
+      gasStationEnabled: this.gasStationEnabled,
+      gasStationMinEnergy: this.gasStationMinEnergy,
+      gasStationMinBandwidth: this.gasStationMinBandwidth,
+      allocationMinEnergy: this.allocationMinEnergy,
+      allocationMinBandwidth: this.allocationMinBandwidth,
+      energyAvailable: before.energyAvailable,
+      bandwidthAvailable: before.bandwidthAvailable,
+      trxBalanceSun: before.trxBalanceSun,
+      requiredEnergy: requirement.requiredEnergy,
+      requiredBandwidth: requirement.requiredBandwidth,
+      targetEnergy: requirement.targetEnergy,
+      targetBandwidth: requirement.targetBandwidth,
+      missingEnergy,
+      missingBandwidth
+    });
+
     if (missingEnergy <= 0 && missingBandwidth <= 0) {
+      logJson({
+        level: "info",
+        scope: "resource",
+        stage: "rental-skipped-enough-resources",
+        operationId,
+        operatorAddress,
+        energyAvailable: before.energyAvailable,
+        bandwidthAvailable: before.bandwidthAvailable
+      });
       return;
     }
 
@@ -12790,30 +12910,101 @@ export class TronControllerClient implements ControllerClient {
       bandwidthToBuy
     });
 
+    logJson({
+      level: "info",
+      scope: "resource",
+      stage: "rental-plan",
+      operationId,
+      operatorAddress,
+      energyToBuy,
+      bandwidthToBuy,
+      estimatedRentalCostSun
+    });
+
     await this.topUpGasStationFromOperatorIfNeeded(estimatedRentalCostSun);
 
     try {
       if (energyToBuy > 0) {
-        await this.gasStationClient.createEnergyOrder({
-          requestId: buildGasRequestId("allocation", operationId, "energy"),
+        const energyRequestId = buildGasRequestId("allocation", operationId, "energy");
+
+        logJson({
+          level: "info",
+          scope: "resource",
+          stage: "energy-order-start",
+          operationId,
+          operatorAddress,
+          requestId: energyRequestId,
+          energyToBuy,
+          serviceChargeType: this.gasStationServiceChargeType
+        });
+
+        const energyOrder = await this.gasStationClient.createEnergyOrder({
+          requestId: energyRequestId,
           receiveAddress: operatorAddress,
           energyNum: energyToBuy,
           serviceChargeType: this.gasStationServiceChargeType
         });
+
+        logJson({
+          level: "info",
+          scope: "resource",
+          stage: "energy-order-created",
+          operationId,
+          operatorAddress,
+          requestId: energyRequestId,
+          tradeNo: energyOrder.trade_no,
+          energyToBuy
+        });
       }
 
       if (bandwidthToBuy > 0) {
-        await this.gasStationClient.createBandwidthOrder({
-          requestId: buildGasRequestId("allocation", operationId, "bandwidth"),
+        const bandwidthRequestId = buildGasRequestId("allocation", operationId, "bandwidth");
+
+        logJson({
+          level: "info",
+          scope: "resource",
+          stage: "bandwidth-order-start",
+          operationId,
+          operatorAddress,
+          requestId: bandwidthRequestId,
+          bandwidthToBuy,
+          serviceChargeType: this.gasStationServiceChargeType
+        });
+
+        const bandwidthOrder = await this.gasStationClient.createBandwidthOrder({
+          requestId: bandwidthRequestId,
           receiveAddress: operatorAddress,
           netNum: bandwidthToBuy,
           serviceChargeType: this.gasStationServiceChargeType
+        });
+
+        logJson({
+          level: "info",
+          scope: "resource",
+          stage: "bandwidth-order-created",
+          operationId,
+          operatorAddress,
+          requestId: bandwidthRequestId,
+          tradeNo: bandwidthOrder.trade_no,
+          bandwidthToBuy
         });
       }
     } catch (error) {
       if (isRateLimitError(error)) {
         throw wrapAsRateLimitError(error, "GASSTATION_RATE_LIMIT");
       }
+
+      logJson({
+        level: "error",
+        scope: "resource",
+        stage: "resource-order-failed",
+        operationId,
+        operatorAddress,
+        energyToBuy,
+        bandwidthToBuy,
+        error: getErrorMessage(error),
+        code: extractErrorCode(error)
+      });
 
       throw createTaggedError(
         `GasStation balance topped up or was already sufficient, but resource order failed. ${getErrorMessage(error)}`,
@@ -12824,7 +13015,22 @@ export class TronControllerClient implements ControllerClient {
       );
     }
 
-    await this.waitForRequiredResources(requirement);
+    const after = await this.waitForRequiredResources(requirement);
+
+    logJson({
+      level: "info",
+      scope: "resource",
+      stage: "after-rental",
+      operationId,
+      operatorAddress,
+      energyAvailable: after.energyAvailable,
+      bandwidthAvailable: after.bandwidthAvailable,
+      trxBalanceSun: after.trxBalanceSun,
+      requiredEnergy: requirement.requiredEnergy,
+      requiredBandwidth: requirement.requiredBandwidth,
+      targetEnergy: requirement.targetEnergy,
+      targetBandwidth: requirement.targetBandwidth
+    });
   }
 
   private async verifyResourcesStillReadyBeforeSend(): Promise<void> {
@@ -12840,6 +13046,20 @@ export class TronControllerClient implements ControllerClient {
     const bandwidthOk =
       requirement.requiredBandwidth <= 0 ||
       snapshot.bandwidthAvailable >= requirement.requiredBandwidth;
+
+    logJson({
+      level: "info",
+      scope: "resource",
+      stage: "pre-send-check",
+      operatorAddress,
+      energyAvailable: snapshot.energyAvailable,
+      bandwidthAvailable: snapshot.bandwidthAvailable,
+      trxBalanceSun: snapshot.trxBalanceSun,
+      requiredEnergy: requirement.requiredEnergy,
+      requiredBandwidth: requirement.requiredBandwidth,
+      energyOk,
+      bandwidthOk
+    });
 
     if (!energyOk || !bandwidthOk) {
       throw createTaggedError(
@@ -13034,12 +13254,40 @@ export class TronControllerClient implements ControllerClient {
     const feeLimitSun = normalizeFeeLimitSun(input.feeLimitSun);
 
     return this.runWithOperatorLock(async () => {
+      const operatorAddress = this.getOperatorAddress();
+
+      logJson({
+        level: "info",
+        scope: "allocation-send",
+        stage: "start",
+        purchaseId,
+        buyerWallet,
+        ambassadorWallet,
+        purchaseAmountSun,
+        ownerShareSun,
+        feeLimitSun,
+        operatorAddress,
+        contractAddress: this.contractAddress
+      });
+
       await this.ensureResourcesForOperation(purchaseId);
       await this.verifyResourcesStillReadyBeforeSend();
 
       const contract = await this.contract();
 
       try {
+        logJson({
+          level: "info",
+          scope: "allocation-send",
+          stage: "contract-send-start",
+          purchaseId,
+          operatorAddress,
+          ambassadorWallet,
+          purchaseAmountSun,
+          ownerShareSun,
+          feeLimitSun
+        });
+
         const sendResult = await withRateLimitRetry("recordVerifiedPurchase.send", async () => {
           return await contract
             .recordVerifiedPurchase(
@@ -13059,10 +13307,29 @@ export class TronControllerClient implements ControllerClient {
           txid: assertNonEmpty(txid || "", "txid")
         };
 
+        logJson({
+          level: "info",
+          scope: "allocation-send",
+          stage: "contract-send-success",
+          purchaseId,
+          operatorAddress,
+          txid: result.txid
+        });
+
         await this.tryAutoWithdrawOwnerFundsAfterAllocation(purchaseId);
 
         return result;
       } catch (error) {
+        logJson({
+          level: "error",
+          scope: "allocation-send",
+          stage: "contract-send-failed",
+          purchaseId,
+          operatorAddress,
+          error: getErrorMessage(error),
+          code: extractErrorCode(error)
+        });
+
         if (isRateLimitError(error)) {
           throw wrapAsRateLimitError(error, "TRON_RATE_LIMIT");
         }
