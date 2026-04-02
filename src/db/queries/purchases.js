@@ -99,31 +99,34 @@ async function markPurchaseProcessed({
 async function recomputePurchaseStatuses(client = pool) {
   await client.query(
     `
+      WITH chosen_bindings AS (
+        SELECT
+          p.id AS purchase_row_id,
+          bb.ambassador_wallet,
+          bb.binding_at,
+          ROW_NUMBER() OVER (
+            PARTITION BY p.id
+            ORDER BY bb.binding_at DESC, bb.id DESC
+          ) AS rn
+        FROM purchases p
+        JOIN buyer_bindings bb
+          ON bb.buyer_wallet = p.buyer_wallet
+         AND bb.binding_at <= COALESCE(p.token_block_time, NOW())
+      )
       UPDATE purchases p
       SET
-        binding_at_used = chosen.binding_at,
-        resolved_ambassador_wallet = COALESCE(
-          p.resolved_ambassador_wallet,
-          chosen.ambassador_wallet
-        ),
+        binding_at_used = cb.binding_at,
+        resolved_ambassador_wallet = COALESCE(p.resolved_ambassador_wallet, cb.ambassador_wallet),
         status = CASE
           WHEN p.processing_error IS NOT NULL THEN 'error'
           WHEN p.controller_processed THEN 'processed'
-          WHEN COALESCE(p.resolved_ambassador_wallet, chosen.ambassador_wallet) IS NOT NULL THEN 'attributed'
+          WHEN COALESCE(p.resolved_ambassador_wallet, cb.ambassador_wallet) IS NOT NULL THEN 'attributed'
           ELSE 'unattributed'
         END,
         updated_at = NOW()
-      FROM LATERAL (
-        SELECT
-          bb.ambassador_wallet,
-          bb.binding_at
-        FROM buyer_bindings bb
-        WHERE bb.buyer_wallet = p.buyer_wallet
-          AND bb.binding_at <= COALESCE(p.token_block_time, NOW())
-        ORDER BY bb.binding_at DESC, bb.id DESC
-        LIMIT 1
-      ) AS chosen
-      WHERE p.buyer_wallet IS NOT NULL
+      FROM chosen_bindings cb
+      WHERE cb.purchase_row_id = p.id
+        AND cb.rn = 1
     `
   );
 
@@ -138,7 +141,6 @@ async function recomputePurchaseStatuses(client = pool) {
           ELSE 'unattributed'
         END,
         updated_at = NOW()
-      WHERE buyer_wallet IS NOT NULL
     `
   );
 }
