@@ -11,6 +11,12 @@ function toIsoFromMs(value) {
   return new Date(n).toISOString();
 }
 
+function toText(value, fallback = '0') {
+  if (value == null) return fallback;
+  const text = String(value).trim();
+  return text || fallback;
+}
+
 function normalizeAddress(value) {
   if (!value) return null;
 
@@ -259,15 +265,9 @@ async function collectEvents(eventName, stateKey, limit, minBlockTimestamp, maxB
       }
     }
 
-    const next = page?.meta?.fingerprint || page?.fingerprint || page?.meta?.links?.next || null;
-
-    if (!next || rows.length === 0 || all.length >= limit) {
-      break;
-    }
-
     fingerprint = page?.meta?.fingerprint || page?.fingerprint || null;
 
-    if (!fingerprint) {
+    if (!fingerprint || rows.length === 0 || all.length >= limit) {
       break;
     }
   }
