@@ -32,6 +32,14 @@ function isValidSlug(value) {
   return /^[a-z0-9_-]{3,24}$/.test(String(value || ''));
 }
 
+function toErrorMessage(error) {
+  if (error && typeof error.message === 'string' && error.message.trim()) {
+    return error.message.trim();
+  }
+
+  return 'Unknown error';
+}
+
 async function reconcilePurchase(txHash, options = {}) {
   const normalizedTxHash = String(txHash || '').toLowerCase();
   const incomingSlug = isValidSlug(normalizeSlug(options.slug))
@@ -54,19 +62,10 @@ async function reconcilePurchase(txHash, options = {}) {
     }
   }
 
-  await upsertCandidatePurchase({
-    txHash: normalizedTxHash,
-    purchaseId,
-    buyerWallet: parsed.buyerWallet,
-    candidateSlugHash: candidateSlugHash || null,
-    candidateAmbassadorWallet: candidateAmbassadorWallet || null
-  });
-
   const alreadyBoundAmbassadorWallet = await getBuyerAmbassador(parsed.buyerWallet);
 
   let resolvedAmbassadorWallet = alreadyBoundAmbassadorWallet || null;
   let resolutionSource = alreadyBoundAmbassadorWallet ? 'controller_binding' : 'none';
-
   const alreadyProcessed = await isPurchaseProcessed(purchaseId);
 
   let resourcePlan = {
@@ -84,45 +83,51 @@ async function reconcilePurchase(txHash, options = {}) {
 
   if (alreadyProcessed) {
     finalStatus = 'processed';
-  } else if (alreadyBoundAmbassadorWallet) {
-    resourcePlan = await ensureOperatorResources();
-
-    controllerTxHash = await recordVerifiedPurchase({
-      purchaseId,
-      buyerWallet: parsed.buyerWallet,
-      ambassadorCandidate: alreadyBoundAmbassadorWallet,
-      purchaseAmountSun: parsed.purchaseAmountSun,
-      ownerShareSun: parsed.ownerShareSun
-    });
-
-    resolvedAmbassadorWallet = await getBuyerAmbassador(parsed.buyerWallet);
-    resolutionSource = 'controller_binding';
-    finalStatus = 'processed';
-    bindingAtUsed = parsed.tokenBlockTime;
-  } else if (candidateAmbassadorWallet) {
-    resourcePlan = await ensureOperatorResources();
-
-    controllerTxHash = await recordVerifiedPurchase({
-      purchaseId,
-      buyerWallet: parsed.buyerWallet,
-      ambassadorCandidate: candidateAmbassadorWallet,
-      purchaseAmountSun: parsed.purchaseAmountSun,
-      ownerShareSun: parsed.ownerShareSun
-    });
-
-    resolvedAmbassadorWallet = await getBuyerAmbassador(parsed.buyerWallet);
-    resolutionSource = 'incoming_slug';
-    finalStatus = 'processed';
-    bindingAtUsed = parsed.tokenBlockTime;
-  } else {
+  } else if (!alreadyBoundAmbassadorWallet && !candidateAmbassadorWallet) {
     finalStatus = 'awaiting_candidate';
     processingError = 'Buyer is not bound and referral slug was not provided or not resolved';
+  } else {
+    const ambassadorForAllocation = alreadyBoundAmbassadorWallet || candidateAmbassadorWallet;
+
+    if (alreadyBoundAmbassadorWallet) {
+      resolutionSource = 'controller_binding';
+    } else {
+      resolutionSource = 'incoming_slug';
+    }
+
+    try {
+      resourcePlan = await ensureOperatorResources();
+
+      controllerTxHash = await recordVerifiedPurchase({
+        purchaseId,
+        buyerWallet: parsed.buyerWallet,
+        ambassadorCandidate: ambassadorForAllocation,
+        purchaseAmountSun: parsed.purchaseAmountSun,
+        ownerShareSun: parsed.ownerShareSun
+      });
+
+      resolvedAmbassadorWallet = await getBuyerAmbassador(parsed.buyerWallet) || ambassadorForAllocation;
+      finalStatus = 'processed';
+      bindingAtUsed = parsed.tokenBlockTime;
+    } catch (error) {
+      resolvedAmbassadorWallet = null;
+      finalStatus = 'awaiting_resources';
+      processingError = toErrorMessage(error);
+    }
   }
 
   const client = await pool.connect();
 
   try {
     await client.query('BEGIN');
+
+    await upsertCandidatePurchase({
+      txHash: normalizedTxHash,
+      purchaseId,
+      buyerWallet: parsed.buyerWallet,
+      candidateSlugHash: candidateSlugHash || null,
+      candidateAmbassadorWallet: candidateAmbassadorWallet || null
+    }, client);
 
     await upsertPurchaseFromTokenEvent({
       txHash: normalizedTxHash,

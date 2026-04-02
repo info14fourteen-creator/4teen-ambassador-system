@@ -1,5 +1,5 @@
 const crypto = require('crypto');
-const { ProxyAgent } = require('undici');
+const { ProxyAgent, fetch: undiciFetch } = require('undici');
 const env = require('../config/env');
 const { tronWeb } = require('./tron/client');
 
@@ -123,7 +123,7 @@ async function requestJson({
   const dispatcher = proxyUrl ? new ProxyAgent(proxyUrl) : undefined;
 
   try {
-    const response = await fetch(url, {
+    const response = await undiciFetch(url, {
       method,
       headers: {
         Accept: 'application/json'
@@ -181,7 +181,12 @@ async function requestJson({
       throw new Error('GasStation request timed out');
     }
 
-    throw error;
+    const message =
+      error && typeof error.message === 'string' && error.message.trim()
+        ? error.message.trim()
+        : 'fetch failed';
+
+    throw new Error(`GasStation fetch failed: ${message}`);
   } finally {
     clearTimeout(timer);
 
@@ -302,7 +307,7 @@ function createGasStationClientFromEnv() {
     appId: env.GASSTATION_API_KEY,
     secretKey: env.GASSTATION_API_SECRET,
     baseUrl: env.GASSTATION_API_BASE_URL,
-    proxyUrl: process.env.QUOTAGUARDSTATIC_URL || process.env.QUOTAGUARD_URL || process.env.FIXIE_URL,
+    proxyUrl: env.QUOTAGUARDSTATIC_URL,
     timeoutMs: Number(process.env.GASSTATION_TIMEOUT_MS || DEFAULT_TIMEOUT_MS)
   });
 }
