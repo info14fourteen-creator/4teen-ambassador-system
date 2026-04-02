@@ -1,54 +1,86 @@
-const env = require('../../config/env');
-const { tronWeb } = require('../tron/client');
 const { getSyncState, setSyncState } = require('../../db/queries/syncState');
+const { registerCandidatePurchase } = require('./registerCandidatePurchase');
 const { reconcilePurchase } = require('./reconcilePurchase');
+const { getBuyTokenEvents } = require('../tron/token');
 
-async function syncPurchasesRange(limit = 100) {
-  const currentBlock = await tronWeb.trx.getCurrentBlock();
-  const latestBlock = currentBlock?.block_header?.raw_data?.number || 0;
-  let fromBlock = Number(await getSyncState('last_token_buy_block', '0'));
+async function syncPurchasesRange({
+  limit = 10,
+  minBlockTimestamp,
+  maxBlockTimestamp
+} = {}) {
+  const now = Date.now();
+
+  const storedTsRaw = await getSyncState('token_buy_events_last_ts', '0');
+  const storedTs = Number(storedTsRaw || '0');
+
+  const effectiveMinTs =
+    typeof minBlockTimestamp === 'number' ? minBlockTimestamp : (storedTs > 0 ? storedTs + 1 : undefined);
+
+  const effectiveMaxTs =
+    typeof maxBlockTimestamp === 'number' ? maxBlockTimestamp : now;
+
+  const batch = await getBuyTokenEvents({
+    minBlockTimestamp: effectiveMinTs,
+    maxBlockTimestamp: effectiveMaxTs,
+    limit: Math.min(limit, 20)
+  });
+
+  if (!Array.isArray(batch) || batch.length === 0) {
+    return {
+      ok: true,
+      processedCount: 0,
+      tokenBuyEventsLastTs: storedTs,
+      results: []
+    };
+  }
 
   const results = [];
-  let processedCount = 0;
+  let maxSeenTimestamp = storedTs;
 
-  while (fromBlock <= latestBlock && processedCount < limit) {
-    const block = await tronWeb.trx.getBlock(fromBlock);
-    const txs = Array.isArray(block?.transactions) ? block.transactions : [];
+  for (const event of batch) {
+    const txHash = event?.transaction;
+    const buyerWallet = event?.result?.buyer || event?.result?._buyer || null;
+    const eventTs = Number(event?.timestamp || 0);
 
-    for (const tx of txs) {
-      if (processedCount >= limit) break;
-
-      const txHash = tx?.txID;
-      if (!txHash) continue;
-
-      try {
-        const contract = tx?.raw_data?.contract?.[0];
-        const value = contract?.parameter?.value;
-        const contractAddressHex = value?.contract_address;
-
-        if (!contractAddressHex) continue;
-
-        const contractAddress = tronWeb.address.fromHex(contractAddressHex);
-
-        if (contractAddress !== env.FOURTEEN_TOKEN_CONTRACT) continue;
-        if (value.call_value === undefined) continue;
-
-        const result = await reconcilePurchase(txHash);
-        results.push(result);
-        processedCount += 1;
-      } catch (_) {}
+    if (!txHash) {
+      continue;
     }
 
-    await setSyncState('last_token_buy_block', fromBlock);
-    fromBlock += 1;
+    if (eventTs > maxSeenTimestamp) {
+      maxSeenTimestamp = eventTs;
+    }
+
+    try {
+      if (buyerWallet) {
+        await registerCandidatePurchase({
+          txHash,
+          buyerWallet,
+          candidateSlugHash: null,
+          candidateAmbassadorWallet: null
+        });
+      }
+
+      const result = await reconcilePurchase(txHash);
+      results.push(result);
+    } catch (error) {
+      results.push({
+        ok: false,
+        txHash,
+        error: error.message
+      });
+    }
+  }
+
+  if (maxSeenTimestamp > storedTs) {
+    await setSyncState('token_buy_events_last_ts', String(maxSeenTimestamp));
   }
 
   await setSyncState('last_full_refresh_at', new Date().toISOString());
 
   return {
     ok: true,
-    scannedUntilBlock: fromBlock - 1,
-    processedCount,
+    processedCount: results.length,
+    tokenBuyEventsLastTs: maxSeenTimestamp,
     results
   };
 }

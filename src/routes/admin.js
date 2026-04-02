@@ -61,8 +61,13 @@ router.post('/sync-ambassador', async (req, res) => {
 
 router.post('/sync-purchases-range', async (req, res) => {
   try {
-    const { limit } = req.body || {};
-    const result = await syncPurchasesRange(Number(limit || 50));
+    const { limit, minBlockTimestamp, maxBlockTimestamp } = req.body || {};
+
+    const result = await syncPurchasesRange({
+      limit: Number(limit || 10),
+      minBlockTimestamp: minBlockTimestamp ? Number(minBlockTimestamp) : undefined,
+      maxBlockTimestamp: maxBlockTimestamp ? Number(maxBlockTimestamp) : undefined
+    });
 
     return res.json({
       ok: true,

@@ -5,7 +5,7 @@ const { getBuyerAmbassador } = require('../tron/controller');
 async function syncBuyerBindings(limit = 100) {
   const result = await pool.query(
     `
-      SELECT DISTINCT buyer_wallet, tx_hash, token_block_time
+      SELECT buyer_wallet, tx_hash, token_block_time, id
       FROM purchases
       WHERE buyer_wallet IS NOT NULL
       ORDER BY token_block_time DESC NULLS LAST, id DESC
