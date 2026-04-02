@@ -14,25 +14,24 @@ function normalizeOrigin(value) {
 }
 
 function parseAllowedOrigins(value) {
-  const fromEnv = String(value || '')
+  const envOrigins = String(value || '')
     .split(',')
     .map((item) => normalizeOrigin(item))
     .filter(Boolean);
 
-  const defaults = [
+  const fallbackOrigins = [
     'https://4teen.me',
     'https://www.4teen.me',
     'http://localhost:3000',
     'http://127.0.0.1:3000'
   ].map(normalizeOrigin);
 
-  return Array.from(new Set([...defaults, ...fromEnv]));
+  return Array.from(new Set([...fallbackOrigins, ...envOrigins]));
 }
 
 const allowedOrigins = parseAllowedOrigins(env.ALLOWED_ORIGINS);
 
 app.disable('x-powered-by');
-app.use(express.json());
 
 app.use((req, res, next) => {
   const requestOriginRaw = req.headers.origin;
@@ -55,6 +54,8 @@ app.use((req, res, next) => {
 
   return next();
 });
+
+app.use(express.json());
 
 app.use('/', healthRouter);
 app.use('/admin', adminRouter);
