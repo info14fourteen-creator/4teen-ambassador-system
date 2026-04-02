@@ -1,4 +1,4 @@
-const TronWeb = require('tronweb');
+const { TronWeb } = require('tronweb');
 const env = require('../../config/env');
 
 const tronWeb = new TronWeb({
