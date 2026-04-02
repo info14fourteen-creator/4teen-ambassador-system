@@ -3,6 +3,7 @@ const { requireAdminAuth } = require('../services/security/adminAuth');
 const { reconcilePurchase } = require('../services/sync/reconcilePurchase');
 const { syncAmbassador } = require('../services/sync/syncAmbassador');
 const { syncPurchasesRange } = require('../services/sync/syncPurchasesRange');
+const { syncBuyerBindings } = require('../services/sync/syncBuyerBindings');
 
 const router = express.Router();
 
@@ -61,7 +62,24 @@ router.post('/sync-ambassador', async (req, res) => {
 router.post('/sync-purchases-range', async (req, res) => {
   try {
     const { limit } = req.body || {};
-    const result = await syncPurchasesRange(Number(limit || 100));
+    const result = await syncPurchasesRange(Number(limit || 50));
+
+    return res.json({
+      ok: true,
+      result
+    });
+  } catch (error) {
+    return res.status(500).json({
+      ok: false,
+      error: error.message
+    });
+  }
+});
+
+router.post('/sync-buyer-bindings', async (req, res) => {
+  try {
+    const { limit } = req.body || {};
+    const result = await syncBuyerBindings(Number(limit || 100));
 
     return res.json({
       ok: true,
