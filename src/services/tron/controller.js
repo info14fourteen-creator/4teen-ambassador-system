@@ -18,6 +18,26 @@ const controllerAbi = [
     type: 'function'
   },
   {
+    inputs: [{ internalType: 'bytes32', name: 'slugHash', type: 'bytes32' }],
+    name: 'getAmbassadorBySlugHash',
+    outputs: [{ internalType: 'address', name: '', type: 'address' }],
+    stateMutability: 'view',
+    type: 'function'
+  },
+  {
+    inputs: [
+      { internalType: 'bytes32', name: 'purchaseId', type: 'bytes32' },
+      { internalType: 'address', name: 'buyer', type: 'address' },
+      { internalType: 'address', name: 'ambassadorCandidate', type: 'address' },
+      { internalType: 'uint256', name: 'purchaseAmountSun', type: 'uint256' },
+      { internalType: 'uint256', name: 'ownerShareSun', type: 'uint256' }
+    ],
+    name: 'recordVerifiedPurchase',
+    outputs: [],
+    stateMutability: 'nonpayable',
+    type: 'function'
+  },
+  {
     inputs: [{ internalType: 'address', name: 'ambassadorAddress', type: 'address' }],
     name: 'getDashboardCore',
     outputs: [
@@ -81,10 +101,43 @@ async function getBuyerAmbassador(buyerWallet) {
   return zeroAddressToNull(result);
 }
 
+async function getAmbassadorBySlugHash(slugHash) {
+  const contract = await getControllerContract();
+  const result = await contract.getAmbassadorBySlugHash(slugHash).call();
+  return zeroAddressToNull(result);
+}
+
 async function isPurchaseProcessed(purchaseId) {
   const contract = await getControllerContract();
   const result = await contract.isPurchaseProcessed(purchaseId).call();
   return Boolean(result);
+}
+
+async function recordVerifiedPurchase({
+  purchaseId,
+  buyerWallet,
+  ambassadorCandidate,
+  purchaseAmountSun,
+  ownerShareSun
+}) {
+  const contract = await getControllerContract();
+
+  const txid = await contract.recordVerifiedPurchase(
+    purchaseId,
+    buyerWallet,
+    ambassadorCandidate,
+    String(purchaseAmountSun),
+    String(ownerShareSun)
+  ).send({
+    feeLimit: env.CONTROLLER_FEE_LIMIT_SUN,
+    shouldPollResponse: false
+  });
+
+  if (!txid) {
+    throw new Error('Controller transaction sent but txid was not returned');
+  }
+
+  return String(txid);
 }
 
 async function readAmbassadorDashboard(ambassadorWallet) {
@@ -129,7 +182,9 @@ async function getControllerEvents(eventName, {
 module.exports = {
   getControllerContract,
   getBuyerAmbassador,
+  getAmbassadorBySlugHash,
   isPurchaseProcessed,
+  recordVerifiedPurchase,
   readAmbassadorDashboard,
   getControllerEvents
 };

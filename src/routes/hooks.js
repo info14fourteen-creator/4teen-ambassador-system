@@ -1,5 +1,4 @@
 const express = require('express');
-const { registerCandidatePurchase } = require('../services/sync/registerCandidatePurchase');
 const { reconcilePurchase } = require('../services/sync/reconcilePurchase');
 
 const router = express.Router();
@@ -13,21 +12,18 @@ router.post('/after-buy', async (req, res) => {
       candidateAmbassadorWallet
     } = req.body || {};
 
-    if (!txHash || !buyerWallet) {
+    if (!txHash) {
       return res.status(400).json({
         ok: false,
-        error: 'txHash and buyerWallet are required'
+        error: 'txHash is required'
       });
     }
 
-    await registerCandidatePurchase({
-      txHash,
-      buyerWallet,
+    const result = await reconcilePurchase(txHash, {
+      buyerWallet: buyerWallet || null,
       candidateSlugHash: candidateSlugHash || null,
       candidateAmbassadorWallet: candidateAmbassadorWallet || null
     });
-
-    const result = await reconcilePurchase(txHash);
 
     return res.json({
       ok: true,

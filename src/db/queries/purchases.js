@@ -14,6 +14,45 @@ async function getPurchaseByTxHash(txHash, client = pool) {
   return result.rows[0] || null;
 }
 
+async function upsertCandidatePurchase(payload, client = pool) {
+  const normalizedTxHash = String(payload.txHash).toLowerCase();
+
+  await client.query(
+    `
+      INSERT INTO purchases (
+        tx_hash,
+        purchase_id,
+        buyer_wallet,
+        candidate_slug_hash,
+        candidate_ambassador_wallet,
+        has_candidate_referral,
+        status,
+        created_at,
+        updated_at
+      )
+      VALUES (
+        $1,$2,$3,$4,$5,$6,'detected',NOW(),NOW()
+      )
+      ON CONFLICT (tx_hash)
+      DO UPDATE SET
+        purchase_id = COALESCE(EXCLUDED.purchase_id, purchases.purchase_id),
+        buyer_wallet = COALESCE(EXCLUDED.buyer_wallet, purchases.buyer_wallet),
+        candidate_slug_hash = COALESCE(EXCLUDED.candidate_slug_hash, purchases.candidate_slug_hash),
+        candidate_ambassador_wallet = COALESCE(EXCLUDED.candidate_ambassador_wallet, purchases.candidate_ambassador_wallet),
+        has_candidate_referral = EXCLUDED.has_candidate_referral,
+        updated_at = NOW()
+    `,
+    [
+      normalizedTxHash,
+      payload.purchaseId,
+      payload.buyerWallet,
+      payload.candidateSlugHash || null,
+      payload.candidateAmbassadorWallet || null,
+      Boolean(payload.candidateSlugHash || payload.candidateAmbassadorWallet)
+    ]
+  );
+}
+
 async function upsertPurchaseFromTokenEvent(payload, client = pool) {
   const normalizedTxHash = String(payload.txHash).toLowerCase();
 
@@ -63,13 +102,100 @@ async function upsertPurchaseFromTokenEvent(payload, client = pool) {
     `,
     [
       normalizedTxHash,
-      normalizedTxHash,
+      payload.purchaseId,
       payload.buyerWallet,
       payload.purchaseAmountSun,
       payload.ownerShareSun,
       payload.tokenAmountRaw,
       payload.tokenBlockNumber,
       payload.tokenBlockTime
+    ]
+  );
+}
+
+async function upsertReconciledPurchase(payload, client = pool) {
+  const normalizedTxHash = String(payload.txHash).toLowerCase();
+  const controllerProcessed = Boolean(payload.controllerProcessed);
+  const hasCandidateReferral = Boolean(payload.candidateSlugHash || payload.candidateAmbassadorWallet);
+
+  const status = payload.processingError
+    ? 'error'
+    : controllerProcessed
+      ? 'processed'
+      : payload.resolvedAmbassadorWallet
+        ? 'attributed'
+        : 'unattributed';
+
+  await client.query(
+    `
+      INSERT INTO purchases (
+        tx_hash,
+        purchase_id,
+        buyer_wallet,
+        purchase_amount_sun,
+        owner_share_sun,
+        token_amount_raw,
+        token_block_number,
+        token_block_time,
+        candidate_slug_hash,
+        candidate_ambassador_wallet,
+        resolved_ambassador_wallet,
+        has_candidate_referral,
+        controller_processed,
+        controller_processed_tx_hash,
+        controller_processed_at,
+        processing_error,
+        status,
+        binding_at_used,
+        created_at,
+        updated_at
+      )
+      VALUES (
+        $1,$2,$3,$4,$5,$6,$7,$8,
+        $9,$10,$11,$12,$13,$14,$15,$16,$17,$18,
+        NOW(),
+        NOW()
+      )
+      ON CONFLICT (tx_hash)
+      DO UPDATE SET
+        purchase_id = EXCLUDED.purchase_id,
+        buyer_wallet = EXCLUDED.buyer_wallet,
+        purchase_amount_sun = EXCLUDED.purchase_amount_sun,
+        owner_share_sun = EXCLUDED.owner_share_sun,
+        token_amount_raw = EXCLUDED.token_amount_raw,
+        token_block_number = EXCLUDED.token_block_number,
+        token_block_time = EXCLUDED.token_block_time,
+        candidate_slug_hash = EXCLUDED.candidate_slug_hash,
+        candidate_ambassador_wallet = EXCLUDED.candidate_ambassador_wallet,
+        resolved_ambassador_wallet = EXCLUDED.resolved_ambassador_wallet,
+        has_candidate_referral = EXCLUDED.has_candidate_referral,
+        controller_processed = EXCLUDED.controller_processed,
+        controller_processed_tx_hash = EXCLUDED.controller_processed_tx_hash,
+        controller_processed_at = EXCLUDED.controller_processed_at,
+        processing_error = EXCLUDED.processing_error,
+        status = EXCLUDED.status,
+        binding_at_used = EXCLUDED.binding_at_used,
+        updated_at = NOW()
+    `,
+    [
+      normalizedTxHash,
+      payload.purchaseId,
+      payload.buyerWallet,
+      payload.purchaseAmountSun,
+      payload.ownerShareSun,
+      payload.tokenAmountRaw || null,
+      payload.tokenBlockNumber || null,
+      payload.tokenBlockTime || null,
+      payload.candidateSlugHash || null,
+      payload.candidateAmbassadorWallet || null,
+      payload.resolvedAmbassadorWallet || null,
+      hasCandidateReferral,
+      controllerProcessed,
+      payload.controllerProcessedTxHash || null,
+      payload.controllerProcessedAt || null,
+      payload.processingError || null,
+      status,
+      payload.bindingAtUsed || null
     ]
   );
 }
@@ -105,6 +231,34 @@ async function markPurchaseProcessed({
       normalizedControllerTxHash,
       allocatedAt
     ]
+  );
+}
+
+async function markPurchaseError({
+  txHash,
+  errorMessage
+}, client = pool) {
+  const normalizedTxHash = String(txHash || '').toLowerCase();
+
+  await client.query(
+    `
+      INSERT INTO purchases (
+        tx_hash,
+        purchase_id,
+        buyer_wallet,
+        processing_error,
+        status,
+        created_at,
+        updated_at
+      )
+      VALUES ($1,$1,'unknown',$2,'error',NOW(),NOW())
+      ON CONFLICT (tx_hash)
+      DO UPDATE SET
+        processing_error = EXCLUDED.processing_error,
+        status = 'error',
+        updated_at = NOW()
+    `,
+    [normalizedTxHash, String(errorMessage || 'Unknown error')]
   );
 }
 
@@ -159,7 +313,10 @@ async function recomputePurchaseStatuses(client = pool) {
 
 module.exports = {
   getPurchaseByTxHash,
+  upsertCandidatePurchase,
   upsertPurchaseFromTokenEvent,
+  upsertReconciledPurchase,
   markPurchaseProcessed,
+  markPurchaseError,
   recomputePurchaseStatuses
 };
