@@ -8,21 +8,21 @@ const {
 
 const router = express.Router();
 
-function normalizeLimit(value, fallback = 50, max = 200) {
-  const n = Number(value || fallback);
-  if (!Number.isFinite(n) || n <= 0) return fallback;
-  return Math.min(n, max);
-}
-
-function normalizeOffset(value) {
-  const n = Number(value || 0);
-  if (!Number.isFinite(n) || n < 0) return 0;
-  return n;
+function normalizeWallet(value) {
+  return String(value || '').trim();
 }
 
 router.get('/ambassador/:wallet/summary', async (req, res) => {
   try {
-    const { wallet } = req.params;
+    const wallet = normalizeWallet(req.params.wallet);
+
+    if (!wallet) {
+      return res.status(400).json({
+        ok: false,
+        error: 'wallet is required'
+      });
+    }
+
     const summary = await getAmbassadorSummary(wallet);
 
     if (!summary) {
@@ -46,17 +46,26 @@ router.get('/ambassador/:wallet/summary', async (req, res) => {
 
 router.get('/ambassador/:wallet/buyers', async (req, res) => {
   try {
-    const { wallet } = req.params;
-    const limit = normalizeLimit(req.query.limit, 50, 200);
-    const offset = normalizeOffset(req.query.offset);
+    const wallet = normalizeWallet(req.params.wallet);
 
-    const result = await listAmbassadorBuyers(wallet, limit, offset);
+    if (!wallet) {
+      return res.status(400).json({
+        ok: false,
+        error: 'wallet is required'
+      });
+    }
+
+    const result = await listAmbassadorBuyers(
+      wallet,
+      req.query.limit,
+      req.query.offset
+    );
 
     return res.json({
       ok: true,
       total: result.total,
-      limit,
-      offset,
+      limit: Number(req.query.limit || 50),
+      offset: Number(req.query.offset || 0),
       rows: result.rows
     });
   } catch (error) {
@@ -69,25 +78,26 @@ router.get('/ambassador/:wallet/buyers', async (req, res) => {
 
 router.get('/ambassador/:wallet/purchases', async (req, res) => {
   try {
-    const { wallet } = req.params;
-    const limit = normalizeLimit(req.query.limit, 50, 200);
-    const offset = normalizeOffset(req.query.offset);
-    const status = req.query.status ? String(req.query.status) : undefined;
-    const buyerWallet = req.query.buyer_wallet ? String(req.query.buyer_wallet) : undefined;
+    const wallet = normalizeWallet(req.params.wallet);
 
-    const result = await listAmbassadorPurchases({
-      ambassadorWallet: wallet,
-      status,
-      buyerWallet,
-      limit,
-      offset
+    if (!wallet) {
+      return res.status(400).json({
+        ok: false,
+        error: 'wallet is required'
+      });
+    }
+
+    const result = await listAmbassadorPurchases(wallet, {
+      limit: req.query.limit,
+      offset: req.query.offset,
+      status: req.query.status ? String(req.query.status).trim() : ''
     });
 
     return res.json({
       ok: true,
       total: result.total,
-      limit,
-      offset,
+      limit: Number(req.query.limit || 50),
+      offset: Number(req.query.offset || 0),
       rows: result.rows
     });
   } catch (error) {
@@ -100,17 +110,25 @@ router.get('/ambassador/:wallet/purchases', async (req, res) => {
 
 router.get('/ambassador/:wallet/pending', async (req, res) => {
   try {
-    const { wallet } = req.params;
-    const limit = normalizeLimit(req.query.limit, 50, 200);
-    const offset = normalizeOffset(req.query.offset);
+    const wallet = normalizeWallet(req.params.wallet);
 
-    const result = await listAmbassadorPendingPurchases(wallet, limit, offset);
+    if (!wallet) {
+      return res.status(400).json({
+        ok: false,
+        error: 'wallet is required'
+      });
+    }
+
+    const result = await listAmbassadorPendingPurchases(wallet, {
+      limit: req.query.limit,
+      offset: req.query.offset
+    });
 
     return res.json({
       ok: true,
       total: result.total,
-      limit,
-      offset,
+      limit: Number(req.query.limit || 50),
+      offset: Number(req.query.offset || 0),
       rows: result.rows
     });
   } catch (error) {
