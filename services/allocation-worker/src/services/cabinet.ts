@@ -73,7 +73,6 @@ export interface CabinetProfileStats {
   lifetimeRewardsTrx: string;
   withdrawnRewardsSun: string;
   withdrawnRewardsTrx: string;
-
   totalVolumeSun: string;
   totalVolumeTrx: string;
   totalRewardsAccruedSun: string;
@@ -288,6 +287,22 @@ function choosePendingBackendSyncCount(
   }
 
   return toBigIntSafe(onChainClaimableSun) > 0n ? 1 : 0;
+}
+
+function hasBrokenRewardSplit(purchase: {
+  ambassadorWallet: string | null;
+  ownerShareSun: string;
+  ambassadorRewardSun: string;
+}): boolean {
+  try {
+    return (
+      Boolean(purchase.ambassadorWallet) &&
+      BigInt(String(purchase.ownerShareSun || "0")) > 0n &&
+      BigInt(String(purchase.ambassadorRewardSun || "0")) === 0n
+    );
+  } catch {
+    return false;
+  }
 }
 
 function mapStats(input: {
@@ -668,7 +683,9 @@ export class CabinetService {
     const items: CabinetReplayResultItem[] = [];
 
     for (const purchase of pending) {
-      if (!isPurchaseReadyForAllocationRetry(purchase, now)) {
+      const brokenRewardSplit = hasBrokenRewardSplit(purchase);
+
+      if (!brokenRewardSplit && !isPurchaseReadyForAllocationRetry(purchase, now)) {
         const retryAt = getAllocationRetryReadyAt(purchase);
         const retryInMs = Math.max(0, retryAt - now);
 
