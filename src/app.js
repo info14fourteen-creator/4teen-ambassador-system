@@ -2,6 +2,7 @@ const express = require('express');
 const healthRouter = require('./routes/health');
 const adminRouter = require('./routes/admin');
 const cabinetRouter = require('./routes/cabinet');
+const hooksRouter = require('./routes/hooks');
 const env = require('./config/env');
 
 const app = express();
@@ -60,5 +61,6 @@ app.use(express.json());
 app.use('/', healthRouter);
 app.use('/admin', adminRouter);
 app.use('/cabinet', cabinetRouter);
+app.use('/hooks', hooksRouter);
 
 module.exports = app;
