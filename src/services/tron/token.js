@@ -25,6 +25,18 @@ function toBase58Address(value) {
   }
 }
 
+function normalizeEventList(response) {
+  if (Array.isArray(response)) {
+    return response;
+  }
+
+  if (Array.isArray(response?.data)) {
+    return response.data;
+  }
+
+  return [];
+}
+
 async function getBuyTokenEvents({
   minBlockTimestamp,
   maxBlockTimestamp,
@@ -54,8 +66,8 @@ async function getBuyTokenEvents({
 }
 
 async function getBuyEventByTxHash(txHash) {
-  const events = await tronWeb.getEventByTransactionID(txHash);
-  const list = Array.isArray(events) ? events : [];
+  const response = await tronWeb.getEventByTransactionID(txHash);
+  const list = normalizeEventList(response);
 
   const match = list.find((item) => {
     const eventName = String(item?.event_name || '');
