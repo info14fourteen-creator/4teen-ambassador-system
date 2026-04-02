@@ -1,6 +1,6 @@
 # 4teen-ambassador-system — ALLOCATION WORKER
 
-Generated: 2026-04-02T09:25:51.281Z
+Generated: 2026-04-02T09:52:01.001Z
 Repository: info14fourteen-creator/4teen-ambassador-system
 Branch: main
 
@@ -322,6 +322,14 @@ function subtractSun(left: string, right: string): string {
   return result > 0n ? result.toString() : "0";
 }
 
+function hasPositiveSunAmount(value: string | null | undefined): boolean {
+  try {
+    return BigInt(String(value || "0")) > 0n;
+  } catch {
+    return false;
+  }
+}
+
 function isFinalPurchaseStatus(status: PurchaseRecord["status"]): boolean {
   return (
     status === "allocated" ||
@@ -407,7 +415,6 @@ async function readAmbassadorRewardData(input: {
   const ambassadorWallet = assertNonEmpty(input.ambassadorWallet, "ambassadorWallet");
   const raw: Record<string, unknown> = {};
 
-  // 1) Main path: level first, then reward by level.
   if (
     typeof contract.getEffectiveLevel === "function" &&
     typeof contract.getRewardPercentByLevel === "function"
@@ -460,7 +467,6 @@ async function readAmbassadorRewardData(input: {
     }
   }
 
-  // 2) Fallback: dashboard core.
   if (typeof contract.getDashboardCore === "function") {
     try {
       const coreRaw = await callIfExists(contract, "getDashboardCore", ambassadorWallet);
@@ -489,7 +495,6 @@ async function readAmbassadorRewardData(input: {
     }
   }
 
-  // 3) Last fallback: direct reward percent by wallet.
   if (typeof contract.getRewardPercent === "function") {
     try {
       const rewardPercentRaw = await callIfExists(contract, "getRewardPercent", ambassadorWallet);
@@ -707,6 +712,58 @@ export class AttributionProcessor {
       txHash: input.txHash,
       ambassadorWallet: updatedPurchase.ambassadorWallet,
       ownerShareSun: input.ownerShareSun,
+      rewardPercent: rewardData.rewardPercent,
+      effectiveLevel: rewardData.effectiveLevel,
+      rewardSource: rewardData.source,
+      ambassadorRewardSun,
+      ownerPayoutSun,
+      rawRewardData: toJsonSafe(rewardData.raw)
+    });
+
+    return updatedPurchase;
+  }
+
+  private async repairRewardSplitIfMissing(
+    purchase: PurchaseRecord,
+    now: number = Date.now()
+  ): Promise<PurchaseRecord> {
+    if (!purchase.ambassadorWallet) {
+      return purchase;
+    }
+
+    if (!hasPositiveSunAmount(purchase.ownerShareSun)) {
+      return purchase;
+    }
+
+    if (hasPositiveSunAmount(purchase.ambassadorRewardSun)) {
+      return purchase;
+    }
+
+    const rewardData = await readAmbassadorRewardData({
+      tronWeb: this.tronWeb,
+      controllerContractAddress: this.controllerContractAddress,
+      ambassadorWallet: purchase.ambassadorWallet,
+      logger: this.logger
+    });
+
+    const ambassadorRewardSun = dividePercentFloor(
+      purchase.ownerShareSun,
+      rewardData.rewardPercent
+    );
+    const ownerPayoutSun = subtractSun(purchase.ownerShareSun, ambassadorRewardSun);
+
+    const updatedPurchase = await this.store.update(purchase.purchaseId, {
+      ambassadorRewardSun,
+      ownerPayoutSun,
+      now
+    });
+
+    this.logger?.info?.({
+      scope: "allocation",
+      stage: "reward-split-repaired-before-replay",
+      purchaseId: updatedPurchase.purchaseId,
+      ambassadorWallet: updatedPurchase.ambassadorWallet,
+      ownerShareSun: updatedPurchase.ownerShareSun,
       rewardPercent: rewardData.rewardPercent,
       effectiveLevel: rewardData.effectiveLevel,
       rewardSource: rewardData.source,
@@ -1014,10 +1071,21 @@ export class AttributionProcessor {
     feeLimitSun?: number,
     now?: number
   ): Promise<AllocationDecision> {
+    const replayNow = now ?? Date.now();
+    const normalizedPurchaseId = assertNonEmpty(purchaseId, "purchaseId");
+
+    const existingPurchase = await this.store.getByPurchaseId(normalizedPurchaseId);
+
+    if (!existingPurchase) {
+      throw new Error(`Purchase not found: ${normalizedPurchaseId}`);
+    }
+
+    await this.repairRewardSplitIfMissing(existingPurchase, replayNow);
+
     const replayResult = await this.allocationService.replayFailedAllocation(
-      assertNonEmpty(purchaseId, "purchaseId"),
+      normalizedPurchaseId,
       feeLimitSun,
-      now
+      replayNow
     );
 
     return {
