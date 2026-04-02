@@ -50,6 +50,23 @@ const GASSTATION_LOW_BALANCE_SUN = 8_500_000;
 const OPERATOR_MIN_BALANCE_FOR_TOPUP_SUN = 11_000_000;
 const OPERATOR_REMAINING_RESERVE_SUN = 2_000_000;
 
+function safeJsonStringify(value: unknown, space?: number): string {
+  return JSON.stringify(
+    value,
+    (_key, currentValue) =>
+      typeof currentValue === "bigint"
+        ? currentValue.toString()
+        : currentValue instanceof Error
+          ? {
+              name: currentValue.name,
+              message: currentValue.message,
+              stack: currentValue.stack
+            }
+          : currentValue,
+    space
+  );
+}
+
 function logFatal(stage: string, error: unknown): void {
   const message =
     error instanceof Error
@@ -62,7 +79,7 @@ function logFatal(stage: string, error: unknown): void {
     error instanceof Error && error.stack ? error.stack : null;
 
   console.error(
-    JSON.stringify({
+    safeJsonStringify({
       level: "fatal",
       scope: "server",
       stage,
@@ -270,7 +287,7 @@ function sendJson(
   statusCode: number,
   payload: unknown
 ): void {
-  const body = JSON.stringify(payload, null, 2);
+  const body = safeJsonStringify(payload, 2);
 
   setCorsHeaders(req, res, env);
 
@@ -471,13 +488,13 @@ function classifyHttpStatus(error: unknown): number {
 function createLogger() {
   return {
     info(payload: Record<string, unknown>) {
-      console.log(JSON.stringify({ level: "info", ...payload }));
+      console.log(safeJsonStringify({ level: "info", ...payload }));
     },
     warn(payload: Record<string, unknown>) {
-      console.warn(JSON.stringify({ level: "warn", ...payload }));
+      console.warn(safeJsonStringify({ level: "warn", ...payload }));
     },
     error(payload: Record<string, unknown>) {
-      console.error(JSON.stringify({ level: "error", ...payload }));
+      console.error(safeJsonStringify({ level: "error", ...payload }));
     }
   };
 }
@@ -753,16 +770,16 @@ async function bootstrap() {
   const env = loadEnv();
   const TronWeb = getTronWebConstructor();
 
-  console.log(JSON.stringify({ level: "info", scope: "server", stage: "bootstrap-started" }));
+  console.log(safeJsonStringify({ level: "info", scope: "server", stage: "bootstrap-started" }));
 
   await initAmbassadorRegistryTables();
-  console.log(JSON.stringify({ level: "info", scope: "server", stage: "ambassadors-tables-ready" }));
+  console.log(safeJsonStringify({ level: "info", scope: "server", stage: "ambassadors-tables-ready" }));
 
   await initDashboardSnapshotTables();
-  console.log(JSON.stringify({ level: "info", scope: "server", stage: "dashboard-snapshots-tables-ready" }));
+  console.log(safeJsonStringify({ level: "info", scope: "server", stage: "dashboard-snapshots-tables-ready" }));
 
   await initPurchaseTables();
-  console.log(JSON.stringify({ level: "info", scope: "server", stage: "purchase-tables-ready" }));
+  console.log(safeJsonStringify({ level: "info", scope: "server", stage: "purchase-tables-ready" }));
 
   const tronWeb = new TronWeb({
     fullHost: env.tronFullHost,
@@ -1192,7 +1209,7 @@ async function bootstrap() {
 
   server.listen(env.port, () => {
     console.log(
-      JSON.stringify({
+      safeJsonStringify({
         ok: true,
         message: "allocation-worker started",
         port: env.port,
