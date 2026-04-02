@@ -1,6 +1,6 @@
 # 4teen-ambassador-system — ALLOCATION WORKER
 
-Generated: 2026-04-02T10:22:37.207Z
+Generated: 2026-04-02T10:54:39.888Z
 Repository: info14fourteen-creator/4teen-ambassador-system
 Branch: main
 
@@ -11566,8 +11566,8 @@ type TaggedGasStationError = Error & {
   rawBody?: string | null;
 };
 
-function assertNonEmpty(value: string | undefined, fieldName: string): string {
-  const normalized = String(value || "").trim();
+function assertNonEmpty(value: string | undefined | null, fieldName: string): string {
+  const normalized = String(value ?? "").trim();
 
   if (!normalized) {
     throw new Error(`${fieldName} is required`);
@@ -11576,8 +11576,8 @@ function assertNonEmpty(value: string | undefined, fieldName: string): string {
   return normalized;
 }
 
-function normalizeOptionalString(value?: string): string | undefined {
-  const normalized = String(value || "").trim();
+function normalizeOptionalString(value?: string | null): string | undefined {
+  const normalized = String(value ?? "").trim();
   return normalized || undefined;
 }
 
@@ -11603,16 +11603,30 @@ function normalizePositiveInteger(value: number, fieldName: string): number {
   return Math.ceil(value);
 }
 
+function safeFiniteNumber(value: unknown, fallback = 0): number {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value;
+  }
+
+  if (typeof value === "bigint") {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : fallback;
+  }
+
+  if (typeof value === "string" && value.trim()) {
+    const parsed = Number(value.trim());
+    return Number.isFinite(parsed) ? parsed : fallback;
+  }
+
+  return fallback;
+}
+
 function pkcs7Pad(buffer: Buffer): Buffer {
   const blockSize = 16;
   const remainder = buffer.length % blockSize;
   const padLength = remainder === 0 ? blockSize : blockSize - remainder;
   const padding = Buffer.alloc(padLength, padLength);
   return Buffer.concat([buffer, padding]);
-}
-
-function toStandardBase64(buffer: Buffer): string {
-  return buffer.toString("base64");
 }
 
 function encryptAesEcbPkcs7Base64(plainText: string, secretKey: string): string {
@@ -11629,7 +11643,7 @@ function encryptAesEcbPkcs7Base64(plainText: string, secretKey: string): string 
   cipher.setAutoPadding(false);
 
   const encrypted = Buffer.concat([cipher.update(padded), cipher.final()]);
-  return toStandardBase64(encrypted);
+  return encrypted.toString("base64");
 }
 
 function createTaggedError(
@@ -11704,13 +11718,91 @@ function toErrorMessage(error: unknown): string {
     "message" in error &&
     typeof (error as { message?: unknown }).message === "string"
   ) {
-    const message = (error as { message: string }).message.trim();
+    const message = String((error as { message: string }).message || "").trim();
+
     if (message) {
       return message;
     }
   }
 
   return "Unknown error";
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === "object" && !Array.isArray(value);
+}
+
+function normalizeBalanceResult(raw: unknown): GasStationBalanceResult {
+  const source = isPlainObject(raw) ? raw : {};
+
+  return {
+    symbol: String(source.symbol ?? ""),
+    balance: String(source.balance ?? "0"),
+    deposit_address:
+      source.deposit_address == null
+        ? undefined
+        : String(source.deposit_address).trim() || undefined
+  };
+}
+
+function normalizeEstimateResult(raw: unknown): GasStationEstimateResult {
+  const source = isPlainObject(raw) ? raw : {};
+
+  return {
+    contract_address: String(source.contract_address ?? ""),
+    address_to: String(source.address_to ?? ""),
+    receive_address: String(source.receive_address ?? ""),
+    amount: String(source.amount ?? "0"),
+    energy_amount: String(source.energy_amount ?? "0"),
+    active_amount: String(source.active_amount ?? "0"),
+    energy_num: normalizePositiveInteger(
+      Math.max(1, safeFiniteNumber(source.energy_num, 0)),
+      "energy_num"
+    ),
+    energy_price: String(source.energy_price ?? "0"),
+    service_charge_type: String(source.service_charge_type ?? DEFAULT_SERVICE_CHARGE_TYPE)
+  };
+}
+
+function normalizePriceItem(raw: unknown): GasStationPriceItem {
+  const source = isPlainObject(raw) ? raw : {};
+
+  return {
+    expire_min: String(source.expire_min ?? "0"),
+    service_charge_type: String(
+      source.service_charge_type ?? DEFAULT_SERVICE_CHARGE_TYPE
+    ),
+    price: String(source.price ?? "0"),
+    remaining_number: String(source.remaining_number ?? "0")
+  };
+}
+
+function normalizePriceResult(raw: unknown): GasStationPriceResult {
+  const source = isPlainObject(raw) ? raw : {};
+  const list = Array.isArray(source.list) ? source.list.map(normalizePriceItem) : undefined;
+  const priceBuilderList = Array.isArray(source.price_builder_list)
+    ? source.price_builder_list.map(normalizePriceItem)
+    : undefined;
+
+  return {
+    list,
+    price_builder_list: priceBuilderList,
+    resource_type:
+      source.resource_type == null
+        ? undefined
+        : String(source.resource_type).trim() || undefined,
+    min_number:
+      source.min_number == null ? undefined : safeFiniteNumber(source.min_number, 0),
+    max_number:
+      source.max_number == null ? undefined : safeFiniteNumber(source.max_number, 0)
+  };
+}
+
+function normalizeCreateOrderResult(raw: unknown): GasStationCreateOrderResult {
+  const source = isPlainObject(raw) ? raw : {};
+  return {
+    trade_no: String(source.trade_no ?? "")
+  };
 }
 
 async function requestJson<T>(params: {
@@ -11735,79 +11827,101 @@ async function requestJson<T>(params: {
       dispatcher
     } as RequestInit & { dispatcher?: ProxyAgent });
 
-    const text = await response.text();
-
-    let parsed: any = null;
+    const rawBody = await response.text();
+    let parsed: unknown = null;
 
     try {
-      parsed = text ? JSON.parse(text) : null;
+      parsed = rawBody ? JSON.parse(rawBody) : null;
     } catch {
       throw createTaggedError(
-        `GasStation returned non-JSON response: ${text || "empty response"}`,
+        `GasStation returned non-JSON response: ${rawBody || "empty response"}`,
         {
           code: "GASSTATION_INVALID_RESPONSE",
           status: response.status,
-          rawBody: text || null
+          rawBody: rawBody || null
         }
       );
     }
 
+    const body = isPlainObject(parsed) ? parsed : null;
+    const retryAfterMs = parseRetryAfterMs(response.headers.get("retry-after"));
+
     if (!response.ok) {
-      const retryAfterMs = parseRetryAfterMs(response.headers.get("retry-after"));
-      const message = parsed?.msg
-        ? `GasStation HTTP ${response.status}: ${parsed.msg}`
+      const apiMessage =
+        body && typeof body.msg === "string" && body.msg.trim()
+          ? body.msg.trim()
+          : null;
+
+      const message = apiMessage
+        ? `GasStation HTTP ${response.status}: ${apiMessage}`
         : `GasStation HTTP ${response.status}`;
 
       if (response.status === 429) {
         throw createTaggedError(message, {
           code: "GASSTATION_RATE_LIMIT",
           retryAfterMs,
-          cause: parsed,
+          cause: body,
           status: response.status,
-          rawBody: text || null
+          rawBody: rawBody || null
         });
       }
 
       throw createTaggedError(message, {
         code: `GASSTATION_HTTP_${response.status}`,
         retryAfterMs,
-        cause: parsed,
+        cause: body,
         status: response.status,
-        rawBody: text || null
+        rawBody: rawBody || null
       });
     }
 
-    if (!parsed || typeof parsed !== "object") {
+    if (!body) {
       throw createTaggedError("GasStation returned invalid response", {
         code: "GASSTATION_INVALID_RESPONSE",
         status: response.status,
-        rawBody: text || null
+        rawBody: rawBody || null
       });
     }
 
-    if (parsed.code !== 0) {
-      const message = parsed.msg
-        ? `GasStation error ${parsed.code}: ${parsed.msg}`
-        : `GasStation error ${parsed.code}`;
+    const apiCode = safeFiniteNumber(body.code, NaN);
 
-      const normalizedMessage = String(parsed.msg || "").toLowerCase();
-      const isRateLimited =
-        parsed.code === 429 ||
-        normalizedMessage.includes("too many requests") ||
-        normalizedMessage.includes("rate limit") ||
-        normalizedMessage.includes("429");
-
-      throw createTaggedError(message, {
-        code: isRateLimited ? "GASSTATION_RATE_LIMIT" : `GASSTATION_ERROR_${parsed.code}`,
-        cause: parsed,
+    if (!Number.isFinite(apiCode)) {
+      throw createTaggedError("GasStation response code is missing or invalid", {
+        code: "GASSTATION_INVALID_RESPONSE",
         status: response.status,
-        rawBody: text || null
+        cause: body,
+        rawBody: rawBody || null
       });
     }
 
-    return parsed.data as T;
+    if (apiCode !== 0) {
+      const apiMessage =
+        typeof body.msg === "string" && body.msg.trim()
+          ? body.msg.trim()
+          : `GasStation error ${apiCode}`;
+
+      const lowered = apiMessage.toLowerCase();
+      const isRateLimited =
+        apiCode === 429 ||
+        lowered.includes("429") ||
+        lowered.includes("too many requests") ||
+        lowered.includes("rate limit");
+
+      throw createTaggedError(
+        `GasStation error ${apiCode}: ${apiMessage}`,
+        {
+          code: isRateLimited ? "GASSTATION_RATE_LIMIT" : `GASSTATION_ERROR_${apiCode}`,
+          retryAfterMs,
+          cause: body,
+          status: response.status,
+          rawBody: rawBody || null
+        }
+      );
+    }
+
+    return (body.data ?? null) as T;
   } catch (error) {
-    if ((error as any)?.name === "AbortError") {
+    if ((error as { name?: string })?.name === "AbortError") {
       throw createTaggedError("GasStation request timed out", {
         code: "GASSTATION_TIMEOUT",
         cause: error
@@ -11825,10 +11939,12 @@ async function requestJson<T>(params: {
   } finally {
     clearTimeout(timer);
 
-    try {
-      await dispatcher?.close();
-    } catch {
-      // ignore proxy close errors
+    if (dispatcher) {
+      try {
+        await dispatcher.close();
+      } catch {
+        // ignore dispatcher close errors
+      }
     }
   }
 }
@@ -11875,13 +11991,15 @@ export class GasStationClient {
   }
 
   async getBalance(time?: string): Promise<GasStationBalanceResult> {
-    return this.getJson<GasStationBalanceResult>(
+    const raw = await this.getJson<unknown>(
       "/api/mpc/tron/gas/balance",
       {
         time: time ?? String(Math.floor(Date.now() / 1000))
       },
       "GET"
     );
+
+    return normalizeBalanceResult(raw);
   }
 
   async getPrice(input?: {
@@ -11901,11 +12019,13 @@ export class GasStationClient {
       payload.value = normalizePositiveInteger(input.resourceValue, "resourceValue");
     }
 
-    return this.getJson<GasStationPriceResult>(
+    const raw = await this.getJson<unknown>(
       "/api/tron/gas/order/price",
       payload,
       "GET"
     );
+
+    return normalizePriceResult(raw);
   }
 
   async estimateEnergyOrder(input: {
@@ -11914,7 +12034,7 @@ export class GasStationClient {
     contractAddress: string;
     serviceChargeType?: string;
   }): Promise<GasStationEstimateResult> {
-    return this.getJson<GasStationEstimateResult>(
+    const raw = await this.getJson<unknown>(
       "/api/tron/gas/estimate",
       {
         receive_address: assertNonEmpty(input.receiveAddress, "receiveAddress"),
@@ -11927,6 +12047,8 @@ export class GasStationClient {
       },
       "GET"
     );
+
+    return normalizeEstimateResult(raw);
   }
 
   async createEnergyOrder(input: {
@@ -11941,7 +12063,7 @@ export class GasStationClient {
       throw new Error(`energyNum must be at least ${MIN_ENERGY_ORDER}`);
     }
 
-    return this.getJson<GasStationCreateOrderResult>(
+    const raw = await this.getJson<unknown>(
       "/api/tron/gas/create_order",
       {
         request_id: assertNonEmpty(input.requestId, "requestId"),
@@ -11955,6 +12077,8 @@ export class GasStationClient {
       },
       "POST"
     );
+
+    return normalizeCreateOrderResult(raw);
   }
 
   async createBandwidthOrder(input: {
@@ -11969,7 +12093,7 @@ export class GasStationClient {
       throw new Error(`netNum must be at least ${MIN_BANDWIDTH_ORDER}`);
     }
 
-    return this.getJson<GasStationCreateOrderResult>(
+    const raw = await this.getJson<unknown>(
       "/api/tron/gas/create_order",
       {
         request_id: assertNonEmpty(input.requestId, "requestId"),
@@ -11983,6 +12107,8 @@ export class GasStationClient {
       },
       "POST"
     );
+
+    return normalizeCreateOrderResult(raw);
   }
 }
 
