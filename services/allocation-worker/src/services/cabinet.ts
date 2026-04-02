@@ -96,6 +96,10 @@ export interface CabinetProfileWithdrawalQueue {
   requestedForProcessingTrx: string;
   requestedForProcessingCount: number;
   hasProcessingWithdrawal: boolean;
+  hasBrokenPendingRewards: boolean;
+  missingRewardCount: number;
+  missingRewardOwnerShareSun: string;
+  missingRewardOwnerShareTrx: string;
 }
 
 export interface CabinetProfileProgress {
@@ -151,7 +155,8 @@ function safeNumber(value: unknown, fallback = 0): number {
   }
 
   if (typeof value === "bigint") {
-    return Number(value);
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : fallback;
   }
 
   if (typeof value === "string" && value.trim()) {
@@ -168,7 +173,7 @@ function toBigIntSafe(value: unknown): bigint {
   const normalized = String(value ?? "0").trim();
 
   try {
-    return BigInt(/^\d+$/.test(normalized) ? normalized : "0");
+    return BigInt(/^-?\d+$/.test(normalized) ? normalized : "0");
   } catch {
     return 0n;
   }
@@ -257,6 +262,34 @@ function choosePreferredNumber(primary: number, fallback: number): number {
   return primary > 0 ? primary : fallback;
 }
 
+function hasNonZeroBrokenPending(dbStats: CabinetStatsRecord): boolean {
+  return dbStats.missingRewardCount > 0 || toBigIntSafe(dbStats.missingRewardOwnerShareSun) > 0n;
+}
+
+function choosePendingBackendSyncSun(onChainClaimableSun: string, dbPendingSun: string): string {
+  if (toBigIntSafe(dbPendingSun) > 0n) {
+    return dbPendingSun;
+  }
+
+  return onChainClaimableSun;
+}
+
+function choosePendingBackendSyncCount(
+  onChainClaimableSun: string,
+  dbPendingCount: number,
+  dbMissingRewardCount: number
+): number {
+  if (dbPendingCount > 0) {
+    return dbPendingCount;
+  }
+
+  if (dbMissingRewardCount > 0) {
+    return dbMissingRewardCount;
+  }
+
+  return toBigIntSafe(onChainClaimableSun) > 0n ? 1 : 0;
+}
+
 function mapStats(input: {
   onChainStats: {
     totalBuyers: string;
@@ -292,7 +325,20 @@ function mapStats(input: {
     dbStats.withdrawnRewardsSun
   );
 
-  const claimableRewardsSun = onChainStats.claimableRewardsSun;
+  const claimableRewardsSun = String(onChainStats.claimableRewardsSun || "0");
+  const brokenPendingRewards = hasNonZeroBrokenPending(dbStats);
+
+  const pendingBackendSyncSun = brokenPendingRewards
+    ? choosePendingBackendSyncSun(claimableRewardsSun, dbStats.pendingBackendSyncSun)
+    : dbStats.pendingBackendSyncSun;
+
+  const pendingBackendSyncCount = brokenPendingRewards
+    ? choosePendingBackendSyncCount(
+        claimableRewardsSun,
+        dbStats.pendingBackendSyncCount,
+        dbStats.missingRewardCount
+      )
+    : dbStats.pendingBackendSyncCount;
 
   return {
     stats: {
@@ -321,15 +367,19 @@ function mapStats(input: {
       allocatedInDbTrx: sunToTrxString(dbStats.allocatedInDbSun),
       allocatedInDbCount: dbStats.allocatedInDbCount,
 
-      pendingBackendSyncSun: dbStats.pendingBackendSyncSun,
-      pendingBackendSyncTrx: sunToTrxString(dbStats.pendingBackendSyncSun),
-      pendingBackendSyncCount: dbStats.pendingBackendSyncCount,
+      pendingBackendSyncSun,
+      pendingBackendSyncTrx: sunToTrxString(pendingBackendSyncSun),
+      pendingBackendSyncCount,
 
       requestedForProcessingSun: dbStats.requestedForProcessingSun,
       requestedForProcessingTrx: sunToTrxString(dbStats.requestedForProcessingSun),
       requestedForProcessingCount: dbStats.requestedForProcessingCount,
 
-      hasProcessingWithdrawal: dbStats.hasProcessingWithdrawal
+      hasProcessingWithdrawal: dbStats.hasProcessingWithdrawal,
+      hasBrokenPendingRewards: brokenPendingRewards,
+      missingRewardCount: dbStats.missingRewardCount,
+      missingRewardOwnerShareSun: dbStats.missingRewardOwnerShareSun,
+      missingRewardOwnerShareTrx: sunToTrxString(dbStats.missingRewardOwnerShareSun)
     }
   };
 }
@@ -564,7 +614,11 @@ export class CabinetService {
         snapshotSyncStatus: snapshot.syncStatus,
         snapshotLastSyncedAt: snapshot.lastSyncedAt,
         dbTotalBuyers: dbStatsRecord.totalBuyers,
-        dbTrackedVolumeSun: dbStatsRecord.trackedVolumeSun
+        dbTrackedVolumeSun: dbStatsRecord.trackedVolumeSun,
+        dbPendingBackendSyncSun: dbStatsRecord.pendingBackendSyncSun,
+        dbPendingBackendSyncCount: dbStatsRecord.pendingBackendSyncCount,
+        dbMissingRewardCount: dbStatsRecord.missingRewardCount,
+        dbMissingRewardOwnerShareSun: dbStatsRecord.missingRewardOwnerShareSun
       });
 
       return buildProfileFromSnapshot({
@@ -582,7 +636,11 @@ export class CabinetService {
       slug,
       status,
       dbTotalBuyers: dbStatsRecord.totalBuyers,
-      dbTrackedVolumeSun: dbStatsRecord.trackedVolumeSun
+      dbTrackedVolumeSun: dbStatsRecord.trackedVolumeSun,
+      dbPendingBackendSyncSun: dbStatsRecord.pendingBackendSyncSun,
+      dbPendingBackendSyncCount: dbStatsRecord.pendingBackendSyncCount,
+      dbMissingRewardCount: dbStatsRecord.missingRewardCount,
+      dbMissingRewardOwnerShareSun: dbStatsRecord.missingRewardOwnerShareSun
     });
 
     return this.buildFallbackProfile(registryWallet, slug, status, dbStatsRecord);
