@@ -153,6 +153,28 @@ async function getAmbassadorByWallet(ambassadorWallet) {
   return result.rows[0] || null;
 }
 
+async function getAmbassadorBySlug(slug) {
+  const result = await pool.query(
+    `
+      SELECT
+        ambassador_wallet,
+        slug,
+        slug_hash,
+        active,
+        exists_on_chain,
+        self_registered,
+        manual_assigned,
+        updated_at
+      FROM ambassadors
+      WHERE slug = $1
+      LIMIT 1
+    `,
+    [slug]
+  );
+
+  return result.rows[0] || null;
+}
+
 async function setAmbassadorSlug(ambassadorWallet, slug) {
   const result = await pool.query(
     `
@@ -175,5 +197,6 @@ async function setAmbassadorSlug(ambassadorWallet, slug) {
 module.exports = {
   upsertAmbassador,
   getAmbassadorByWallet,
+  getAmbassadorBySlug,
   setAmbassadorSlug
 };

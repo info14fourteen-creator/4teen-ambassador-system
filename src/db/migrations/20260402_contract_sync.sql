@@ -22,6 +22,10 @@ ALTER TABLE ambassadors
 CREATE INDEX IF NOT EXISTS idx_ambassadors_slug_hash
   ON ambassadors (slug_hash);
 
+CREATE UNIQUE INDEX IF NOT EXISTS idx_ambassadors_slug_unique
+  ON ambassadors (slug)
+  WHERE slug IS NOT NULL;
+
 ALTER TABLE purchases
   ADD COLUMN IF NOT EXISTS ambassador_reward_sun NUMERIC(78,0),
   ADD COLUMN IF NOT EXISTS reward_percent NUMERIC(78,0),

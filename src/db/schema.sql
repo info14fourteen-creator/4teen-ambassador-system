@@ -82,6 +82,10 @@ CREATE TABLE IF NOT EXISTS ambassadors (
 CREATE INDEX IF NOT EXISTS idx_ambassadors_slug_hash
   ON ambassadors (slug_hash);
 
+CREATE UNIQUE INDEX IF NOT EXISTS idx_ambassadors_slug_unique
+  ON ambassadors (slug)
+  WHERE slug IS NOT NULL;
+
 CREATE TABLE IF NOT EXISTS sync_state (
   state_key TEXT PRIMARY KEY,
   state_value TEXT NOT NULL,
