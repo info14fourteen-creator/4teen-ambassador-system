@@ -9,30 +9,6 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-function toBase58Address(value) {
-  if (!value) return null;
-
-  try {
-    if (typeof value === 'string' && value.startsWith('T')) {
-      return value;
-    }
-
-    let hex = String(value).toLowerCase();
-
-    if (hex.startsWith('0x')) {
-      hex = hex.slice(2);
-    }
-
-    if (!hex.startsWith('41')) {
-      hex = `41${hex}`;
-    }
-
-    return tronWeb.address.fromHex(hex);
-  } catch (_) {
-    return null;
-  }
-}
-
 function toSun(value) {
   const num = Number(value || 0);
 
@@ -76,7 +52,10 @@ function encryptPayload(payload) {
 
 async function callGasStation(method, path, payload) {
   const encrypted = encryptPayload(payload);
-  const url = `${env.GASSTATION_API_BASE_URL}${path}?app_id=${encodeURIComponent(env.GASSTATION_API_KEY)}&data=${encodeURIComponent(encrypted)}`;
+  const url =
+    `${env.GASSTATION_API_BASE_URL}${path}` +
+    `?app_id=${encodeURIComponent(env.GASSTATION_API_KEY)}` +
+    `&data=${encodeURIComponent(encrypted)}`;
 
   const response = await fetch(url, {
     method,
@@ -85,14 +64,35 @@ async function callGasStation(method, path, payload) {
     }
   });
 
-  const json = await response.json();
+  const contentType = String(response.headers.get('content-type') || '');
+  const rawText = await response.text();
+
+  let json = null;
+
+  if (rawText) {
+    try {
+      json = JSON.parse(rawText);
+    } catch (_) {
+      json = null;
+    }
+  }
 
   if (!response.ok) {
-    throw new Error(`Gas Station HTTP ${response.status}`);
+    throw new Error(
+      `Gas Station HTTP ${response.status}; content-type=${contentType}; body=${rawText.slice(0, 300)}`
+    );
+  }
+
+  if (!json) {
+    throw new Error(
+      `Gas Station returned non-JSON response; content-type=${contentType}; body=${rawText.slice(0, 300)}`
+    );
   }
 
   if (Number(json?.code) !== 0) {
-    throw new Error(`Gas Station error ${json?.code}: ${json?.msg || 'Unknown error'}`);
+    throw new Error(
+      `Gas Station error ${json?.code}: ${json?.msg || 'Unknown error'}; body=${rawText.slice(0, 300)}`
+    );
   }
 
   return json.data;
