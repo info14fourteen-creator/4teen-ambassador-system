@@ -1,12 +1,70 @@
 const crypto = require('crypto');
+const { ProxyAgent } = require('undici');
 const env = require('../config/env');
 const { tronWeb } = require('./tron/client');
 
 const SUN = 1_000_000;
 const MIN_OPERATOR_RESERVE_SUN = 2 * SUN;
+const DEFAULT_TIMEOUT_MS = 15000;
+const DEFAULT_BASE_URL = 'https://openapi.gasstation.ai';
+const DEFAULT_SERVICE_CHARGE_TYPE = '10010';
+const MIN_ENERGY_ORDER = 64400;
+const MIN_BANDWIDTH_ORDER = 5000;
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function assertNonEmpty(value, fieldName) {
+  const normalized = String(value ?? '').trim();
+
+  if (!normalized) {
+    throw new Error(`${fieldName} is required`);
+  }
+
+  return normalized;
+}
+
+function normalizeBaseUrl(value) {
+  return String(value || DEFAULT_BASE_URL).trim().replace(/\/+$/, '');
+}
+
+function normalizeTimeoutMs(value) {
+  const parsed = Number(value ?? DEFAULT_TIMEOUT_MS);
+
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return DEFAULT_TIMEOUT_MS;
+  }
+
+  return Math.max(Math.floor(parsed), 1000);
+}
+
+function normalizePositiveInteger(value, fieldName) {
+  const parsed = Number(value);
+
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    throw new Error(`${fieldName} must be a positive number`);
+  }
+
+  return Math.ceil(parsed);
+}
+
+function safeFiniteNumber(value, fallback = 0) {
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return value;
+  }
+
+  if (typeof value === 'bigint') {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : fallback;
+  }
+
+  if (typeof value === 'string' && value.trim()) {
+    const parsed = Number(value.trim());
+    return Number.isFinite(parsed) ? parsed : fallback;
+  }
+
+  return fallback;
 }
 
 function toSun(value) {
@@ -29,141 +87,233 @@ function fromSun(value) {
   return num / SUN;
 }
 
-function encryptPayload(payload) {
-  const key = Buffer.from(env.GASSTATION_API_SECRET, 'utf8');
+function pkcs7Pad(buffer) {
+  const blockSize = 16;
+  const remainder = buffer.length % blockSize;
+  const padLength = remainder === 0 ? blockSize : blockSize - remainder;
+  const padding = Buffer.alloc(padLength, padLength);
+  return Buffer.concat([buffer, padding]);
+}
 
-  if (key.length !== 16 && key.length !== 24 && key.length !== 32) {
-    throw new Error('GASSTATION_API_SECRET must be 16, 24 or 32 bytes for AES');
+function encryptAesEcbPkcs7Base64(plainText, secretKey) {
+  const key = Buffer.from(assertNonEmpty(secretKey, 'GASSTATION_API_SECRET'), 'utf8');
+
+  if (![16, 24, 32].includes(key.length)) {
+    throw new Error('GASSTATION_API_SECRET must be 16, 24, or 32 bytes long');
   }
+
+  const plainBuffer = Buffer.from(plainText, 'utf8');
+  const padded = pkcs7Pad(plainBuffer);
 
   const cipher = crypto.createCipheriv(`aes-${key.length * 8}-ecb`, key, null);
-  cipher.setAutoPadding(true);
+  cipher.setAutoPadding(false);
 
-  const plaintext = JSON.stringify({
-    ...payload,
-    time: String(Math.floor(Date.now() / 1000))
-  });
-
-  return Buffer.concat([
-    cipher.update(plaintext, 'utf8'),
-    cipher.final()
-  ]).toString('base64');
+  const encrypted = Buffer.concat([cipher.update(padded), cipher.final()]);
+  return encrypted.toString('base64');
 }
 
-async function callGasStation(method, path, payload) {
-  const encrypted = encryptPayload(payload);
-  const url =
-    `${env.GASSTATION_API_BASE_URL}${path}` +
-    `?app_id=${encodeURIComponent(env.GASSTATION_API_KEY)}` +
-    `&data=${encodeURIComponent(encrypted)}`;
+async function requestJson({
+  url,
+  method = 'GET',
+  proxyUrl,
+  timeoutMs = DEFAULT_TIMEOUT_MS
+}) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  const dispatcher = proxyUrl ? new ProxyAgent(proxyUrl) : undefined;
 
-  const response = await fetch(url, {
-    method,
-    headers: {
-      Accept: 'application/json'
-    }
-  });
+  try {
+    const response = await fetch(url, {
+      method,
+      headers: {
+        Accept: 'application/json'
+      },
+      signal: controller.signal,
+      dispatcher
+    });
 
-  const contentType = String(response.headers.get('content-type') || '');
-  const rawText = await response.text();
+    const rawBody = await response.text();
+    let parsed = null;
 
-  let json = null;
-
-  if (rawText) {
     try {
-      json = JSON.parse(rawText);
+      parsed = rawBody ? JSON.parse(rawBody) : null;
     } catch (_) {
-      json = null;
+      throw new Error(
+        `GasStation returned non-JSON response: status=${response.status}; body=${rawBody.slice(0, 300)}`
+      );
+    }
+
+    if (!response.ok) {
+      const apiMessage =
+        parsed && typeof parsed.msg === 'string' && parsed.msg.trim()
+          ? parsed.msg.trim()
+          : null;
+
+      throw new Error(
+        apiMessage
+          ? `GasStation HTTP ${response.status}: ${apiMessage}`
+          : `GasStation HTTP ${response.status}; body=${rawBody.slice(0, 300)}`
+      );
+    }
+
+    if (!parsed || typeof parsed !== 'object') {
+      throw new Error('GasStation returned invalid response object');
+    }
+
+    const apiCode = safeFiniteNumber(parsed.code, NaN);
+
+    if (!Number.isFinite(apiCode)) {
+      throw new Error('GasStation response code is missing or invalid');
+    }
+
+    if (apiCode !== 0) {
+      const apiMessage =
+        typeof parsed.msg === 'string' && parsed.msg.trim()
+          ? parsed.msg.trim()
+          : `GasStation error ${apiCode}`;
+
+      throw new Error(`GasStation error ${apiCode}: ${apiMessage}`);
+    }
+
+    return parsed.data ?? null;
+  } catch (error) {
+    if (error?.name === 'AbortError') {
+      throw new Error('GasStation request timed out');
+    }
+
+    throw error;
+  } finally {
+    clearTimeout(timer);
+
+    if (dispatcher) {
+      try {
+        await dispatcher.close();
+      } catch (_) {}
     }
   }
-
-  if (!response.ok) {
-    throw new Error(
-      `Gas Station HTTP ${response.status}; content-type=${contentType}; body=${rawText.slice(0, 300)}`
-    );
-  }
-
-  if (!json) {
-    throw new Error(
-      `Gas Station returned non-JSON response; content-type=${contentType}; body=${rawText.slice(0, 300)}`
-    );
-  }
-
-  if (Number(json?.code) !== 0) {
-    throw new Error(
-      `Gas Station error ${json?.code}: ${json?.msg || 'Unknown error'}; body=${rawText.slice(0, 300)}`
-    );
-  }
-
-  return json.data;
 }
 
-async function getGasStationBalance() {
-  return callGasStation('GET', '/api/tron/gas/balance', {});
+class GasStationClient {
+  constructor(config) {
+    this.appId = assertNonEmpty(config.appId, 'GASSTATION_API_KEY');
+    this.secretKey = assertNonEmpty(config.secretKey, 'GASSTATION_API_SECRET');
+    this.baseUrl = normalizeBaseUrl(config.baseUrl);
+    this.proxyUrl = config.proxyUrl ? String(config.proxyUrl).trim() : undefined;
+    this.timeoutMs = normalizeTimeoutMs(config.timeoutMs);
+  }
+
+  buildEncryptedUrl(path, payload) {
+    const plainText = JSON.stringify(payload);
+    const encrypted = encryptAesEcbPkcs7Base64(plainText, this.secretKey);
+
+    const url = new URL(`${this.baseUrl}${path}`);
+    url.searchParams.set('app_id', this.appId);
+    url.searchParams.set('data', encrypted);
+
+    return url.toString();
+  }
+
+  async getJson(path, payload, method = 'GET') {
+    const url = this.buildEncryptedUrl(path, payload);
+
+    return requestJson({
+      url,
+      method,
+      proxyUrl: this.proxyUrl,
+      timeoutMs: this.timeoutMs
+    });
+  }
+
+  async getBalance() {
+    return this.getJson(
+      '/api/mpc/tron/gas/balance',
+      {
+        time: String(Math.floor(Date.now() / 1000))
+      },
+      'GET'
+    );
+  }
+
+  async getPrice(resourceValue) {
+    const payload = {
+      service_charge_type: String(env.GASSTATION_SERVICE_CHARGE_TYPE || DEFAULT_SERVICE_CHARGE_TYPE)
+    };
+
+    if (resourceValue != null) {
+      payload.value = normalizePositiveInteger(resourceValue, 'resourceValue');
+    }
+
+    return this.getJson('/api/tron/gas/order/price', payload, 'GET');
+  }
+
+  async createEnergyOrder({ requestId, receiveAddress, energyNum }) {
+    const normalizedEnergyNum = normalizePositiveInteger(energyNum, 'energyNum');
+
+    if (normalizedEnergyNum < MIN_ENERGY_ORDER) {
+      throw new Error(`energyNum must be at least ${MIN_ENERGY_ORDER}`);
+    }
+
+    return this.getJson(
+      '/api/tron/gas/create_order',
+      {
+        request_id: assertNonEmpty(requestId, 'requestId'),
+        receive_address: assertNonEmpty(receiveAddress, 'receiveAddress'),
+        buy_type: 0,
+        service_charge_type: String(env.GASSTATION_SERVICE_CHARGE_TYPE || DEFAULT_SERVICE_CHARGE_TYPE),
+        energy_num: normalizedEnergyNum
+      },
+      'POST'
+    );
+  }
+
+  async createBandwidthOrder({ requestId, receiveAddress, netNum }) {
+    const normalizedNetNum = normalizePositiveInteger(netNum, 'netNum');
+
+    if (normalizedNetNum < MIN_BANDWIDTH_ORDER) {
+      throw new Error(`netNum must be at least ${MIN_BANDWIDTH_ORDER}`);
+    }
+
+    return this.getJson(
+      '/api/tron/gas/create_order',
+      {
+        request_id: assertNonEmpty(requestId, 'requestId'),
+        receive_address: assertNonEmpty(receiveAddress, 'receiveAddress'),
+        buy_type: 0,
+        service_charge_type: String(env.GASSTATION_SERVICE_CHARGE_TYPE || DEFAULT_SERVICE_CHARGE_TYPE),
+        net_num: normalizedNetNum
+      },
+      'POST'
+    );
+  }
+
+  async getOrderList(requestIds) {
+    return this.getJson(
+      '/api/tron/gas/record/list',
+      {
+        request_ids: requestIds.join(',')
+      },
+      'GET'
+    );
+  }
 }
 
-async function getGasStationPrice(resourceType) {
-  const data = await callGasStation('GET', '/api/tron/gas/order/price', {
-    resource_type: resourceType,
-    service_charge_type: env.GASSTATION_SERVICE_CHARGE_TYPE
+function createGasStationClientFromEnv() {
+  return new GasStationClient({
+    appId: env.GASSTATION_API_KEY,
+    secretKey: env.GASSTATION_API_SECRET,
+    baseUrl: env.GASSTATION_API_BASE_URL,
+    proxyUrl: process.env.QUOTAGUARDSTATIC_URL || process.env.QUOTAGUARD_URL || process.env.FIXIE_URL,
+    timeoutMs: Number(process.env.GASSTATION_TIMEOUT_MS || DEFAULT_TIMEOUT_MS)
   });
-
-  const list = Array.isArray(data?.price_builder_list) ? data.price_builder_list : [];
-  const selected = list.find(
-    (item) => String(item?.service_charge_type || '') === String(env.GASSTATION_SERVICE_CHARGE_TYPE)
-  ) || list[0];
-
-  if (!selected) {
-    throw new Error(`Gas Station did not return price for ${resourceType}`);
-  }
-
-  return {
-    resourceType,
-    minNumber: Number(data?.min_number || 0),
-    maxNumber: Number(data?.max_number || 0),
-    serviceChargeType: String(selected?.service_charge_type || env.GASSTATION_SERVICE_CHARGE_TYPE),
-    unitPriceSun: Math.ceil(Number(selected?.price || 0)),
-    remainingNumber: Number(selected?.remaining_number || 0)
-  };
 }
 
 function buildRequestId(prefix) {
   return `${prefix}-${Date.now()}-${crypto.randomBytes(4).toString('hex')}`;
 }
 
-async function createGasOrder({ resourceType, quantity, receiveAddress }) {
-  const payload = {
-    request_id: buildRequestId(resourceType),
-    receive_address: receiveAddress,
-    buy_type: 0,
-    service_charge_type: env.GASSTATION_SERVICE_CHARGE_TYPE
-  };
-
-  if (resourceType === 'energy') {
-    payload.energy_num = quantity;
-  } else if (resourceType === 'net') {
-    payload.net_num = quantity;
-  } else {
-    throw new Error(`Unsupported Gas Station resource type: ${resourceType}`);
-  }
-
-  const data = await callGasStation('POST', '/api/tron/gas/create_order', payload);
-
-  return {
-    requestId: payload.request_id,
-    tradeNo: String(data?.trade_no || data?.tradeNo || '')
-  };
-}
-
-async function getOrderList(requestIds) {
-  return callGasStation('GET', '/api/tron/gas/record/list', {
-    request_ids: requestIds.join(',')
-  });
-}
-
-async function waitForOrderSuccess(requestId, { attempts = 20, delayMs = 3000 } = {}) {
+async function waitForOrderSuccess(client, requestId, { attempts = 20, delayMs = 3000 } = {}) {
   for (let i = 0; i < attempts; i += 1) {
-    const rows = await getOrderList([requestId]);
+    const rows = await client.getOrderList([requestId]);
     const row = Array.isArray(rows) ? rows[0] : null;
 
     if (row) {
@@ -226,8 +376,8 @@ async function sendTrx(toAddress, amountSun) {
   return String(broadcast.txid || signedTx.txID || '');
 }
 
-async function topUpGasStationIfNeeded(requiredAmountSun) {
-  const gasBalance = await getGasStationBalance();
+async function topUpGasStationIfNeeded(client, requiredAmountSun) {
+  const gasBalance = await client.getBalance();
   const currentGasBalanceSun = toSun(gasBalance?.balance || 0);
 
   if (currentGasBalanceSun >= requiredAmountSun) {
@@ -257,7 +407,7 @@ async function topUpGasStationIfNeeded(requiredAmountSun) {
   for (let i = 0; i < 15; i += 1) {
     await sleep(3000);
 
-    const reloaded = await getGasStationBalance();
+    const reloaded = await client.getBalance();
     const reloadedSun = toSun(reloaded?.balance || 0);
 
     if (reloadedSun >= requiredAmountSun) {
@@ -274,53 +424,88 @@ async function topUpGasStationIfNeeded(requiredAmountSun) {
 }
 
 function computeRequiredOrders(state) {
-  const energyDeficit = Math.max(0, env.GASSTATION_MIN_ENERGY - Number(state.availableEnergy || 0));
-  const bandwidthDeficit = Math.max(0, env.GASSTATION_MIN_BANDWIDTH - Number(state.availableBandwidth || 0));
+  const minEnergy = Number(env.GASSTATION_MIN_ENERGY || 64400);
+  const minBandwidth = Number(env.GASSTATION_MIN_BANDWIDTH || 5000);
+
+  const energyDeficit = Math.max(0, minEnergy - Number(state.availableEnergy || 0));
+  const bandwidthDeficit = Math.max(0, minBandwidth - Number(state.availableBandwidth || 0));
 
   return {
     needEnergy: energyDeficit > 0,
     needBandwidth: bandwidthDeficit > 0,
-    energyQuantity: energyDeficit > 0 ? Math.max(env.GASSTATION_MIN_ENERGY, energyDeficit) : 0,
-    bandwidthQuantity: bandwidthDeficit > 0 ? Math.max(env.GASSTATION_MIN_BANDWIDTH, bandwidthDeficit) : 0
+    energyQuantity: energyDeficit > 0 ? Math.max(minEnergy, energyDeficit) : 0,
+    bandwidthQuantity: bandwidthDeficit > 0 ? Math.max(minBandwidth, bandwidthDeficit) : 0
   };
 }
 
-async function estimateRentalCostSun(orders) {
+async function estimateRentalCostSun(client, orders) {
   let total = 0;
   const details = [];
 
   if (orders.energyQuantity > 0) {
-    const price = await getGasStationPrice('energy');
+    const priceData = await client.getPrice(orders.energyQuantity);
+    const list = Array.isArray(priceData?.price_builder_list)
+      ? priceData.price_builder_list
+      : Array.isArray(priceData?.list)
+        ? priceData.list
+        : [];
 
-    if (price.remainingNumber > 0 && orders.energyQuantity > price.remainingNumber) {
+    const selected = list.find(
+      (item) => String(item?.service_charge_type || '') === String(env.GASSTATION_SERVICE_CHARGE_TYPE || DEFAULT_SERVICE_CHARGE_TYPE)
+    ) || list[0];
+
+    if (!selected) {
+      throw new Error('Gas Station did not return energy price');
+    }
+
+    const unitPriceSun = Math.ceil(Number(selected?.price || 0));
+    const remainingNumber = Number(selected?.remaining_number || 0);
+
+    if (remainingNumber > 0 && orders.energyQuantity > remainingNumber) {
       throw new Error('Gas Station energy inventory is insufficient for requested amount');
     }
 
-    const amountSun = Math.ceil(orders.energyQuantity * price.unitPriceSun);
+    const amountSun = Math.ceil(orders.energyQuantity * unitPriceSun);
 
     total += amountSun;
     details.push({
       resourceType: 'energy',
       quantity: orders.energyQuantity,
-      unitPriceSun: price.unitPriceSun,
+      unitPriceSun,
       amountSun
     });
   }
 
   if (orders.bandwidthQuantity > 0) {
-    const price = await getGasStationPrice('net');
+    const priceData = await client.getPrice(orders.bandwidthQuantity);
+    const list = Array.isArray(priceData?.price_builder_list)
+      ? priceData.price_builder_list
+      : Array.isArray(priceData?.list)
+        ? priceData.list
+        : [];
 
-    if (price.remainingNumber > 0 && orders.bandwidthQuantity > price.remainingNumber) {
+    const selected = list.find(
+      (item) => String(item?.service_charge_type || '') === String(env.GASSTATION_SERVICE_CHARGE_TYPE || DEFAULT_SERVICE_CHARGE_TYPE)
+    ) || list[0];
+
+    if (!selected) {
+      throw new Error('Gas Station did not return bandwidth price');
+    }
+
+    const unitPriceSun = Math.ceil(Number(selected?.price || 0));
+    const remainingNumber = Number(selected?.remaining_number || 0);
+
+    if (remainingNumber > 0 && orders.bandwidthQuantity > remainingNumber) {
       throw new Error('Gas Station bandwidth inventory is insufficient for requested amount');
     }
 
-    const amountSun = Math.ceil(orders.bandwidthQuantity * price.unitPriceSun);
+    const amountSun = Math.ceil(orders.bandwidthQuantity * unitPriceSun);
 
     total += amountSun;
     details.push({
       resourceType: 'net',
       quantity: orders.bandwidthQuantity,
-      unitPriceSun: price.unitPriceSun,
+      unitPriceSun,
       amountSun
     });
   }
@@ -345,50 +530,51 @@ async function ensureOperatorResources() {
     };
   }
 
-  if (!env.GASSTATION_ENABLED) {
+  if (!String(env.GASSTATION_ENABLED).toLowerCase().includes('true')) {
     throw new Error('Gas Station is disabled but operator resources are insufficient');
   }
 
-  const estimate = await estimateRentalCostSun(orders);
-  const topUp = await topUpGasStationIfNeeded(estimate.totalAmountSun);
+  const client = createGasStationClientFromEnv();
+  const estimate = await estimateRentalCostSun(client, orders);
+  const topUp = await topUpGasStationIfNeeded(client, estimate.totalAmountSun);
 
   const createdOrders = [];
 
   if (orders.energyQuantity > 0) {
-    const created = await createGasOrder({
-      resourceType: 'energy',
-      quantity: orders.energyQuantity,
-      receiveAddress: env.OPERATOR_WALLET
+    const requestId = buildRequestId('energy');
+    const created = await client.createEnergyOrder({
+      requestId,
+      receiveAddress: env.OPERATOR_WALLET,
+      energyNum: orders.energyQuantity
     });
 
-    const finalRow = await waitForOrderSuccess(created.requestId);
+    const finalRow = await waitForOrderSuccess(client, requestId);
 
     createdOrders.push({
       resourceType: 'energy',
-      requestId: created.requestId,
-      tradeNo: created.tradeNo,
+      requestId,
+      tradeNo: String(created?.trade_no || ''),
       quantity: orders.energyQuantity,
-      finalStatus: Number(finalRow?.status || 0),
-      row: finalRow
+      row: finalRow || null
     });
   }
 
   if (orders.bandwidthQuantity > 0) {
-    const created = await createGasOrder({
-      resourceType: 'net',
-      quantity: orders.bandwidthQuantity,
-      receiveAddress: env.OPERATOR_WALLET
+    const requestId = buildRequestId('net');
+    const created = await client.createBandwidthOrder({
+      requestId,
+      receiveAddress: env.OPERATOR_WALLET,
+      netNum: orders.bandwidthQuantity
     });
 
-    const finalRow = await waitForOrderSuccess(created.requestId);
+    const finalRow = await waitForOrderSuccess(client, requestId);
 
     createdOrders.push({
       resourceType: 'net',
-      requestId: created.requestId,
-      tradeNo: created.tradeNo,
+      requestId,
+      tradeNo: String(created?.trade_no || ''),
       quantity: orders.bandwidthQuantity,
-      finalStatus: Number(finalRow?.status || 0),
-      row: finalRow
+      row: finalRow || null
     });
   }
 
