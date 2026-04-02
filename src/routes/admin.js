@@ -30,6 +30,31 @@ async function runRefreshFull({ ambassadorWallet }) {
   };
 }
 
+async function handleSyncAmbassador(req, res) {
+  try {
+    const { ambassadorWallet } = req.body || {};
+
+    if (!ambassadorWallet) {
+      return res.status(400).json({
+        ok: false,
+        error: 'ambassadorWallet is required'
+      });
+    }
+
+    const result = await syncAmbassador(ambassadorWallet);
+
+    return res.json({
+      ok: true,
+      result
+    });
+  } catch (error) {
+    return res.status(500).json({
+      ok: false,
+      error: error.message
+    });
+  }
+}
+
 router.post('/refresh/full', async (req, res) => {
   if (refreshFullRunning) {
     return res.status(409).json({
@@ -59,30 +84,8 @@ router.post('/refresh/full', async (req, res) => {
   }
 });
 
-router.post('/refresh/ambassador', async (req, res) => {
-  try {
-    const { ambassadorWallet } = req.body || {};
-
-    if (!ambassadorWallet) {
-      return res.status(400).json({
-        ok: false,
-        error: 'ambassadorWallet is required'
-      });
-    }
-
-    const result = await syncAmbassador(ambassadorWallet);
-
-    return res.json({
-      ok: true,
-      result
-    });
-  } catch (error) {
-    return res.status(500).json({
-      ok: false,
-      error: error.message
-    });
-  }
-});
+router.post('/refresh/ambassador', handleSyncAmbassador);
+router.post('/sync-ambassador', handleSyncAmbassador);
 
 router.post('/backfill/token-purchases', async (req, res) => {
   try {
