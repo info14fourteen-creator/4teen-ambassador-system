@@ -1,5 +1,6 @@
 const { tronWeb } = require('../tron/client');
 const { getSyncState, setSyncState } = require('../../db/queries/syncState');
+const { getPurchaseByTxHash } = require('../../db/queries/purchases');
 const { registerCandidatePurchase } = require('./registerCandidatePurchase');
 const { reconcilePurchase } = require('./reconcilePurchase');
 const { getBuyTokenEvents } = require('../tron/token');
@@ -60,6 +61,7 @@ async function syncPurchasesRange({
     return {
       ok: true,
       processedCount: 0,
+      skippedExisting: 0,
       tokenBuyEventsLastTs: storedTs,
       results: []
     };
@@ -67,6 +69,7 @@ async function syncPurchasesRange({
 
   const results = [];
   let maxSeenTimestamp = storedTs;
+  let skippedExisting = 0;
 
   for (const event of events) {
     const txHash = event?.transaction_id || null;
@@ -79,6 +82,19 @@ async function syncPurchasesRange({
 
     if (eventTs > maxSeenTimestamp) {
       maxSeenTimestamp = eventTs;
+    }
+
+    const existingPurchase = await getPurchaseByTxHash(txHash);
+
+    if (existingPurchase) {
+      skippedExisting += 1;
+      results.push({
+        ok: true,
+        txHash,
+        skipped: true,
+        reason: 'already_exists'
+      });
+      continue;
     }
 
     try {
@@ -110,7 +126,8 @@ async function syncPurchasesRange({
 
   return {
     ok: true,
-    processedCount: results.length,
+    processedCount: results.filter(item => !item.skipped).length,
+    skippedExisting,
     tokenBuyEventsLastTs: maxSeenTimestamp,
     results
   };
