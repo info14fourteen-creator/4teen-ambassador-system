@@ -137,13 +137,44 @@ function safeNumber(value: unknown, fallback = 0): number {
   }
 
   if (typeof value === "bigint") {
-    return Number(value);
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : fallback;
   }
 
   if (typeof value === "string" && value.trim()) {
     const parsed = Number(value);
     if (Number.isFinite(parsed)) {
       return parsed;
+    }
+  }
+
+  if (value && typeof value === "object") {
+    const asAny = value as Record<string, unknown>;
+
+    const nestedCandidates = [
+      asAny._hex,
+      asAny.hex,
+      asAny.value,
+      asAny.amount,
+      asAny.toString && typeof asAny.toString === "function" ? asAny.toString() : undefined
+    ];
+
+    for (const candidate of nestedCandidates) {
+      if (typeof candidate === "string" && candidate.trim()) {
+        const trimmed = candidate.trim();
+
+        if (/^0x[0-9a-f]+$/i.test(trimmed)) {
+          const parsed = Number(BigInt(trimmed));
+          if (Number.isFinite(parsed)) {
+            return parsed;
+          }
+        }
+
+        const parsed = Number(trimmed);
+        if (Number.isFinite(parsed)) {
+          return parsed;
+        }
+      }
     }
   }
 
@@ -252,26 +283,6 @@ function toJsonSafe<T>(value: T): T {
   ) as T;
 }
 
-function resolveConfiguredRewardPercent(): number {
-  const candidates = [
-    process.env.AMBASSADOR_REWARD_PERCENT,
-    process.env.DEFAULT_AMBASSADOR_REWARD_PERCENT,
-    process.env.REWARD_PERCENT
-  ];
-
-  for (const candidate of candidates) {
-    if (candidate == null || String(candidate).trim() === "") {
-      continue;
-    }
-
-    return parsePercentStrict(candidate, "AMBASSADOR_REWARD_PERCENT");
-  }
-
-  throw new Error(
-    "AMBASSADOR_REWARD_PERCENT is required for backend reward accounting"
-  );
-}
-
 async function getControllerContractInstance(input: {
   tronWeb: any;
   controllerContractAddress?: string;
@@ -288,70 +299,175 @@ async function getControllerContractInstance(input: {
   return input.tronWeb.contract().at(controllerContractAddress);
 }
 
-async function tryReadAmbassadorLevelMeta(input: {
+async function callIfExists(contract: any, methodName: string, ...args: any[]): Promise<any> {
+  if (!contract || typeof contract[methodName] !== "function") {
+    throw new Error(`${methodName} is not available on controller contract`);
+  }
+
+  return contract[methodName](...args).call();
+}
+
+async function readAmbassadorRewardData(input: {
   tronWeb: any;
   controllerContractAddress?: string;
   ambassadorWallet: string;
+  logger?: WorkerLogger;
 }): Promise<{
+  rewardPercent: number;
   effectiveLevel: number | null;
   source:
+    | "getEffectiveLevel+getRewardPercentByLevel"
     | "getDashboardCore"
-    | "getEffectiveLevel"
-    | "unavailable";
+    | "getRewardPercent";
   raw: Record<string, unknown>;
 }> {
+  const contract = await getControllerContractInstance({
+    tronWeb: input.tronWeb,
+    controllerContractAddress: input.controllerContractAddress
+  });
+
+  const ambassadorWallet = assertNonEmpty(input.ambassadorWallet, "ambassadorWallet");
   const raw: Record<string, unknown> = {};
 
-  try {
-    const contract = await getControllerContractInstance({
-      tronWeb: input.tronWeb,
-      controllerContractAddress: input.controllerContractAddress
-    });
+  // 1) Main path: level first, then reward by level.
+  if (
+    typeof contract.getEffectiveLevel === "function" &&
+    typeof contract.getRewardPercentByLevel === "function"
+  ) {
+    try {
+      const effectiveLevelRaw = await callIfExists(
+        contract,
+        "getEffectiveLevel",
+        ambassadorWallet
+      );
+      raw.getEffectiveLevel = effectiveLevelRaw;
 
-    if (typeof contract.getDashboardCore === "function") {
-      try {
-        const coreRaw = await contract.getDashboardCore(input.ambassadorWallet).call();
-        raw.getDashboardCore = coreRaw;
+      const effectiveLevel = Math.floor(
+        safeNumber(
+          pickTupleValue(effectiveLevelRaw, 0, "effectiveLevel"),
+          Number.NaN
+        )
+      );
 
-        return {
-          effectiveLevel: Math.floor(
-            safeNumber(pickTupleValue(coreRaw, 2, "effectiveLevel"), 0)
-          ),
-          source: "getDashboardCore",
-          raw
-        };
-      } catch (error) {
-        raw.getDashboardCoreError =
-          error instanceof Error ? error.message : String(error);
+      if (!Number.isFinite(effectiveLevel) || effectiveLevel < 0) {
+        throw new Error("Invalid effective level");
       }
-    }
 
-    if (typeof contract.getEffectiveLevel === "function") {
-      try {
-        const levelRaw = await contract.getEffectiveLevel(input.ambassadorWallet).call();
-        raw.getEffectiveLevel = levelRaw;
+      const rewardPercentByLevelRaw = await callIfExists(
+        contract,
+        "getRewardPercentByLevel",
+        effectiveLevel
+      );
+      raw.getRewardPercentByLevel = rewardPercentByLevelRaw;
 
-        return {
-          effectiveLevel: Math.floor(
-            safeNumber(pickTupleValue(levelRaw, 0), 0)
-          ),
-          source: "getEffectiveLevel",
-          raw
-        };
-      } catch (error) {
-        raw.getEffectiveLevelError =
-          error instanceof Error ? error.message : String(error);
-      }
+      const rewardPercent = parsePercentStrict(
+        pickTupleValue(
+          rewardPercentByLevelRaw,
+          0,
+          "rewardPercent",
+          "percent"
+        ),
+        "getRewardPercentByLevel"
+      );
+
+      return {
+        rewardPercent,
+        effectiveLevel,
+        source: "getEffectiveLevel+getRewardPercentByLevel",
+        raw
+      };
+    } catch (error) {
+      raw.getEffectiveLevelPlusByLevelError =
+        error instanceof Error ? error.message : String(error);
     }
-  } catch (error) {
-    raw.contractReadError = error instanceof Error ? error.message : String(error);
   }
 
-  return {
-    effectiveLevel: null,
-    source: "unavailable",
-    raw
-  };
+  // 2) Fallback: dashboard core.
+  if (typeof contract.getDashboardCore === "function") {
+    try {
+      const coreRaw = await callIfExists(contract, "getDashboardCore", ambassadorWallet);
+      raw.getDashboardCore = coreRaw;
+
+      const effectiveLevel = Math.floor(
+        safeNumber(
+          pickTupleValue(coreRaw, 2, "effectiveLevel"),
+          Number.NaN
+        )
+      );
+
+      const rewardPercent = parsePercentStrict(
+        pickTupleValue(coreRaw, 3, "rewardPercent"),
+        "getDashboardCore.rewardPercent"
+      );
+
+      return {
+        rewardPercent,
+        effectiveLevel: Number.isFinite(effectiveLevel) ? effectiveLevel : null,
+        source: "getDashboardCore",
+        raw
+      };
+    } catch (error) {
+      raw.getDashboardCoreError = error instanceof Error ? error.message : String(error);
+    }
+  }
+
+  // 3) Last fallback: direct reward percent by wallet.
+  if (typeof contract.getRewardPercent === "function") {
+    try {
+      const rewardPercentRaw = await callIfExists(contract, "getRewardPercent", ambassadorWallet);
+      raw.getRewardPercent = rewardPercentRaw;
+
+      const rewardPercent = parsePercentStrict(
+        pickTupleValue(rewardPercentRaw, 0, "rewardPercent", "percent"),
+        "getRewardPercent"
+      );
+
+      let effectiveLevel: number | null = null;
+
+      if (typeof contract.getEffectiveLevel === "function") {
+        try {
+          const effectiveLevelRaw = await callIfExists(
+            contract,
+            "getEffectiveLevel",
+            ambassadorWallet
+          );
+          raw.getEffectiveLevelFallback = effectiveLevelRaw;
+
+          const parsedLevel = Math.floor(
+            safeNumber(
+              pickTupleValue(effectiveLevelRaw, 0, "effectiveLevel"),
+              Number.NaN
+            )
+          );
+
+          if (Number.isFinite(parsedLevel) && parsedLevel >= 0) {
+            effectiveLevel = parsedLevel;
+          }
+        } catch (error) {
+          raw.getEffectiveLevelFallbackError =
+            error instanceof Error ? error.message : String(error);
+        }
+      }
+
+      return {
+        rewardPercent,
+        effectiveLevel,
+        source: "getRewardPercent",
+        raw
+      };
+    } catch (error) {
+      raw.getRewardPercentError = error instanceof Error ? error.message : String(error);
+    }
+  }
+
+  input.logger?.error?.({
+    scope: "allocation",
+    stage: "reward-percent-read-failed",
+    ambassadorWallet,
+    raw: toJsonSafe(raw)
+  });
+
+  throw new Error("Unable to read ambassador reward percent from controller");
 }
 
 function mapAllocationAttemptToApiResult(
@@ -482,11 +598,16 @@ export class AttributionProcessor {
       return purchase;
     }
 
-    const rewardPercent = resolveConfiguredRewardPercent();
+    const rewardData = await readAmbassadorRewardData({
+      tronWeb: this.tronWeb,
+      controllerContractAddress: this.controllerContractAddress,
+      ambassadorWallet: purchase.ambassadorWallet,
+      logger: this.logger
+    });
 
     const ambassadorRewardSun = dividePercentFloor(
       input.ownerShareSun,
-      rewardPercent
+      rewardData.rewardPercent
     );
     const ownerPayoutSun = subtractSun(input.ownerShareSun, ambassadorRewardSun);
 
@@ -501,12 +622,6 @@ export class AttributionProcessor {
       now: input.now
     });
 
-    const levelMeta = await tryReadAmbassadorLevelMeta({
-      tronWeb: this.tronWeb,
-      controllerContractAddress: this.controllerContractAddress,
-      ambassadorWallet: purchase.ambassadorWallet
-    });
-
     this.logger?.info?.({
       scope: "allocation",
       stage: "reward-share-calculated",
@@ -514,12 +629,12 @@ export class AttributionProcessor {
       txHash: input.txHash,
       ambassadorWallet: updatedPurchase.ambassadorWallet,
       ownerShareSun: input.ownerShareSun,
-      rewardPercent,
-      effectiveLevel: levelMeta.effectiveLevel,
-      rewardSource: "env-configured",
+      rewardPercent: rewardData.rewardPercent,
+      effectiveLevel: rewardData.effectiveLevel,
+      rewardSource: rewardData.source,
       ambassadorRewardSun,
       ownerPayoutSun,
-      rawRewardData: toJsonSafe(levelMeta.raw)
+      rawRewardData: toJsonSafe(rewardData.raw)
     });
 
     return updatedPurchase;
