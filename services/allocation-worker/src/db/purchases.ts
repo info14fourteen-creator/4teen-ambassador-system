@@ -89,6 +89,7 @@ export interface CabinetStatsRecord {
    */
   missingRewardCount: number;
   missingRewardOwnerShareSun: string;
+  hasBrokenPendingRewards: boolean;
 
   hasProcessingWithdrawal: boolean;
 }
@@ -511,6 +512,13 @@ function hasPositiveReward(record: PurchaseRecord): boolean {
   return toBigIntSafe(record.ambassadorRewardSun) > 0n;
 }
 
+function hasMissingRewardButHasOwnerShare(record: PurchaseRecord): boolean {
+  return (
+    toBigIntSafe(record.ownerShareSun) > 0n &&
+    toBigIntSafe(record.ambassadorRewardSun) === 0n
+  );
+}
+
 function assertSplitConsistency(input: {
   ownerShareSun: string;
   ambassadorRewardSun: string;
@@ -564,6 +572,7 @@ function emptyCabinetStatsRecord(): CabinetStatsRecord {
     withdrawnRewardsSun: "0",
     missingRewardCount: 0,
     missingRewardOwnerShareSun: "0",
+    hasBrokenPendingRewards: false,
     hasProcessingWithdrawal: false
   };
 }
@@ -855,6 +864,7 @@ function rowToPurchaseRecord(row: any): PurchaseRecord {
 
 function rowToCabinetStatsRecord(row: any): CabinetStatsRecord {
   const requestedForProcessingCount = Number(row.requested_for_processing_count || 0);
+  const missingRewardCount = Number(row.missing_reward_count || 0);
 
   return {
     totalBuyers: Number(row.total_buyers || 0),
@@ -876,8 +886,9 @@ function rowToCabinetStatsRecord(row: any): CabinetStatsRecord {
     lifetimeRewardsSun: String(row.lifetime_rewards_sun || "0"),
     withdrawnRewardsSun: String(row.withdrawn_rewards_sun || "0"),
 
-    missingRewardCount: Number(row.missing_reward_count || 0),
+    missingRewardCount,
     missingRewardOwnerShareSun: String(row.missing_reward_owner_share_sun || "0"),
+    hasBrokenPendingRewards: missingRewardCount > 0,
 
     hasProcessingWithdrawal: requestedForProcessingCount > 0
   };
@@ -1030,7 +1041,13 @@ function buildCabinetStatsSql(): string {
           'allocation_failed_retryable'
         )
           AND withdraw_session_id IS NULL
-          AND ambassador_reward_sun::numeric > 0
+          AND (
+            ambassador_reward_sun::numeric > 0
+            OR (
+              owner_share_sun::numeric > 0
+              AND ambassador_reward_sun::numeric = 0
+            )
+          )
       ) AS pending_backend_sync_count,
 
       COALESCE(SUM(CASE
@@ -2338,12 +2355,9 @@ export class InMemoryPurchaseStore implements PurchaseStore {
       }
 
       const hasReward = hasPositiveReward(record);
+      const hasMissingReward = hasMissingRewardButHasOwnerShare(record);
 
-      if (
-        TRACKED_VOLUME_STATUSES.has(record.status) &&
-        toBigIntSafe(record.ownerShareSun) > 0n &&
-        !hasReward
-      ) {
+      if (TRACKED_VOLUME_STATUSES.has(record.status) && hasMissingReward) {
         missingRewardCount += 1;
         missingRewardOwnerShareSun = sumSunStrings(
           missingRewardOwnerShareSun,
@@ -2366,14 +2380,18 @@ export class InMemoryPurchaseStore implements PurchaseStore {
 
       if (
         PENDING_BACKEND_SYNC_STATUSES.has(record.status) &&
-        !record.withdrawSessionId &&
-        hasReward
+        !record.withdrawSessionId
       ) {
-        pendingBackendSyncSun = sumSunStrings(
-          pendingBackendSyncSun,
-          record.ambassadorRewardSun
-        );
-        pendingBackendSyncCount += 1;
+        if (hasReward) {
+          pendingBackendSyncSun = sumSunStrings(
+            pendingBackendSyncSun,
+            record.ambassadorRewardSun
+          );
+        }
+
+        if (hasReward || hasMissingReward) {
+          pendingBackendSyncCount += 1;
+        }
       }
 
       if (
@@ -2411,6 +2429,7 @@ export class InMemoryPurchaseStore implements PurchaseStore {
 
       missingRewardCount,
       missingRewardOwnerShareSun,
+      hasBrokenPendingRewards: missingRewardCount > 0,
 
       hasProcessingWithdrawal: requestedForProcessingCount > 0
     };
