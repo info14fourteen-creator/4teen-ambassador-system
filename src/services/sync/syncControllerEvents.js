@@ -119,12 +119,13 @@ async function upsertAllocation(payload) {
         reward_sun,
         owner_part_sun,
         level,
+        allocated_at,
         allocation_at,
         created_at,
         updated_at
       )
       VALUES (
-        $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,NOW(),NOW()
+        $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$10,NOW(),NOW()
       )
       ON CONFLICT (purchase_id)
       DO UPDATE SET
@@ -136,6 +137,7 @@ async function upsertAllocation(payload) {
         reward_sun = EXCLUDED.reward_sun,
         owner_part_sun = EXCLUDED.owner_part_sun,
         level = EXCLUDED.level,
+        allocated_at = EXCLUDED.allocated_at,
         allocation_at = EXCLUDED.allocation_at,
         updated_at = NOW()
     `,
@@ -406,7 +408,8 @@ async function syncAllocationEvents({ limit, minBlockTimestamp, maxBlockTimestam
       txHash,
       rewardSun,
       ownerPartSun,
-      level
+      level,
+      allocationAt
     });
   }
 
