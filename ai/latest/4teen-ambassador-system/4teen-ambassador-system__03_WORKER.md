@@ -1,6 +1,6 @@
 # 4teen-ambassador-system — ALLOCATION WORKER
 
-Generated: 2026-04-02T10:54:39.888Z
+Generated: 2026-04-02T11:00:21.715Z
 Repository: info14fourteen-creator/4teen-ambassador-system
 Branch: main
 
@@ -12270,6 +12270,13 @@ const BANDWIDTH_MARGIN_PERCENT = 20;
 const MIN_ENERGY_MARGIN = 12_000;
 const MIN_BANDWIDTH_MARGIN = 1_500;
 
+/**
+ * Extra service-balance safety buffer.
+ * We do not want RequiredServiceBalanceSun to explode because of estimate endpoint noise,
+ * but we still want a small buffer above pure price.
+ */
+const GASSTATION_PRICE_BUFFER_SUN = 1_000_000;
+
 function assertNonEmpty(value: string, fieldName: string): string {
   const normalized = String(value || "").trim();
 
@@ -12890,6 +12897,34 @@ export class TronControllerClient implements ControllerClient {
     return buildResourceRequirement(this.allocationMinEnergy, this.allocationMinBandwidth);
   }
 
+  private async getGasStationPriceSun(resourceValue: number): Promise<number> {
+    if (!this.gasStationClient) {
+      throw new Error("GasStation client is not configured");
+    }
+
+    const priceResult = await this.gasStationClient.getPrice({
+      serviceChargeType: this.gasStationServiceChargeType,
+      resourceValue
+    });
+
+    const items = normalizePriceItems(
+      (priceResult as any).list?.length
+        ? (priceResult as any).list
+        : (priceResult as any).price_builder_list
+    );
+
+    const matched =
+      items.find(
+        (item) => item.service_charge_type === this.gasStationServiceChargeType
+      ) ?? items[0];
+
+    if (!matched) {
+      throw new Error("GasStation price is unavailable");
+    }
+
+    return parseTrxAmountToSun(matched.price, "gasStation.price");
+  }
+
   private async estimateRentalCostSun(input: {
     energyToBuy: number;
     bandwidthToBuy: number;
@@ -12898,54 +12933,23 @@ export class TronControllerClient implements ControllerClient {
       throw new Error("GasStation client is not configured");
     }
 
-    let totalTrx = 0;
+    let totalSun = 0;
 
     if (input.energyToBuy > 0) {
-      try {
-        const energyEstimate = await this.gasStationClient.estimateEnergyOrder({
-          receiveAddress: this.getOperatorAddress(),
-          addressTo: this.getOperatorAddress(),
-          contractAddress: this.contractAddress,
-          serviceChargeType: this.gasStationServiceChargeType
-        });
-
-        totalTrx += toNumberSafe(energyEstimate.amount);
-      } catch (error) {
-        const code = String(extractErrorCode(error) || "").toUpperCase();
-
-        if (code.includes("GASSTATION_ERROR_100003")) {
-          totalTrx += GASSTATION_LOW_BALANCE_SUN / SUN_PER_TRX;
-        } else {
-          throw error;
-        }
-      }
+      const energyPriceSun = await this.getGasStationPriceSun(input.energyToBuy);
+      totalSun += energyPriceSun;
     }
 
     if (input.bandwidthToBuy > 0) {
-      const bandwidthPrice = await this.gasStationClient.getPrice({
-        serviceChargeType: this.gasStationServiceChargeType,
-        resourceValue: input.bandwidthToBuy
-      });
-
-      const items = normalizePriceItems(
-        (bandwidthPrice as any).list?.length
-          ? (bandwidthPrice as any).list
-          : (bandwidthPrice as any).price_builder_list
-      );
-
-      const matched =
-        items.find(
-          (item) => item.service_charge_type === this.gasStationServiceChargeType
-        ) ?? items[0];
-
-      if (!matched) {
-        throw new Error("GasStation bandwidth price is unavailable");
-      }
-
-      totalTrx += toNumberSafe(matched.price);
+      const bandwidthPriceSun = await this.getGasStationPriceSun(input.bandwidthToBuy);
+      totalSun += bandwidthPriceSun;
     }
 
-    return Math.ceil(totalTrx * SUN_PER_TRX);
+    if (totalSun <= 0) {
+      return 0;
+    }
+
+    return totalSun + GASSTATION_PRICE_BUFFER_SUN;
   }
 
   private async getGasStationBalanceSnapshot(): Promise<GasStationBalanceSnapshot> {
@@ -13027,6 +13031,8 @@ export class TronControllerClient implements ControllerClient {
       operatorSnapshot.trxBalanceSun - OPERATOR_REMAINING_RESERVE_SUN
     );
 
+    const shortfallSun = Math.max(0, requiredServiceBalanceSun - beforeGasStation.balanceSun);
+
     logJson({
       level: "info",
       scope: "gasstation",
@@ -13034,20 +13040,26 @@ export class TronControllerClient implements ControllerClient {
       operatorAddress,
       operatorBalanceSun: operatorSnapshot.trxBalanceSun,
       availableToTopUpSun,
-      requiredServiceBalanceSun
+      requiredServiceBalanceSun,
+      shortfallSun
     });
 
     if (
       operatorSnapshot.trxBalanceSun < OPERATOR_MIN_BALANCE_FOR_TOPUP_SUN ||
-      availableToTopUpSun < GASSTATION_LOW_BALANCE_SUN
+      availableToTopUpSun < Math.max(shortfallSun, 1)
     ) {
       throw createTaggedError(
-        `GasStation service balance is low and auto top-up was skipped because operator wallet balance is below 11 TRX. OperatorBalanceSun=${operatorSnapshot.trxBalanceSun}, AvailableToTopUpSun=${availableToTopUpSun}, RequiredServiceBalanceSun=${requiredServiceBalanceSun}`,
+        `GasStation service balance is low and auto top-up was skipped because operator wallet balance is below safe threshold. OperatorBalanceSun=${operatorSnapshot.trxBalanceSun}, AvailableToTopUpSun=${availableToTopUpSun}, RequiredServiceBalanceSun=${requiredServiceBalanceSun}, CurrentServiceBalanceSun=${beforeGasStation.balanceSun}`,
         {
           code: "GASSTATION_OPERATOR_BALANCE_LOW"
         }
       );
     }
+
+    const topupAmountSun = Math.min(
+      availableToTopUpSun,
+      Math.max(shortfallSun, GASSTATION_LOW_BALANCE_SUN)
+    );
 
     let transferResult: unknown;
 
@@ -13055,7 +13067,7 @@ export class TronControllerClient implements ControllerClient {
       transferResult = await withRateLimitRetry("trx.sendTransaction", async () => {
         return await this.tronWeb.trx.sendTransaction(
           beforeGasStation.depositAddress,
-          availableToTopUpSun
+          topupAmountSun
         );
       });
     } catch (error) {
@@ -13076,7 +13088,7 @@ export class TronControllerClient implements ControllerClient {
       stage: "topup-transfer-sent",
       operatorAddress,
       depositAddress: beforeGasStation.depositAddress,
-      topupAmountSun: availableToTopUpSun,
+      topupAmountSun,
       txid
     });
 
