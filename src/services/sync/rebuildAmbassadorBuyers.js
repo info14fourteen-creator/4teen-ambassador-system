@@ -8,38 +8,6 @@ async function rebuildAmbassadorBuyers() {
 
   await pool.query(
     `
-      WITH purchase_binding AS (
-        SELECT
-          p.id,
-          p.buyer_wallet,
-          COALESCE(
-            p.resolved_ambassador_wallet,
-            cb.ambassador_wallet
-          ) AS ambassador_wallet,
-          cb.binding_at,
-          p.token_block_time,
-          p.purchase_amount_sun,
-          p.owner_share_sun,
-          p.controller_processed
-        FROM purchases p
-        LEFT JOIN (
-          SELECT
-            p2.id AS purchase_row_id,
-            bb.ambassador_wallet,
-            bb.binding_at,
-            ROW_NUMBER() OVER (
-              PARTITION BY p2.id
-              ORDER BY bb.binding_at DESC, bb.id DESC
-            ) AS rn
-          FROM purchases p2
-          JOIN buyer_bindings bb
-            ON bb.buyer_wallet = p2.buyer_wallet
-           AND bb.binding_at <= COALESCE(p2.token_block_time, NOW())
-        ) cb
-          ON cb.purchase_row_id = p.id
-         AND cb.rn = 1
-        WHERE p.buyer_wallet IS NOT NULL
-      )
       INSERT INTO ambassador_buyers (
         buyer_wallet,
         ambassador_wallet,
@@ -56,8 +24,8 @@ async function rebuildAmbassadorBuyers() {
       )
       SELECT
         buyer_wallet,
-        ambassador_wallet,
-        MIN(binding_at) AS binding_at,
+        resolved_ambassador_wallet AS ambassador_wallet,
+        MIN(binding_at_used) AS binding_at,
         MIN(token_block_time) AS first_attributed_purchase_at,
         MAX(token_block_time) AS last_attributed_purchase_at,
         COUNT(*)::INTEGER AS purchase_count,
@@ -67,9 +35,9 @@ async function rebuildAmbassadorBuyers() {
         COALESCE(SUM(purchase_amount_sun) FILTER (WHERE controller_processed), 0) AS processed_purchase_amount_sun,
         NOW(),
         NOW()
-      FROM purchase_binding
-      WHERE ambassador_wallet IS NOT NULL
-      GROUP BY buyer_wallet, ambassador_wallet
+      FROM purchases
+      WHERE resolved_ambassador_wallet IS NOT NULL
+      GROUP BY buyer_wallet, resolved_ambassador_wallet
     `
   );
 

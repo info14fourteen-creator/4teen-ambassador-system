@@ -8,13 +8,15 @@ async function getPurchaseByTxHash(txHash, client = pool) {
       WHERE tx_hash = $1
       LIMIT 1
     `,
-    [txHash]
+    [String(txHash).toLowerCase()]
   );
 
   return result.rows[0] || null;
 }
 
 async function upsertPurchaseFromTokenEvent(payload, client = pool) {
+  const normalizedTxHash = String(payload.txHash).toLowerCase();
+
   await client.query(
     `
       INSERT INTO purchases (
@@ -60,8 +62,8 @@ async function upsertPurchaseFromTokenEvent(payload, client = pool) {
         updated_at = NOW()
     `,
     [
-      payload.txHash,
-      payload.purchaseId,
+      normalizedTxHash,
+      normalizedTxHash,
       payload.buyerWallet,
       payload.purchaseAmountSun,
       payload.ownerShareSun,
@@ -79,6 +81,9 @@ async function markPurchaseProcessed({
   txHash,
   allocatedAt
 }, client = pool) {
+  const normalizedPurchaseId = String(purchaseId || '').toLowerCase();
+  const normalizedControllerTxHash = String(txHash || '').toLowerCase();
+
   await client.query(
     `
       UPDATE purchases
@@ -90,13 +95,38 @@ async function markPurchaseProcessed({
         status = 'processed',
         updated_at = NOW()
       WHERE purchase_id = $1
-         OR (buyer_wallet = $2 AND tx_hash = $4)
+         OR tx_hash = $1
+         OR (buyer_wallet = $2 AND controller_processed = FALSE AND token_block_time <= $5)
     `,
-    [purchaseId, buyerWallet, ambassadorWallet, txHash, allocatedAt]
+    [
+      normalizedPurchaseId,
+      buyerWallet,
+      ambassadorWallet,
+      normalizedControllerTxHash,
+      allocatedAt
+    ]
   );
 }
 
 async function recomputePurchaseStatuses(client = pool) {
+  await client.query(
+    `
+      UPDATE purchases
+      SET
+        status = CASE
+          WHEN processing_error IS NOT NULL THEN 'error'
+          WHEN controller_processed THEN 'processed'
+          ELSE 'unattributed'
+        END,
+        binding_at_used = NULL,
+        resolved_ambassador_wallet = CASE
+          WHEN controller_processed THEN resolved_ambassador_wallet
+          ELSE NULL
+        END,
+        updated_at = NOW()
+    `
+  );
+
   await client.query(
     `
       WITH chosen_bindings AS (
@@ -112,35 +142,17 @@ async function recomputePurchaseStatuses(client = pool) {
         JOIN buyer_bindings bb
           ON bb.buyer_wallet = p.buyer_wallet
          AND bb.binding_at <= COALESCE(p.token_block_time, NOW())
+        WHERE p.controller_processed = FALSE
       )
       UPDATE purchases p
       SET
         binding_at_used = cb.binding_at,
-        resolved_ambassador_wallet = COALESCE(p.resolved_ambassador_wallet, cb.ambassador_wallet),
-        status = CASE
-          WHEN p.processing_error IS NOT NULL THEN 'error'
-          WHEN p.controller_processed THEN 'processed'
-          WHEN COALESCE(p.resolved_ambassador_wallet, cb.ambassador_wallet) IS NOT NULL THEN 'attributed'
-          ELSE 'unattributed'
-        END,
+        resolved_ambassador_wallet = cb.ambassador_wallet,
+        status = 'attributed',
         updated_at = NOW()
       FROM chosen_bindings cb
       WHERE cb.purchase_row_id = p.id
         AND cb.rn = 1
-    `
-  );
-
-  await client.query(
-    `
-      UPDATE purchases
-      SET
-        status = CASE
-          WHEN processing_error IS NOT NULL THEN 'error'
-          WHEN controller_processed THEN 'processed'
-          WHEN resolved_ambassador_wallet IS NOT NULL THEN 'attributed'
-          ELSE 'unattributed'
-        END,
-        updated_at = NOW()
     `
   );
 }
