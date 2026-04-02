@@ -14,45 +14,7 @@ async function getPurchaseByTxHash(txHash, client = pool) {
   return result.rows[0] || null;
 }
 
-async function upsertCandidatePurchase({
-  txHash,
-  purchaseId,
-  buyerWallet,
-  candidateSlugHash,
-  candidateAmbassadorWallet
-}, client = pool) {
-  await client.query(
-    `
-      INSERT INTO purchases (
-        tx_hash,
-        purchase_id,
-        buyer_wallet,
-        candidate_slug_hash,
-        candidate_ambassador_wallet,
-        has_candidate_referral,
-        created_at,
-        updated_at
-      )
-      VALUES ($1,$2,$3,$4,$5,$6,NOW(),NOW())
-      ON CONFLICT (tx_hash)
-      DO UPDATE SET
-        candidate_slug_hash = COALESCE(EXCLUDED.candidate_slug_hash, purchases.candidate_slug_hash),
-        candidate_ambassador_wallet = COALESCE(EXCLUDED.candidate_ambassador_wallet, purchases.candidate_ambassador_wallet),
-        has_candidate_referral = EXCLUDED.has_candidate_referral,
-        updated_at = NOW()
-    `,
-    [
-      txHash,
-      purchaseId,
-      buyerWallet,
-      candidateSlugHash || null,
-      candidateAmbassadorWallet || null,
-      Boolean(candidateSlugHash || candidateAmbassadorWallet)
-    ]
-  );
-}
-
-async function upsertReconciledPurchase(payload, client = pool) {
+async function upsertPurchaseFromTokenEvent(payload, client = pool) {
   await client.query(
     `
       INSERT INTO purchases (
@@ -64,20 +26,26 @@ async function upsertReconciledPurchase(payload, client = pool) {
         token_amount_raw,
         token_block_number,
         token_block_time,
-        candidate_slug_hash,
-        candidate_ambassador_wallet,
         resolved_ambassador_wallet,
-        has_candidate_referral,
         controller_processed,
         controller_processed_tx_hash,
         controller_processed_at,
         processing_error,
+        status,
+        binding_at_used,
+        created_at,
         updated_at
       )
       VALUES (
-        $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,
-        CASE WHEN $13 THEN NOW() ELSE NULL END,
+        $1,$2,$3,$4,$5,$6,$7,$8,
         NULL,
+        FALSE,
+        NULL,
+        NULL,
+        NULL,
+        'detected',
+        NULL,
+        NOW(),
         NOW()
       )
       ON CONFLICT (tx_hash)
@@ -89,17 +57,6 @@ async function upsertReconciledPurchase(payload, client = pool) {
         token_amount_raw = EXCLUDED.token_amount_raw,
         token_block_number = EXCLUDED.token_block_number,
         token_block_time = EXCLUDED.token_block_time,
-        candidate_slug_hash = COALESCE(EXCLUDED.candidate_slug_hash, purchases.candidate_slug_hash),
-        candidate_ambassador_wallet = COALESCE(EXCLUDED.candidate_ambassador_wallet, purchases.candidate_ambassador_wallet),
-        resolved_ambassador_wallet = EXCLUDED.resolved_ambassador_wallet,
-        has_candidate_referral = EXCLUDED.has_candidate_referral,
-        controller_processed = EXCLUDED.controller_processed,
-        controller_processed_tx_hash = COALESCE(EXCLUDED.controller_processed_tx_hash, purchases.controller_processed_tx_hash),
-        controller_processed_at = CASE
-          WHEN EXCLUDED.controller_processed THEN COALESCE(purchases.controller_processed_at, NOW())
-          ELSE purchases.controller_processed_at
-        END,
-        processing_error = NULL,
         updated_at = NOW()
     `,
     [
@@ -108,45 +65,87 @@ async function upsertReconciledPurchase(payload, client = pool) {
       payload.buyerWallet,
       payload.purchaseAmountSun,
       payload.ownerShareSun,
-      payload.tokenAmountRaw || null,
+      payload.tokenAmountRaw,
       payload.tokenBlockNumber,
-      payload.tokenBlockTime,
-      payload.candidateSlugHash || null,
-      payload.candidateAmbassadorWallet || null,
-      payload.resolvedAmbassadorWallet || null,
-      Boolean(payload.candidateSlugHash || payload.candidateAmbassadorWallet),
-      Boolean(payload.controllerProcessed),
-      payload.controllerProcessedTxHash || null
+      payload.tokenBlockTime
     ]
   );
 }
 
-async function markPurchaseError({
+async function markPurchaseProcessed({
+  purchaseId,
+  buyerWallet,
+  ambassadorWallet,
   txHash,
-  errorMessage
+  allocatedAt
 }, client = pool) {
   await client.query(
     `
-      INSERT INTO purchases (
-        tx_hash,
-        purchase_id,
-        buyer_wallet,
-        processing_error,
-        updated_at
-      )
-      VALUES ($1,$2,$3,$4,NOW())
-      ON CONFLICT (tx_hash)
-      DO UPDATE SET
-        processing_error = EXCLUDED.processing_error,
+      UPDATE purchases
+      SET
+        resolved_ambassador_wallet = $3,
+        controller_processed = TRUE,
+        controller_processed_tx_hash = $4,
+        controller_processed_at = $5,
+        status = 'processed',
         updated_at = NOW()
+      WHERE purchase_id = $1
+         OR (buyer_wallet = $2 AND tx_hash = $4)
     `,
-    [txHash, `failed:${txHash}`, 'unknown', errorMessage]
+    [purchaseId, buyerWallet, ambassadorWallet, txHash, allocatedAt]
+  );
+}
+
+async function recomputePurchaseStatuses(client = pool) {
+  await client.query(
+    `
+      UPDATE purchases p
+      SET
+        binding_at_used = chosen.binding_at,
+        resolved_ambassador_wallet = COALESCE(
+          p.resolved_ambassador_wallet,
+          chosen.ambassador_wallet
+        ),
+        status = CASE
+          WHEN p.processing_error IS NOT NULL THEN 'error'
+          WHEN p.controller_processed THEN 'processed'
+          WHEN COALESCE(p.resolved_ambassador_wallet, chosen.ambassador_wallet) IS NOT NULL THEN 'attributed'
+          ELSE 'unattributed'
+        END,
+        updated_at = NOW()
+      FROM LATERAL (
+        SELECT
+          bb.ambassador_wallet,
+          bb.binding_at
+        FROM buyer_bindings bb
+        WHERE bb.buyer_wallet = p.buyer_wallet
+          AND bb.binding_at <= COALESCE(p.token_block_time, NOW())
+        ORDER BY bb.binding_at DESC, bb.id DESC
+        LIMIT 1
+      ) AS chosen
+      WHERE p.buyer_wallet IS NOT NULL
+    `
+  );
+
+  await client.query(
+    `
+      UPDATE purchases
+      SET
+        status = CASE
+          WHEN processing_error IS NOT NULL THEN 'error'
+          WHEN controller_processed THEN 'processed'
+          WHEN resolved_ambassador_wallet IS NOT NULL THEN 'attributed'
+          ELSE 'unattributed'
+        END,
+        updated_at = NOW()
+      WHERE buyer_wallet IS NOT NULL
+    `
   );
 }
 
 module.exports = {
   getPurchaseByTxHash,
-  upsertCandidatePurchase,
-  upsertReconciledPurchase,
-  markPurchaseError
+  upsertPurchaseFromTokenEvent,
+  markPurchaseProcessed,
+  recomputePurchaseStatuses
 };

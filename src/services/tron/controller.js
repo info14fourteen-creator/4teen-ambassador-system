@@ -11,30 +11,10 @@ const controllerAbi = [
     type: 'function'
   },
   {
-    inputs: [{ internalType: 'bytes32', name: 'slugHash', type: 'bytes32' }],
-    name: 'getAmbassadorBySlugHash',
-    outputs: [{ internalType: 'address', name: '', type: 'address' }],
-    stateMutability: 'view',
-    type: 'function'
-  },
-  {
     inputs: [{ internalType: 'bytes32', name: 'purchaseId', type: 'bytes32' }],
     name: 'isPurchaseProcessed',
     outputs: [{ internalType: 'bool', name: '', type: 'bool' }],
     stateMutability: 'view',
-    type: 'function'
-  },
-  {
-    inputs: [
-      { internalType: 'bytes32', name: 'purchaseId', type: 'bytes32' },
-      { internalType: 'address', name: 'buyer', type: 'address' },
-      { internalType: 'address', name: 'ambassadorCandidate', type: 'address' },
-      { internalType: 'uint256', name: 'purchaseAmountSun', type: 'uint256' },
-      { internalType: 'uint256', name: 'ownerShareSun', type: 'uint256' }
-    ],
-    name: 'recordVerifiedPurchase',
-    outputs: [],
-    stateMutability: 'nonpayable',
     type: 'function'
   },
   {
@@ -101,36 +81,10 @@ async function getBuyerAmbassador(buyerWallet) {
   return zeroAddressToNull(result);
 }
 
-async function getAmbassadorBySlugHash(slugHash) {
-  const contract = await getControllerContract();
-  const result = await contract.getAmbassadorBySlugHash(slugHash).call();
-  return zeroAddressToNull(result);
-}
-
 async function isPurchaseProcessed(purchaseId) {
   const contract = await getControllerContract();
   const result = await contract.isPurchaseProcessed(purchaseId).call();
   return Boolean(result);
-}
-
-async function recordVerifiedPurchase({
-  purchaseId,
-  buyerWallet,
-  ambassadorCandidate,
-  purchaseAmountSun,
-  ownerShareSun
-}) {
-  const contract = await getControllerContract();
-
-  return contract.recordVerifiedPurchase(
-    purchaseId,
-    buyerWallet,
-    ambassadorCandidate,
-    purchaseAmountSun,
-    ownerShareSun
-  ).send({
-    feeLimit: 300000000
-  });
 }
 
 async function readAmbassadorDashboard(ambassadorWallet) {
@@ -144,11 +98,38 @@ async function readAmbassadorDashboard(ambassadorWallet) {
   return { core, stats, profile, payout };
 }
 
+async function getControllerEvents(eventName, {
+  minBlockTimestamp,
+  maxBlockTimestamp,
+  fingerprint,
+  limit = 20
+} = {}) {
+  const options = {
+    eventName,
+    onlyConfirmed: true,
+    orderBy: 'block_timestamp,asc',
+    limit
+  };
+
+  if (typeof minBlockTimestamp === 'number') {
+    options.minBlockTimestamp = minBlockTimestamp;
+  }
+
+  if (typeof maxBlockTimestamp === 'number') {
+    options.maxBlockTimestamp = maxBlockTimestamp;
+  }
+
+  if (fingerprint) {
+    options.fingerprint = fingerprint;
+  }
+
+  return tronWeb.getEventResult(env.FOURTEEN_CONTROLLER_CONTRACT, options);
+}
+
 module.exports = {
   getControllerContract,
   getBuyerAmbassador,
-  getAmbassadorBySlugHash,
   isPurchaseProcessed,
-  recordVerifiedPurchase,
-  readAmbassadorDashboard
+  readAmbassadorDashboard,
+  getControllerEvents
 };
