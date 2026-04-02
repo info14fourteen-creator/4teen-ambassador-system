@@ -1,6 +1,6 @@
 # 4teen-ambassador-system — ALLOCATION WORKER
 
-Generated: 2026-04-02T08:01:28.853Z
+Generated: 2026-04-02T08:38:45.016Z
 Repository: info14fourteen-creator/4teen-ambassador-system
 Branch: main
 
@@ -322,6 +322,14 @@ function getReadableErrorMessage(error: unknown, fallback: string): string {
   return fallback;
 }
 
+function toJsonSafe<T>(value: T): T {
+  return JSON.parse(
+    JSON.stringify(value, (_key, currentValue) =>
+      typeof currentValue === "bigint" ? currentValue.toString() : currentValue
+    )
+  ) as T;
+}
+
 async function getControllerContractInstance(input: {
   tronWeb: any;
   controllerContractAddress?: string;
@@ -467,7 +475,7 @@ async function readAmbassadorRewardData(input: {
     scope: "allocation",
     stage: "reward-percent-read-failed",
     ambassadorWallet,
-    raw
+    raw: toJsonSafe(raw)
   });
 
   throw new Error("Unable to read ambassador reward percent from controller");
@@ -637,7 +645,7 @@ export class AttributionProcessor {
       rewardSource: rewardData.source,
       ambassadorRewardSun,
       ownerPayoutSun,
-      rawRewardData: rewardData.raw
+      rawRewardData: toJsonSafe(rewardData.raw)
     });
 
     return updatedPurchase;
