@@ -1,7 +1,32 @@
+const { tronWeb } = require('../tron/client');
 const { getSyncState, setSyncState } = require('../../db/queries/syncState');
 const { registerCandidatePurchase } = require('./registerCandidatePurchase');
 const { reconcilePurchase } = require('./reconcilePurchase');
 const { getBuyTokenEvents } = require('../tron/token');
+
+function toBase58Address(value) {
+  if (!value) return null;
+
+  try {
+    if (typeof value === 'string' && value.startsWith('T')) {
+      return value;
+    }
+
+    let hex = String(value).toLowerCase();
+
+    if (hex.startsWith('0x')) {
+      hex = hex.slice(2);
+    }
+
+    if (!hex.startsWith('41')) {
+      hex = `41${hex}`;
+    }
+
+    return tronWeb.address.fromHex(hex);
+  } catch (_) {
+    return null;
+  }
+}
 
 async function syncPurchasesRange({
   limit = 10,
@@ -14,18 +39,24 @@ async function syncPurchasesRange({
   const storedTs = Number(storedTsRaw || '0');
 
   const effectiveMinTs =
-    typeof minBlockTimestamp === 'number' ? minBlockTimestamp : (storedTs > 0 ? storedTs + 1 : undefined);
+    typeof minBlockTimestamp === 'number'
+      ? minBlockTimestamp
+      : (storedTs > 0 ? storedTs + 1 : undefined);
 
   const effectiveMaxTs =
-    typeof maxBlockTimestamp === 'number' ? maxBlockTimestamp : now;
+    typeof maxBlockTimestamp === 'number'
+      ? maxBlockTimestamp
+      : now;
 
-  const batch = await getBuyTokenEvents({
+  const response = await getBuyTokenEvents({
     minBlockTimestamp: effectiveMinTs,
     maxBlockTimestamp: effectiveMaxTs,
     limit: Math.min(limit, 20)
   });
 
-  if (!Array.isArray(batch) || batch.length === 0) {
+  const events = Array.isArray(response?.data) ? response.data : [];
+
+  if (events.length === 0) {
     return {
       ok: true,
       processedCount: 0,
@@ -37,10 +68,10 @@ async function syncPurchasesRange({
   const results = [];
   let maxSeenTimestamp = storedTs;
 
-  for (const event of batch) {
-    const txHash = event?.transaction;
-    const buyerWallet = event?.result?.buyer || event?.result?._buyer || null;
-    const eventTs = Number(event?.timestamp || 0);
+  for (const event of events) {
+    const txHash = event?.transaction_id || null;
+    const buyerWallet = toBase58Address(event?.result?.buyer || event?.result?._buyer || null);
+    const eventTs = Number(event?.block_timestamp || 0);
 
     if (!txHash) {
       continue;
