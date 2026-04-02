@@ -8,11 +8,11 @@ const {
 } = require('../../db/queries/purchases');
 const { upsertBuyer } = require('../../db/queries/buyers');
 const { upsertBuyerBinding } = require('../../db/queries/buyerBindings');
+const { getAmbassadorBySlug } = require('../../db/queries/ambassadors');
 const { makePurchaseId } = require('../../utils/hashing');
 const { getBuyEventByTxHash } = require('../tron/token');
 const {
   getBuyerAmbassador,
-  getAmbassadorBySlugHash,
   isPurchaseProcessed,
   recordVerifiedPurchase
 } = require('../tron/controller');
@@ -42,15 +42,22 @@ async function reconcilePurchase(txHash, options = {}) {
   const parsed = await getBuyEventByTxHash(normalizedTxHash);
   const purchaseId = makePurchaseId(normalizedTxHash, parsed.buyerWallet);
 
-  let candidateSlug = incomingSlug;
   let candidateSlugHash = existing?.candidate_slug_hash || null;
   let candidateAmbassadorWallet = existing?.candidate_ambassador_wallet || null;
+
+  if (!candidateAmbassadorWallet && incomingSlug) {
+    const ambassador = await getAmbassadorBySlug(incomingSlug);
+
+    if (ambassador?.ambassador_wallet) {
+      candidateAmbassadorWallet = ambassador.ambassador_wallet;
+      candidateSlugHash = ambassador.slug_hash || null;
+    }
+  }
 
   await upsertCandidatePurchase({
     txHash: normalizedTxHash,
     purchaseId,
     buyerWallet: parsed.buyerWallet,
-    candidateSlug: candidateSlug || null,
     candidateSlugHash: candidateSlugHash || null,
     candidateAmbassadorWallet: candidateAmbassadorWallet || null
   });
@@ -59,16 +66,6 @@ async function reconcilePurchase(txHash, options = {}) {
 
   let resolvedAmbassadorWallet = alreadyBoundAmbassadorWallet || null;
   let resolutionSource = alreadyBoundAmbassadorWallet ? 'controller_binding' : 'none';
-
-  if (!resolvedAmbassadorWallet && candidateSlugHash) {
-    const resolvedFromSlugHash = await getAmbassadorBySlugHash(candidateSlugHash);
-
-    if (resolvedFromSlugHash) {
-      candidateAmbassadorWallet = resolvedFromSlugHash;
-      resolvedAmbassadorWallet = resolvedFromSlugHash;
-      resolutionSource = 'incoming_slug_hash';
-    }
-  }
 
   const alreadyProcessed = await isPurchaseProcessed(purchaseId);
 
@@ -114,12 +111,12 @@ async function reconcilePurchase(txHash, options = {}) {
     });
 
     resolvedAmbassadorWallet = await getBuyerAmbassador(parsed.buyerWallet);
-    resolutionSource = 'incoming_candidate';
+    resolutionSource = 'incoming_slug';
     finalStatus = 'processed';
     bindingAtUsed = parsed.tokenBlockTime;
   } else {
     finalStatus = 'awaiting_candidate';
-    processingError = 'Buyer is not bound and referral was not resolved';
+    processingError = 'Buyer is not bound and referral slug was not provided or not resolved';
   }
 
   const client = await pool.connect();
@@ -166,7 +163,6 @@ async function reconcilePurchase(txHash, options = {}) {
       tokenAmountRaw: parsed.tokenAmountRaw,
       tokenBlockNumber: parsed.tokenBlockNumber,
       tokenBlockTime: parsed.tokenBlockTime,
-      candidateSlug: candidateSlug || null,
       candidateSlugHash: candidateSlugHash || null,
       candidateAmbassadorWallet: candidateAmbassadorWallet || null,
       resolvedAmbassadorWallet: resolvedAmbassadorWallet || null,
@@ -207,6 +203,9 @@ async function reconcilePurchase(txHash, options = {}) {
     txHash: normalizedTxHash,
     purchaseId,
     buyerWallet: parsed.buyerWallet,
+    incomingSlug,
+    candidateSlugHash: candidateSlugHash || null,
+    candidateAmbassadorWallet: candidateAmbassadorWallet || null,
     resolvedAmbassadorWallet: resolvedAmbassadorWallet || null,
     resolutionSource,
     controllerProcessed: Boolean(alreadyProcessed || controllerTxHash),

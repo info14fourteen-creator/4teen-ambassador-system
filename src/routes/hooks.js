@@ -8,8 +8,7 @@ router.post('/after-buy', async (req, res) => {
     const {
       txHash,
       buyerWallet,
-      candidateSlugHash,
-      candidateAmbassadorWallet
+      slug
     } = req.body || {};
 
     if (!txHash) {
@@ -21,8 +20,7 @@ router.post('/after-buy', async (req, res) => {
 
     const result = await reconcilePurchase(txHash, {
       buyerWallet: buyerWallet || null,
-      candidateSlugHash: candidateSlugHash || null,
-      candidateAmbassadorWallet: candidateAmbassadorWallet || null
+      slug: slug || null
     });
 
     return res.json({

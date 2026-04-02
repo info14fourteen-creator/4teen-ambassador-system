@@ -118,13 +118,15 @@ async function upsertReconciledPurchase(payload, client = pool) {
   const controllerProcessed = Boolean(payload.controllerProcessed);
   const hasCandidateReferral = Boolean(payload.candidateSlugHash || payload.candidateAmbassadorWallet);
 
-  const status = payload.processingError
-    ? 'error'
-    : controllerProcessed
-      ? 'processed'
-      : payload.resolvedAmbassadorWallet
-        ? 'attributed'
-        : 'unattributed';
+  const status = payload.status || (
+    payload.processingError
+      ? 'error'
+      : controllerProcessed
+        ? 'processed'
+        : payload.resolvedAmbassadorWallet
+          ? 'attributed'
+          : 'unattributed'
+  );
 
   await client.query(
     `
@@ -165,8 +167,8 @@ async function upsertReconciledPurchase(payload, client = pool) {
         token_amount_raw = EXCLUDED.token_amount_raw,
         token_block_number = EXCLUDED.token_block_number,
         token_block_time = EXCLUDED.token_block_time,
-        candidate_slug_hash = EXCLUDED.candidate_slug_hash,
-        candidate_ambassador_wallet = EXCLUDED.candidate_ambassador_wallet,
+        candidate_slug_hash = COALESCE(EXCLUDED.candidate_slug_hash, purchases.candidate_slug_hash),
+        candidate_ambassador_wallet = COALESCE(EXCLUDED.candidate_ambassador_wallet, purchases.candidate_ambassador_wallet),
         resolved_ambassador_wallet = EXCLUDED.resolved_ambassador_wallet,
         has_candidate_referral = EXCLUDED.has_candidate_referral,
         controller_processed = EXCLUDED.controller_processed,
@@ -268,7 +270,7 @@ async function recomputePurchaseStatuses(client = pool) {
       UPDATE purchases
       SET
         status = CASE
-          WHEN processing_error IS NOT NULL THEN 'error'
+          WHEN processing_error IS NOT NULL AND controller_processed = FALSE AND resolved_ambassador_wallet IS NULL THEN status
           WHEN controller_processed THEN 'processed'
           ELSE 'unattributed'
         END,
