@@ -1,6 +1,7 @@
 const { pool } = require('../../db/pool');
 const { tronWeb } = require('../tron/client');
 const env = require('../../config/env');
+const { syncAmbassador } = require('./syncAmbassador');
 
 const CONTROLLER_CONTRACT = env.FOURTEEN_CONTROLLER_CONTRACT;
 
@@ -43,7 +44,27 @@ function getEventField(result, ...keys) {
       return result[key];
     }
   }
+
   return null;
+}
+
+function normalizePurchaseIdVariants(value) {
+  const raw = String(value || '').trim().toLowerCase();
+  const no0x = raw.replace(/^0x/i, '');
+
+  if (!no0x) {
+    return {
+      raw: '',
+      no0x: '',
+      with0x: ''
+    };
+  }
+
+  return {
+    raw,
+    no0x,
+    with0x: `0x${no0x}`
+  };
 }
 
 async function getStateValue(key, fallback = '0') {
@@ -92,6 +113,16 @@ async function upsertBuyerBinding(payload) {
       VALUES (
         $1,$2,$3,$4,$5,$6,$7,$8,NOW(),NOW()
       )
+      ON CONFLICT (binding_tx_hash)
+      DO UPDATE SET
+        buyer_wallet = EXCLUDED.buyer_wallet,
+        ambassador_wallet = EXCLUDED.ambassador_wallet,
+        old_ambassador_wallet = EXCLUDED.old_ambassador_wallet,
+        new_ambassador_wallet = EXCLUDED.new_ambassador_wallet,
+        binding_at = EXCLUDED.binding_at,
+        source = EXCLUDED.source,
+        event_name = EXCLUDED.event_name,
+        updated_at = NOW()
     `,
     [
       payload.buyer_wallet,
@@ -107,6 +138,8 @@ async function upsertBuyerBinding(payload) {
 }
 
 async function upsertAllocation(payload) {
+  const purchaseId = normalizePurchaseIdVariants(payload.purchase_id);
+
   await pool.query(
     `
       INSERT INTO controller_purchase_allocations (
@@ -142,7 +175,7 @@ async function upsertAllocation(payload) {
         updated_at = NOW()
     `,
     [
-      payload.purchase_id,
+      purchaseId.no0x,
       payload.buyer_wallet,
       payload.ambassador_wallet,
       payload.tx_hash,
@@ -159,20 +192,24 @@ async function upsertAllocation(payload) {
     `
       UPDATE purchases
       SET
-        resolved_ambassador_wallet = $2,
+        resolved_ambassador_wallet = COALESCE(purchases.resolved_ambassador_wallet, $4),
         controller_processed = TRUE,
-        controller_processed_tx_hash = $3,
-        controller_processed_at = $4,
-        controller_reward_sun = $5,
-        controller_owner_part_sun = $6,
-        controller_level = $7,
+        controller_processed_tx_hash = COALESCE(purchases.controller_processed_tx_hash, $5),
+        controller_processed_at = COALESCE(purchases.controller_processed_at, $6),
+        controller_reward_sun = $7,
+        controller_owner_part_sun = $8,
+        controller_level = $9,
         status = 'processed',
         updated_at = NOW()
       WHERE purchase_id = $1
-         OR tx_hash = $1
+         OR purchase_id = $2
+         OR tx_hash = $3
+         OR controller_processed_tx_hash = $5
     `,
     [
-      payload.purchase_id,
+      purchaseId.no0x,
+      purchaseId.with0x,
+      payload.tx_hash,
       payload.ambassador_wallet,
       payload.tx_hash,
       payload.allocation_at,
@@ -184,7 +221,7 @@ async function upsertAllocation(payload) {
 }
 
 async function insertWithdrawal(payload) {
-  await pool.query(
+  const result = await pool.query(
     `
       INSERT INTO ambassador_reward_withdrawals (
         ambassador_wallet,
@@ -195,6 +232,8 @@ async function insertWithdrawal(payload) {
       VALUES ($1,$2,$3,$4)
       ON CONFLICT (tx_hash)
       DO NOTHING
+      RETURNING
+        id
     `,
     [
       payload.ambassador_wallet,
@@ -203,6 +242,10 @@ async function insertWithdrawal(payload) {
       payload.block_time
     ]
   );
+
+  return {
+    inserted: result.rowCount > 0
+  };
 }
 
 async function fetchContractEvents({ eventName, limit, minBlockTimestamp, fingerprint }) {
@@ -232,7 +275,7 @@ async function collectEvents(eventName, stateKey, limit, minBlockTimestamp, maxB
   const effectiveMin = Math.max(Number(minBlockTimestamp || 0), stored ? stored + 1 : 0);
 
   let fingerprint = null;
-  let all = [];
+  const all = [];
   let maxSeen = stored;
 
   while (all.length < limit) {
@@ -302,7 +345,7 @@ async function syncBindingEvents({ limit, minBlockTimestamp, maxBlockTimestamp }
   for (const row of filtered) {
     const eventName = row.event_name;
     const result = row.result || {};
-    const txHash = row.transaction_id;
+    const txHash = String(row.transaction_id || '').toLowerCase();
     const bindingAt = toIsoFromMs(row.block_timestamp);
 
     if (eventName === 'BuyerBound') {
@@ -382,13 +425,11 @@ async function syncAllocationEvents({ limit, minBlockTimestamp, maxBlockTimestam
     const rewardSun = toText(getEventField(result, 'rewardSun', '5'));
     const ownerPartSun = toText(getEventField(result, 'ownerPartSun', '6'));
     const level = Number(getEventField(result, 'level', '7') || 0);
-    const txHash = row.transaction_id;
+    const txHash = String(row.transaction_id || '').toLowerCase();
     const allocationAt = toIsoFromMs(row.block_timestamp);
 
-    const purchaseId = String(purchaseIdRaw || '').replace(/^0x/i, '');
-
     await upsertAllocation({
-      purchase_id: purchaseId,
+      purchase_id: purchaseIdRaw,
       buyer_wallet: buyerWallet,
       ambassador_wallet: ambassadorWallet,
       tx_hash: txHash,
@@ -402,7 +443,7 @@ async function syncAllocationEvents({ limit, minBlockTimestamp, maxBlockTimestam
 
     results.push({
       ok: true,
-      purchaseId,
+      purchaseId: normalizePurchaseIdVariants(purchaseIdRaw).no0x,
       buyerWallet,
       ambassadorWallet,
       txHash,
@@ -430,28 +471,40 @@ async function syncWithdrawalEvents({ limit, minBlockTimestamp, maxBlockTimestam
   );
 
   const results = [];
+  const affectedWallets = new Set();
 
   for (const row of rows) {
     const result = row.result || {};
     const ambassadorWallet = normalizeAddress(getEventField(result, 'ambassador', '0'));
     const amountSun = toText(getEventField(result, 'amountSun', '1'));
-    const txHash = row.transaction_id;
+    const txHash = String(row.transaction_id || '').toLowerCase();
     const blockTime = toIsoFromMs(row.block_timestamp);
 
-    await insertWithdrawal({
+    const insertResult = await insertWithdrawal({
       ambassador_wallet: ambassadorWallet,
       amount_sun: amountSun,
       tx_hash: txHash,
       block_time: blockTime
     });
 
+    if (ambassadorWallet) {
+      affectedWallets.add(ambassadorWallet);
+    }
+
     results.push({
       ok: true,
       ambassadorWallet,
       amountSun,
       txHash,
-      blockTime
+      blockTime,
+      inserted: insertResult.inserted
     });
+  }
+
+  for (const wallet of affectedWallets) {
+    try {
+      await syncAmbassador(wallet);
+    } catch (_) {}
   }
 
   return {
