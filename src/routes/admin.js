@@ -4,6 +4,7 @@ const { syncAmbassador } = require('../services/sync/syncAmbassador');
 const { syncTokenPurchases } = require('../services/sync/syncTokenPurchases');
 const { syncControllerEvents } = require('../services/sync/syncControllerEvents');
 const { rebuildAmbassadorBuyers } = require('../services/sync/rebuildAmbassadorBuyers');
+const { repairProcessedPurchaseAllocations } = require('../services/sync/repairProcessedPurchaseAllocations');
 
 const router = express.Router();
 
@@ -134,6 +135,27 @@ router.post('/backfill/controller-events', async (req, res) => {
 router.post('/rebuild/derived-state', async (req, res) => {
   try {
     const result = await rebuildAmbassadorBuyers();
+
+    return res.json({
+      ok: true,
+      result
+    });
+  } catch (error) {
+    return res.status(500).json({
+      ok: false,
+      error: error.message
+    });
+  }
+});
+
+router.post('/repair/processed-allocations', async (req, res) => {
+  try {
+    const { limit, dryRun } = req.body || {};
+
+    const result = await repairProcessedPurchaseAllocations({
+      limit: Number(limit || 500),
+      dryRun: Boolean(dryRun)
+    });
 
     return res.json({
       ok: true,
