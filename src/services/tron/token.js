@@ -37,6 +37,44 @@ function normalizeEventList(response) {
   return [];
 }
 
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function parseBuyEventFromList(txHash, list) {
+  const match = list.find((item) => {
+    const eventName = String(item?.event_name || '');
+    const contractAddress = toBase58Address(item?.contract_address);
+
+    return eventName === 'BuyTokens' && contractAddress === env.FOURTEEN_TOKEN_CONTRACT;
+  });
+
+  if (!match) {
+    return null;
+  }
+
+  const buyerWallet = toBase58Address(match?.result?.buyer || match?.result?.['0']);
+  const purchaseAmountSun = String(match?.result?.amountTRX || match?.result?.['1'] || 0);
+  const tokenAmountRaw = String(match?.result?.amountTokens || match?.result?.['2'] || 0);
+  const tokenBlockNumber = Number(match?.block_number || 0);
+  const eventTs = Number(match?.block_timestamp || 0);
+
+  if (!buyerWallet) {
+    throw new Error('Buyer address was not found in BuyTokens event');
+  }
+
+  return {
+    txHash: String(txHash).toLowerCase(),
+    buyerWallet,
+    purchaseAmountSun,
+    ownerShareSun: String(Math.floor(Number(purchaseAmountSun) * 0.07)),
+    tokenAmountRaw,
+    tokenBlockNumber,
+    tokenBlockTime: eventTs ? new Date(eventTs).toISOString() : new Date().toISOString(),
+    blockTimestamp: eventTs
+  };
+}
+
 async function getBuyTokenEvents({
   minBlockTimestamp,
   maxBlockTimestamp,
@@ -68,41 +106,46 @@ async function getBuyTokenEvents({
 async function getBuyEventByTxHash(txHash) {
   const response = await tronWeb.getEventByTransactionID(txHash);
   const list = normalizeEventList(response);
+  const parsed = parseBuyEventFromList(txHash, list);
 
-  const match = list.find((item) => {
-    const eventName = String(item?.event_name || '');
-    const contractAddress = toBase58Address(item?.contract_address);
-
-    return eventName === 'BuyTokens' && contractAddress === env.FOURTEEN_TOKEN_CONTRACT;
-  });
-
-  if (!match) {
+  if (!parsed) {
     throw new Error('BuyTokens event not found for transaction');
   }
 
-  const buyerWallet = toBase58Address(match?.result?.buyer || match?.result?.['0']);
-  const purchaseAmountSun = String(match?.result?.amountTRX || match?.result?.['1'] || 0);
-  const tokenAmountRaw = String(match?.result?.amountTokens || match?.result?.['2'] || 0);
-  const tokenBlockNumber = Number(match?.block_number || 0);
-  const eventTs = Number(match?.block_timestamp || 0);
+  return parsed;
+}
 
-  if (!buyerWallet) {
-    throw new Error('Buyer address was not found in BuyTokens event');
+async function waitForBuyEventByTxHash(txHash, options = {}) {
+  const attempts = Number(options.attempts || 10);
+  const delayMs = Number(options.delayMs || 1500);
+
+  let lastError = null;
+
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    try {
+      const response = await tronWeb.getEventByTransactionID(txHash);
+      const list = normalizeEventList(response);
+      const parsed = parseBuyEventFromList(txHash, list);
+
+      if (parsed) {
+        return parsed;
+      }
+
+      lastError = new Error('BuyTokens event not found for transaction');
+    } catch (error) {
+      lastError = error;
+    }
+
+    if (attempt < attempts) {
+      await sleep(delayMs);
+    }
   }
 
-  return {
-    txHash: String(txHash).toLowerCase(),
-    buyerWallet,
-    purchaseAmountSun,
-    ownerShareSun: String(Math.floor(Number(purchaseAmountSun) * 0.07)),
-    tokenAmountRaw,
-    tokenBlockNumber,
-    tokenBlockTime: eventTs ? new Date(eventTs).toISOString() : new Date().toISOString(),
-    blockTimestamp: eventTs
-  };
+  throw lastError || new Error('BuyTokens event not found for transaction');
 }
 
 module.exports = {
   getBuyTokenEvents,
-  getBuyEventByTxHash
+  getBuyEventByTxHash,
+  waitForBuyEventByTxHash
 };
