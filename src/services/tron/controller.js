@@ -91,6 +91,42 @@ const controllerAbi = [
   }
 ];
 
+function toBase58Address(value) {
+  if (!value) return null;
+
+  try {
+    if (typeof value === 'string' && value.startsWith('T')) {
+      return value;
+    }
+
+    let hex = String(value).trim();
+
+    if (hex.startsWith('0x')) {
+      hex = hex.slice(2);
+    }
+
+    if (!hex.startsWith('41')) {
+      hex = `41${hex}`;
+    }
+
+    return tronWeb.address.fromHex(hex);
+  } catch (_) {
+    return null;
+  }
+}
+
+function normalizeEventList(response) {
+  if (Array.isArray(response)) {
+    return response;
+  }
+
+  if (Array.isArray(response?.data)) {
+    return response.data;
+  }
+
+  return [];
+}
+
 async function getControllerContract() {
   return tronWeb.contract(controllerAbi, env.FOURTEEN_CONTROLLER_CONTRACT);
 }
@@ -179,6 +215,51 @@ async function getControllerEvents(eventName, {
   return tronWeb.getEventResult(env.FOURTEEN_CONTROLLER_CONTRACT, options);
 }
 
+async function getWithdrawalEventByTxHash(txHash) {
+  const normalizedTxHash = String(txHash || '').trim().toLowerCase();
+
+  if (!normalizedTxHash) {
+    throw new Error('txid is required');
+  }
+
+  const response = await tronWeb.getEventByTransactionID(normalizedTxHash);
+  const events = normalizeEventList(response);
+
+  const match = events.find((item) => {
+    const eventName = String(item?.event_name || '').trim();
+    const contractAddress = toBase58Address(item?.contract_address);
+
+    return (
+      eventName === 'RewardsWithdrawn' &&
+      contractAddress === env.FOURTEEN_CONTROLLER_CONTRACT
+    );
+  });
+
+  if (!match) {
+    throw new Error('RewardsWithdrawn event not found for transaction');
+  }
+
+  const ambassadorWallet = toBase58Address(
+    match?.result?.ambassador ?? match?.result?.['0']
+  );
+  const amountSun = String(
+    match?.result?.amountSun ?? match?.result?.['1'] ?? '0'
+  ).trim();
+  const blockTimestamp = Number(match?.block_timestamp || 0);
+
+  if (!ambassadorWallet) {
+    throw new Error('Ambassador address was not found in RewardsWithdrawn event');
+  }
+
+  return {
+    txHash: normalizedTxHash,
+    ambassadorWallet,
+    amountSun: /^\d+$/.test(amountSun) ? amountSun : '0',
+    blockTime: blockTimestamp ? new Date(blockTimestamp).toISOString() : null,
+    blockTimestamp
+  };
+}
+
 module.exports = {
   getControllerContract,
   getBuyerAmbassador,
@@ -186,5 +267,6 @@ module.exports = {
   isPurchaseProcessed,
   recordVerifiedPurchase,
   readAmbassadorDashboard,
-  getControllerEvents
+  getControllerEvents,
+  getWithdrawalEventByTxHash
 };
