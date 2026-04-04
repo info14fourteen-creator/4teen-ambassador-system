@@ -7,12 +7,8 @@ const {
   listAmbassadorPendingPurchases
 } = require('../db/queries/cabinet');
 const { syncAmbassador } = require('../services/sync/syncAmbassador');
-const {
-  getWithdrawalEventByTxHash
-} = require('../services/tron/controller');
-const {
-  processPendingPurchasesForAmbassador
-} = require('../services/sync/processPendingPurchasesForAmbassador');
+const { replayPendingPurchases } = require('../services/sync/replayPendingPurchases');
+const { getWithdrawalEventByTxHash } = require('../services/tron/controller');
 
 const router = express.Router();
 
@@ -154,7 +150,8 @@ router.get('/ambassador/:wallet/pending', async (req, res) => {
 router.post('/replay-pending', async (req, res) => {
   try {
     const wallet = normalizeWallet(req.body?.wallet);
-    const limit = Number(req.body?.limit || 50);
+    const limit = Number(req.body?.limit || 10);
+    const dryRun = Boolean(req.body?.dryRun);
 
     if (!wallet) {
       return res.status(400).json({
@@ -163,7 +160,11 @@ router.post('/replay-pending', async (req, res) => {
       });
     }
 
-    const result = await processPendingPurchasesForAmbassador(wallet, { limit });
+    const result = await replayPendingPurchases({
+      wallet,
+      limit,
+      dryRun
+    });
 
     return res.json({
       ok: true,

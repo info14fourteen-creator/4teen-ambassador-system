@@ -1,5 +1,13 @@
 const { pool } = require('../pool');
 
+function normalizeLower(value) {
+  return String(value || '').trim().toLowerCase();
+}
+
+function normalizeBytes32(value) {
+  return normalizeLower(value).replace(/^0x/, '');
+}
+
 async function getPurchaseByTxHash(txHash, client = pool) {
   const result = await client.query(
     `
@@ -8,14 +16,14 @@ async function getPurchaseByTxHash(txHash, client = pool) {
       WHERE tx_hash = $1
       LIMIT 1
     `,
-    [String(txHash).toLowerCase()]
+    [normalizeLower(txHash)]
   );
 
   return result.rows[0] || null;
 }
 
 async function upsertCandidatePurchase(payload, client = pool) {
-  const normalizedTxHash = String(payload.txHash).toLowerCase();
+  const normalizedTxHash = normalizeLower(payload.txHash);
 
   await client.query(
     `
@@ -54,7 +62,7 @@ async function upsertCandidatePurchase(payload, client = pool) {
 }
 
 async function upsertPurchaseFromTokenEvent(payload, client = pool) {
-  const normalizedTxHash = String(payload.txHash).toLowerCase();
+  const normalizedTxHash = normalizeLower(payload.txHash);
 
   await client.query(
     `
@@ -114,7 +122,7 @@ async function upsertPurchaseFromTokenEvent(payload, client = pool) {
 }
 
 async function upsertReconciledPurchase(payload, client = pool) {
-  const normalizedTxHash = String(payload.txHash).toLowerCase();
+  const normalizedTxHash = normalizeLower(payload.txHash);
   const controllerProcessed = Boolean(payload.controllerProcessed);
   const hasCandidateReferral = Boolean(payload.candidateSlugHash || payload.candidateAmbassadorWallet);
 
@@ -209,8 +217,8 @@ async function markPurchaseProcessed({
   txHash,
   allocatedAt
 }, client = pool) {
-  const normalizedPurchaseId = String(purchaseId || '').toLowerCase();
-  const normalizedControllerTxHash = String(txHash || '').toLowerCase();
+  const normalizedPurchaseId = normalizeLower(purchaseId);
+  const normalizedControllerTxHash = normalizeLower(txHash);
 
   await client.query(
     `
@@ -240,7 +248,7 @@ async function markPurchaseError({
   txHash,
   errorMessage
 }, client = pool) {
-  const normalizedTxHash = String(txHash || '').toLowerCase();
+  const normalizedTxHash = normalizeLower(txHash);
 
   await client.query(
     `
@@ -313,6 +321,133 @@ async function recomputePurchaseStatuses(client = pool) {
   );
 }
 
+async function getReplayablePendingPurchases(ambassadorWallet, limit = 10, client = pool) {
+  const normalizedLimit = Math.max(1, Math.min(Number(limit || 10), 50));
+
+  const result = await client.query(
+    `
+      SELECT
+        id,
+        tx_hash,
+        purchase_id,
+        buyer_wallet,
+        purchase_amount_sun,
+        owner_share_sun,
+        resolved_ambassador_wallet,
+        token_block_time,
+        status,
+        controller_processed,
+        controller_processed_tx_hash
+      FROM purchases
+      WHERE resolved_ambassador_wallet = $1
+        AND status = 'attributed'
+        AND controller_processed = FALSE
+      ORDER BY token_block_time ASC NULLS LAST, id ASC
+      LIMIT $2
+    `,
+    [ambassadorWallet, normalizedLimit]
+  );
+
+  return result.rows;
+}
+
+async function applyAllocationResult(payload, client = pool) {
+  const normalizedPurchaseId = normalizeBytes32(payload.purchaseId);
+  const normalizedAllocationTxHash = normalizeLower(payload.txHash);
+  const normalizedPurchaseTxHash = normalizeLower(payload.purchaseTxHash);
+  const allocationAt = payload.allocationAt || payload.blockTime || new Date().toISOString();
+
+  await client.query(
+    `
+      INSERT INTO controller_purchase_allocations (
+        purchase_id,
+        tx_hash,
+        buyer_wallet,
+        ambassador_wallet,
+        purchase_amount_sun,
+        owner_share_sun,
+        reward_sun,
+        owner_part_sun,
+        level,
+        allocated_at,
+        allocation_at,
+        created_at,
+        updated_at
+      )
+      VALUES (
+        $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$10,NOW(),NOW()
+      )
+      ON CONFLICT (purchase_id)
+      DO UPDATE SET
+        tx_hash = EXCLUDED.tx_hash,
+        buyer_wallet = EXCLUDED.buyer_wallet,
+        ambassador_wallet = EXCLUDED.ambassador_wallet,
+        purchase_amount_sun = EXCLUDED.purchase_amount_sun,
+        owner_share_sun = EXCLUDED.owner_share_sun,
+        reward_sun = EXCLUDED.reward_sun,
+        owner_part_sun = EXCLUDED.owner_part_sun,
+        level = EXCLUDED.level,
+        allocated_at = EXCLUDED.allocated_at,
+        allocation_at = EXCLUDED.allocation_at,
+        updated_at = NOW()
+    `,
+    [
+      normalizedPurchaseId,
+      normalizedAllocationTxHash,
+      payload.buyerWallet,
+      payload.ambassadorWallet,
+      payload.purchaseAmountSun,
+      payload.ownerShareSun,
+      payload.rewardSun,
+      payload.ownerPartSun,
+      Number(payload.level || 0),
+      allocationAt
+    ]
+  );
+
+  const updateResult = await client.query(
+    `
+      UPDATE purchases
+      SET
+        resolved_ambassador_wallet = $2,
+        controller_processed = TRUE,
+        controller_processed_tx_hash = $3,
+        controller_processed_at = $4,
+        controller_reward_sun = $5,
+        controller_owner_part_sun = $6,
+        controller_level = $7,
+        processing_error = NULL,
+        status = 'processed',
+        updated_at = NOW()
+      WHERE resolved_ambassador_wallet = $8
+        AND (
+          REPLACE(LOWER(purchase_id), '0x', '') = $1
+          OR LOWER(tx_hash) = $9
+        )
+    `,
+    [
+      normalizedPurchaseId,
+      payload.ambassadorWallet,
+      normalizedAllocationTxHash,
+      allocationAt,
+      payload.rewardSun,
+      payload.ownerPartSun,
+      Number(payload.level || 0),
+      payload.ambassadorWallet,
+      normalizedPurchaseTxHash
+    ]
+  );
+
+  if (updateResult.rowCount < 1) {
+    throw new Error('Pending purchase row was not found for allocation update');
+  }
+
+  return {
+    ok: true,
+    rowCount: updateResult.rowCount
+  };
+}
+
 module.exports = {
   getPurchaseByTxHash,
   upsertCandidatePurchase,
@@ -320,5 +455,7 @@ module.exports = {
   upsertReconciledPurchase,
   markPurchaseProcessed,
   markPurchaseError,
-  recomputePurchaseStatuses
+  recomputePurchaseStatuses,
+  getReplayablePendingPurchases,
+  applyAllocationResult
 };
