@@ -91,6 +91,10 @@ const controllerAbi = [
   }
 ];
 
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 function toBase58Address(value) {
   if (!value) return null;
 
@@ -99,7 +103,7 @@ function toBase58Address(value) {
       return value;
     }
 
-    let hex = String(value).trim();
+    let hex = String(value).trim().toLowerCase();
 
     if (hex.startsWith('0x')) {
       hex = hex.slice(2);
@@ -127,6 +131,23 @@ function normalizeEventList(response) {
   return [];
 }
 
+function normalizeBytes32(value) {
+  return String(value || '')
+    .trim()
+    .toLowerCase()
+    .replace(/^0x/, '');
+}
+
+function assertBytes32Hex(value, fieldName = 'bytes32 value') {
+  const normalized = normalizeBytes32(value);
+
+  if (!/^[0-9a-f]{64}$/.test(normalized)) {
+    throw new Error(`${fieldName} must be a 32-byte hex string`);
+  }
+
+  return `0x${normalized}`;
+}
+
 async function getControllerContract() {
   return tronWeb.contract(controllerAbi, env.FOURTEEN_CONTROLLER_CONTRACT);
 }
@@ -145,7 +166,8 @@ async function getAmbassadorBySlugHash(slugHash) {
 
 async function isPurchaseProcessed(purchaseId) {
   const contract = await getControllerContract();
-  const result = await contract.isPurchaseProcessed(purchaseId).call();
+  const normalizedPurchaseId = assertBytes32Hex(purchaseId, 'purchaseId');
+  const result = await contract.isPurchaseProcessed(normalizedPurchaseId).call();
   return Boolean(result);
 }
 
@@ -157,9 +179,10 @@ async function recordVerifiedPurchase({
   ownerShareSun
 }) {
   const contract = await getControllerContract();
+  const normalizedPurchaseId = assertBytes32Hex(purchaseId, 'purchaseId');
 
   const txid = await contract.recordVerifiedPurchase(
-    purchaseId,
+    normalizedPurchaseId,
     buyerWallet,
     ambassadorCandidate,
     String(purchaseAmountSun),
@@ -173,7 +196,7 @@ async function recordVerifiedPurchase({
     throw new Error('Controller transaction sent but txid was not returned');
   }
 
-  return String(txid);
+  return String(txid).toLowerCase();
 }
 
 async function readAmbassadorDashboard(ambassadorWallet) {
@@ -215,48 +238,88 @@ async function getControllerEvents(eventName, {
   return tronWeb.getEventResult(env.FOURTEEN_CONTROLLER_CONTRACT, options);
 }
 
-async function getWithdrawalEventByTxHash(txHash) {
+async function waitForControllerEventByTxHash(
+  txHash,
+  eventName,
+  { attempts = 1, delayMs = 0 } = {}
+) {
   const normalizedTxHash = String(txHash || '').trim().toLowerCase();
 
-  if (!normalizedTxHash) {
-    throw new Error('txid is required');
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    const response = await tronWeb.getEventByTransactionID(normalizedTxHash);
+    const list = normalizeEventList(response);
+
+    const match = list.find((item) => {
+      const itemEventName = String(item?.event_name || '');
+      const contractAddress = toBase58Address(item?.contract_address);
+
+      return (
+        itemEventName === eventName &&
+        contractAddress === env.FOURTEEN_CONTROLLER_CONTRACT
+      );
+    });
+
+    if (match) {
+      return match;
+    }
+
+    if (attempt < attempts && delayMs > 0) {
+      await sleep(delayMs);
+    }
   }
 
-  const response = await tronWeb.getEventByTransactionID(normalizedTxHash);
-  const events = normalizeEventList(response);
+  throw new Error(`${eventName} event not found for transaction`);
+}
 
-  const match = events.find((item) => {
-    const eventName = String(item?.event_name || '').trim();
-    const contractAddress = toBase58Address(item?.contract_address);
-
-    return (
-      eventName === 'RewardsWithdrawn' &&
-      contractAddress === env.FOURTEEN_CONTROLLER_CONTRACT
-    );
-  });
-
-  if (!match) {
-    throw new Error('RewardsWithdrawn event not found for transaction');
-  }
-
-  const ambassadorWallet = toBase58Address(
-    match?.result?.ambassador ?? match?.result?.['0']
+async function getAllocationEventByTxHash(
+  txHash,
+  { attempts = 4, delayMs = 750 } = {}
+) {
+  const event = await waitForControllerEventByTxHash(
+    txHash,
+    'PurchaseFundsAllocated',
+    { attempts, delayMs }
   );
-  const amountSun = String(
-    match?.result?.amountSun ?? match?.result?.['1'] ?? '0'
-  ).trim();
-  const blockTimestamp = Number(match?.block_timestamp || 0);
 
-  if (!ambassadorWallet) {
-    throw new Error('Ambassador address was not found in RewardsWithdrawn event');
-  }
+  const result = event?.result || {};
+  const blockTimestamp = Number(event?.block_timestamp || 0);
 
   return {
-    txHash: normalizedTxHash,
-    ambassadorWallet,
-    amountSun: /^\d+$/.test(amountSun) ? amountSun : '0',
-    blockTime: blockTimestamp ? new Date(blockTimestamp).toISOString() : null,
-    blockTimestamp
+    txHash: String(event?.transaction_id || txHash || '').trim().toLowerCase(),
+    purchaseId: normalizeBytes32(result.purchaseId || result['0']),
+    buyerWallet: toBase58Address(result.buyer || result['1']),
+    ambassadorWallet: toBase58Address(result.ambassador || result['2']),
+    purchaseAmountSun: String(result.purchaseAmountSun || result['3'] || 0),
+    ownerShareSun: String(result.ownerShareSun || result['4'] || 0),
+    rewardSun: String(result.rewardSun || result['5'] || 0),
+    ownerPartSun: String(result.ownerPartSun || result['6'] || 0),
+    level: Number(result.level || result['7'] || 0),
+    blockTime: blockTimestamp
+      ? new Date(blockTimestamp).toISOString()
+      : new Date().toISOString()
+  };
+}
+
+async function getWithdrawalEventByTxHash(
+  txHash,
+  { attempts = 2, delayMs = 500 } = {}
+) {
+  const event = await waitForControllerEventByTxHash(
+    txHash,
+    'RewardsWithdrawn',
+    { attempts, delayMs }
+  );
+
+  const result = event?.result || {};
+  const blockTimestamp = Number(event?.block_timestamp || 0);
+
+  return {
+    txHash: String(event?.transaction_id || txHash || '').trim().toLowerCase(),
+    ambassadorWallet: toBase58Address(result.ambassador || result['0']),
+    amountSun: String(result.amountSun || result['1'] || 0),
+    blockTime: blockTimestamp
+      ? new Date(blockTimestamp).toISOString()
+      : new Date().toISOString()
   };
 }
 
@@ -268,5 +331,6 @@ module.exports = {
   recordVerifiedPurchase,
   readAmbassadorDashboard,
   getControllerEvents,
+  getAllocationEventByTxHash,
   getWithdrawalEventByTxHash
 };
