@@ -4,6 +4,7 @@ const adminRouter = require('./routes/admin');
 const cabinetRouter = require('./routes/cabinet');
 const hooksRouter = require('./routes/hooks');
 const publicRouter = require('./routes/public');
+const proxyRouter = require('./routes/proxy');
 const env = require('./config/env');
 
 const app = express();
@@ -60,6 +61,7 @@ app.use((req, res, next) => {
 app.use(express.json());
 
 app.use('/', healthRouter);
+app.use('/', proxyRouter);
 app.use('/', publicRouter);
 app.use('/admin', adminRouter);
 app.use('/cabinet', cabinetRouter);
