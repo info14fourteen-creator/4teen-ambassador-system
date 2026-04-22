@@ -596,56 +596,6 @@ async function ensureOperatorResources() {
   };
 }
 
-async function quoteEnergyRental({ energyNum }) {
-  const normalizedEnergyNum = normalizePositiveInteger(energyNum, 'energyNum');
-  const client = createGasStationClientFromEnv();
-  const estimate = await estimateRentalCostSun(client, {
-    energyQuantity: normalizedEnergyNum,
-    bandwidthQuantity: 0
-  });
-
-  return {
-    energyQuantity: normalizedEnergyNum,
-    amountSun: estimate.totalAmountSun,
-    amountTrx: fromSun(estimate.totalAmountSun),
-    estimate
-  };
-}
-
-async function rentEnergyForWallet({ receiveAddress, energyNum, requestPrefix = 'energy' }) {
-  if (!String(env.GASSTATION_ENABLED).toLowerCase().includes('true')) {
-    throw new Error('Gas Station is disabled');
-  }
-
-  const normalizedEnergyNum = normalizePositiveInteger(energyNum, 'energyNum');
-  const client = createGasStationClientFromEnv();
-  const estimate = await estimateRentalCostSun(client, {
-    energyQuantity: normalizedEnergyNum,
-    bandwidthQuantity: 0
-  });
-  const topUp = await topUpGasStationIfNeeded(client, estimate.totalAmountSun);
-  const requestId = buildRequestId(requestPrefix);
-  const created = await client.createEnergyOrder({
-    requestId,
-    receiveAddress: assertNonEmpty(receiveAddress, 'receiveAddress'),
-    energyNum: normalizedEnergyNum
-  });
-  const finalRow = await waitForOrderSuccess(client, requestId);
-
-  return {
-    rented: true,
-    resourceType: 'energy',
-    requestId,
-    tradeNo: String(created?.trade_no || ''),
-    quantity: normalizedEnergyNum,
-    row: finalRow || null,
-    estimate,
-    topUp
-  };
-}
-
 module.exports = {
-  ensureOperatorResources,
-  quoteEnergyRental,
-  rentEnergyForWallet
+  ensureOperatorResources
 };
